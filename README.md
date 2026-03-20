@@ -4,6 +4,9 @@
 
 当前状态：**beta / preview**。
 
+- GitHub: https://github.com/DoraemonHugU/miniprogram-browser
+- npm: https://www.npmjs.com/package/miniprogram-browser
+
 ## 安装
 
 ### 直接试用（未安装）
@@ -18,6 +21,14 @@ npx miniprogram-browser help
 npm install -g miniprogram-browser
 miniprogram-browser help
 ```
+
+### 作为 Skill 安装（skills.sh / OpenCode 等）
+
+```bash
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser
+```
+
+如果只想给特定 agent 安装，可继续使用 `skills` CLI 的 `--agent` / `--global` 等参数。
 
 ### 本地开发
 
@@ -101,6 +112,12 @@ scripts/
 ```
 
 测试与参考资料可以保留在仓库中，但不一定需要分发到最终 skill 目录。
+
+也可以直接通过 `skills` CLI 从 GitHub 安装：
+
+```bash
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser
+```
 
 ## 测试
 
