@@ -30,6 +30,7 @@ const {
   formatAutomationCliError,
   callWxMethod,
   callPageMethod,
+  connectOrEnable,
 } = require('../scripts/lib/runtime.cjs')
 
 function createState() {
@@ -577,6 +578,72 @@ test('formatAutomationCliError adds actionable hint for devtools port restart re
 
   assert.match(error.message, /需要先把当前 DevTools HTTP 服务从 39085 重启到 39100/i)
   assert.match(error.message, /close 当前 session 或在微信开发者工具里重启服务端口/i)
+})
+
+test('connectOrEnable prefers enable-first for open-like calls', async () => {
+  const calls = []
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    preferEnable: true,
+    onProgress(phase) {
+      calls.push(`progress:${phase}`)
+    },
+  }, {
+    async connect() {
+      calls.push('connect')
+      return { ok: true }
+    },
+    enable() {
+      calls.push('enable')
+    },
+    async sleepFn(ms) {
+      calls.push(`sleep:${ms}`)
+    },
+  })
+
+  assert.deepEqual(calls, [
+    'progress:enable',
+    'enable',
+    'sleep:5000',
+    'progress:connect',
+    'connect',
+  ])
+  assert.deepEqual(result, { ok: true })
+})
+
+test('connectOrEnable reports fallback phases after initial connect failure', async () => {
+  const calls = []
+  let attempts = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    onProgress(phase) {
+      calls.push(`progress:${phase}`)
+    },
+  }, {
+    async connect() {
+      attempts += 1
+      calls.push(`connect:${attempts}`)
+      if (attempts === 1) {
+        throw new Error('first connect failed')
+      }
+      return { ok: true }
+    },
+    enable() {
+      calls.push('enable')
+    },
+    async sleepFn(ms) {
+      calls.push(`sleep:${ms}`)
+    },
+  })
+
+  assert.deepEqual(calls, [
+    'progress:connect',
+    'connect:1',
+    'progress:enable',
+    'enable',
+    'sleep:5000',
+    'progress:connect',
+    'connect:2',
+  ])
+  assert.deepEqual(result, { ok: true })
 })
 
 test('queryRecords selector mode still uses official selector lookup', async () => {

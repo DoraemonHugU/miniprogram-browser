@@ -404,30 +404,43 @@ async function connectWithRetry(config) {
   throw lastError
 }
 
-async function connectOrEnable(config, options = {}) {
+async function connectOrEnable(config, options = {}, overrides = {}) {
+  const connect = overrides.connect || connectWithRetry
+  const enable = overrides.enable || enableAutomation
+  const sleepFn = overrides.sleepFn || sleep
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null
+
   if (options.preferEnable) {
-    enableAutomation(config)
-    await sleep(5000)
-    return connectWithRetry(config)
+    onProgress && onProgress('enable')
+    enable(config)
+    await sleepFn(5000)
+    onProgress && onProgress('connect')
+    return connect(config)
   }
 
   try {
-    return await connectWithRetry(config)
+    onProgress && onProgress('connect')
+    return await connect(config)
   } catch (_) {
-    enableAutomation(config)
-    await sleep(5000)
-    return connectWithRetry(config)
+    onProgress && onProgress('enable')
+    enable(config)
+    await sleepFn(5000)
+    onProgress && onProgress('connect')
+    return connect(config)
   }
 }
 
-async function withMiniProgram(state, task) {
+async function withMiniProgram(state, task, options = {}) {
   if (!state.config || !String(state.config.projectPath || '').trim()) {
     throw new Error('Missing project path. Pass --project <miniprogram-root> on first open/session binding.')
   }
   await mkdir(state.config.screenshotDir, { recursive: true })
   await mkdir(state.config.tempScreenshotDir, { recursive: true })
   const miniProgram = await connectOrEnable(state.config, {
-    preferEnable: Boolean(state.portResolution && state.portResolution.autoPortAssigned),
+    preferEnable: options.preferEnable !== undefined
+      ? Boolean(options.preferEnable)
+      : Boolean(state.portResolution && state.portResolution.autoPortAssigned),
+    onProgress: options.onProgress,
   })
   const runtimeEvents = {
     consoleEvents: [],
@@ -1494,4 +1507,5 @@ module.exports = {
   snapshotInteractive,
   queryRecords,
   isRefToken,
+  connectOrEnable,
 }

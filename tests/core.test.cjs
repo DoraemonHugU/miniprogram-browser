@@ -534,3 +534,22 @@ test('acquireSessionLock times out when active lock heartbeat is fresh', async (
 
   await fs.promises.rm(lockPath, { recursive: true, force: true })
 })
+
+test('acquireSessionLock timeout reports owner pid and command', async () => {
+  const config = createDefaultConfig('/repo')
+  const lockPath = sessionLockPath('busy-owner-demo', config)
+  await fs.promises.mkdir(lockPath, { recursive: true })
+  await fs.promises.writeFile(path.join(lockPath, 'meta.json'), JSON.stringify({
+    pid: process.pid,
+    command: 'open',
+    startedAt: Date.now(),
+    heartbeatAt: Date.now(),
+  }))
+
+  await assert.rejects(
+    acquireSessionLock('busy-owner-demo', config, { timeoutMs: 150, pollMs: 20 }),
+    /pid=.*command=open/i,
+  )
+
+  await fs.promises.rm(lockPath, { recursive: true, force: true })
+})

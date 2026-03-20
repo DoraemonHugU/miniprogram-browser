@@ -373,6 +373,20 @@ async function acquireSessionLock(sessionName, config, options = {}) {
     }
   }
 
+  const meta = await readLockMeta(lockPath)
+  if (meta) {
+    const parts = []
+    if (meta.pid) {
+      parts.push(`pid=${meta.pid}`)
+    }
+    if (meta.command) {
+      parts.push(`command=${meta.command}`)
+    }
+    if (parts.length) {
+      throw new Error(`Session lock timeout: ${sessionName} (${parts.join(' ')})`)
+    }
+  }
+
   throw new Error(`Session lock timeout: ${sessionName}`)
 }
 

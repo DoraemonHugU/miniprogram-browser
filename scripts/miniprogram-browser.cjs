@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const path = require('node:path')
+const packageJson = require('../package.json')
 
 const {
   normalizeInspectSections,
@@ -75,6 +76,7 @@ function buildHelpText() {
   miniprogram-browser <command> [args] [options]
   miniprogram-browser help <command>
   miniprogram-browser <command> --help
+  miniprogram-browser -v | --version
 
 核心命令（优先使用）:
   open                         绑定/连接一个小程序项目 session
@@ -128,9 +130,14 @@ function buildHelpText() {
   --sections <a,b,c>           app inspect 指定输出分区
   --all                        app inspect 输出全部分区
   --stdin                      从标准输入读取 eval 脚本
+  -v, --version                输出当前 CLI 版本号
   -c, --compact                snapshot 时折叠空容器
   -d, --depth <n>              snapshot 时限制输出深度
 `
+}
+
+function getVersionText() {
+  return String(packageJson.version || '')
 }
 
 function buildCommandHelpText(command) {
@@ -506,6 +513,10 @@ function parseArgs(argv) {
       options.help = true
       continue
     }
+    if (token === '-v') {
+      options.version = true
+      continue
+    }
     if (token === '-i') {
       options.interactive = true
       continue
@@ -535,6 +546,11 @@ function parseArgs(argv) {
 
     if (key === 'help') {
       options.help = true
+      continue
+    }
+
+    if (key === 'version') {
+      options.version = true
       continue
     }
 
@@ -602,6 +618,13 @@ function emit(payload, options) {
   console.log(JSON.stringify(payload, null, 2))
 }
 
+function emitProgress(message, options) {
+  if (options.json || !message) {
+    return
+  }
+  process.stderr.write(`${message}\n`)
+}
+
 async function resolveSession(options) {
   const baseConfig = createDefaultConfig()
   const state = await loadSessionState(options.session, baseConfig)
@@ -634,6 +657,17 @@ async function handleOpen(state, options) {
       autoPort: state.config.autoPort,
       autoPortAssigned: Boolean(state.portResolution && state.portResolution.autoPortAssigned),
     }
+  }, {
+    preferEnable: true,
+    onProgress(phase) {
+      if (phase === 'enable') {
+        emitProgress('正在启动/连接 DevTools 自动化...', options)
+        return
+      }
+      if (phase === 'connect') {
+        emitProgress('正在等待小程序实例就绪...', options)
+      }
+    },
   })
 
   await saveSessionState(state)
@@ -1240,6 +1274,11 @@ async function main() {
   const { positional, options } = parseArgs(process.argv.slice(2))
   const command = positional[0]
 
+  if (options.version || command === 'version') {
+    console.log(getVersionText())
+    return
+  }
+
   if (options.help) {
     if (command) {
       printCommandHelp(command)
@@ -1285,6 +1324,7 @@ if (require.main === module) {
 module.exports = {
   buildHelpText,
   buildCommandHelpText,
+  getVersionText,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
   summarizeTimelinePayload,

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict')
 const {
   buildHelpText,
   buildCommandHelpText,
+  getVersionText,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
   summarizeTimelinePayload,
@@ -27,6 +28,11 @@ test('buildHelpText mentions summary and full detail options', () => {
   assert.match(help, /--all/)
   assert.match(help, /--sections <a,b,c>/)
   assert.match(help, /help <command>/)
+  assert.match(help, /-v, --version/)
+})
+
+test('getVersionText returns package version', () => {
+  assert.equal(getVersionText(), require('../package.json').version)
 })
 
 test('buildCommandHelpText returns open command details', () => {
