@@ -277,11 +277,20 @@ async function captureScreenshotToPath(miniProgram, targetPath, timeoutMs = 1500
     return targetPath
   }
 
-  await withTimeout(
-    miniProgram.screenshot({ path: targetPath }),
-    'screenshot',
-    timeoutMs,
-  )
+  try {
+    await withTimeout(
+      miniProgram.screenshot({ path: targetPath }),
+      'screenshot',
+      timeoutMs,
+    )
+  } catch (error) {
+    if (error && /screenshot timeout/i.test(String(error.message || ''))) {
+      const nextError = new Error('screenshot timeout; 当前 session / DevTools 实例可能已失效，建议 close 当前 session 后重新 open，再重试一次截图。')
+      nextError.cause = error
+      throw nextError
+    }
+    throw error
+  }
 
   return targetPath
 }

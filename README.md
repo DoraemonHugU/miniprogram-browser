@@ -1,6 +1,6 @@
 # miniprogram-browser
 
-面向微信小程序的 `agent-browser` 风格自动化 CLI 与 skill。
+面向微信小程序的 `agent-browser` 风格自动化 CLI。配套 skill 单独放在 `skills/miniprogram-browser/`。
 
 当前状态：**beta / preview**。
 
@@ -25,8 +25,10 @@ miniprogram-browser help
 ### 作为 Skill 安装（skills.sh / OpenCode 等）
 
 ```bash
-npx skills add https://github.com/DoraemonHugU/miniprogram-browser
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/miniprogram-browser
 ```
+
+这个 skill 目录现在只包含 `SKILL.md`，不会再把 `tests/` 或 CLI 源码一起装进去。
 
 如果只想给特定 agent 安装，可继续使用 `skills` CLI 的 `--agent` / `--global` 等参数。
 
@@ -63,7 +65,7 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 # 如果本地还没设置 WECHAT_DEVTOOLS_CLI，再先 export
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
-# 已全局安装时
+# 已安装时
 miniprogram-browser open --session demo --project /path/to/miniprogram-root
 miniprogram-browser app inspect --session demo
 miniprogram-browser goto /pages/dashboard/index --session demo
@@ -72,7 +74,7 @@ miniprogram-browser click @e1 --session demo
 miniprogram-browser timeline --session demo
 miniprogram-browser screenshot --session demo --mode annotate
 
-# 未安装时，也可以直接用 npx
+# 未安装时
 npx miniprogram-browser help
 ```
 
@@ -99,24 +101,85 @@ npx miniprogram-browser help
 ## 已知边界
 
 - fresh `open` 后，DevTools 模拟器首帧有时还没稳定；建议先 `path` / `app inspect`，必要时再 `goto` 当前页一次
+- 如果 `screenshot` 偶发超时，通常更像当前 session / DevTools 实例状态异常；优先 `close` 当前 session 后重新 `open`，再重试一次
 - 某些自定义组件在 automator 运行时里不透明，语义增强不能 100% 覆盖
 - 当前更适合定位为 **beta**，不建议直接宣称为稳定版 `1.0`
 
-## Skill 集成
+## 已知问题（当前重点）
 
-如果你要作为 OpenCode / `.opencode` skill 使用，保留以下文件即可：
+### 1. WSL 项目路径下，截图可能偶发超时
 
-```text
-SKILL.md
-scripts/
+目前在 `//wsl.localhost/...` 这类 WSL 路径下，微信开发者工具偶尔会进入异常文档状态；表现为：
+
+- `snapshot/path/timeline` 仍然可用
+- 但 `screenshot --mode page` 可能卡住，最后报 `screenshot timeout`
+
+这更像是 DevTools / `miniprogram-automator` 底层截图通道没有返回，而不是本工具在上层做了错误转换。
+
+当前建议：
+
+- 优先避免在 WSL 路径上做高频截图
+- 一旦第一次出现 `screenshot timeout`，优先 `close` 当前 session，然后重新 `open` 后再截一次
+- 尽量不要在已经发生过超时的同一个 session 里连续重试很多次
+
+### 2. `wait 800` 只是固定 sleep，不等于页面真的稳定
+
+例如：
+
+```bash
+miniprogram-browser goto /pages/preferences/index --session demo
+miniprogram-browser wait 800 --session demo
+miniprogram-browser screenshot --session demo
 ```
 
-测试与参考资料可以保留在仓库中，但不一定需要分发到最终 skill 目录。
+这里的 `wait 800` 只是额外等 800ms，不会检查页面是否真的完成异步渲染。
+
+更稳妥的方式是：
+
+- 先 `path` / `app inspect` 确认状态
+- 或先 `snapshot -i` / `wait <selector>` 确认关键节点已经出现
+- 再执行截图
+
+## Skill 集成
+
+这个仓库现在采用更标准的双分发布局：
+
+- npm / npx 负责 CLI 运行时
+- `skills/miniprogram-browser/` 负责 agent skill 安装
+
+如果你要作为 OpenCode / `.opencode` skill 使用，安装这个目录即可：
+
+```text
+skills/miniprogram-browser/
+```
+
+这个 skill 目录现在是 instruction-only：
+
+```text
+skills/miniprogram-browser/
+  SKILL.md
+```
+
+真正执行命令时，可按环境选择：
+
+```bash
+miniprogram-browser ...
+# 或
+npx miniprogram-browser ...
+```
+
+`tests/` 和 `scripts/` 都保留在仓库根目录，只用于源码、npm 包和开发验证，不会随 skill 子目录一起安装。
 
 也可以直接通过 `skills` CLI 从 GitHub 安装：
 
 ```bash
-npx skills add https://github.com/DoraemonHugU/miniprogram-browser
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/miniprogram-browser
+```
+
+本地调试 skill 时，也可以直接装仓库内子目录：
+
+```bash
+npx skills add ./skills/miniprogram-browser
 ```
 
 ## 测试
@@ -130,10 +193,10 @@ npm test
 ## 仓库结构
 
 ```text
-scripts/    CLI 与运行时实现
-tests/      行为测试
-SKILL.md    面向 agent / skill loader 的说明
-README.md   面向人类开发者的开源说明
+scripts/                     CLI 与运行时实现
+skills/miniprogram-browser/  可安装的标准 skill 目录（仅 SKILL.md）
+tests/                       行为测试
+README.md                    面向人类开发者的开源说明
 ```
 
 ## License

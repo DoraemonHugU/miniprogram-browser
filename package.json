@@ -1,7 +1,7 @@
 {
   "name": "miniprogram-browser",
   "version": "0.1.0-beta.1",
-  "description": "面向微信小程序的 agent-browser 风格自动化 CLI 与 skill。",
+  "description": "面向微信小程序的 agent-browser 风格自动化 CLI；配套 skill 通过 skills/miniprogram-browser 分发。",
   "keywords": [
     "wechat",
     "miniprogram",
@@ -25,7 +25,6 @@
   "files": [
     "README.md",
     "LICENSE",
-    "SKILL.md",
     "scripts/"
   ],
   "scripts": {

@@ -2,7 +2,17 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 
 function requireJimp(config) {
-  return require('jimp')
+  const jimp = require('jimp')
+  if (jimp && typeof jimp.read === 'function') {
+    return jimp
+  }
+  if (jimp && jimp.Jimp && typeof jimp.Jimp.read === 'function') {
+    return {
+      ...jimp,
+      read: jimp.Jimp.read.bind(jimp.Jimp),
+    }
+  }
+  return jimp
 }
 
 function buildSemanticSignature(records = []) {

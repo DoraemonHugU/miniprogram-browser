@@ -677,10 +677,13 @@ test('captureScreenshotToPath fails fast on timeout', async () => {
     },
   }
 
-  await assert.rejects(
-    captureScreenshotToPath(miniProgram, '/tmp/shot.png', 20),
-    /timeout/i,
-  )
+  await assert.rejects(async () => {
+    await captureScreenshotToPath(miniProgram, '/tmp/shot.png', 20)
+  }, (error) => {
+    assert.match(error.message, /screenshot timeout/i)
+    assert.match(error.message, /close .* open/i)
+    return true
+  })
 })
 
 test('cleanupMiniProgram prefers disconnect over close', async () => {

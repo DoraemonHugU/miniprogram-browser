@@ -66,7 +66,17 @@ function resolveCapsulePaintSpec(box) {
 }
 
 function requireJimp(config) {
-  return require('jimp')
+  const jimp = require('jimp')
+  if (jimp && typeof jimp.read === 'function') {
+    return jimp
+  }
+  if (jimp && jimp.Jimp && typeof jimp.Jimp.read === 'function') {
+    return {
+      ...jimp,
+      read: jimp.Jimp.read.bind(jimp.Jimp),
+    }
+  }
+  return jimp
 }
 
 async function readOfficialMenuButtonRect(miniProgram, timeoutMs = 800) {
@@ -245,7 +255,9 @@ async function captureAnnotatedScreenshot({
   await capturePage(targetPath, timeoutMs)
 
   const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
-  const font = typeof Jimp.loadFont === 'function' ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE) : null
+  const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
+    ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
+    : null
   const fillColor = typeof Jimp.rgbaToInt === 'function'
     ? Jimp.rgbaToInt(15, 23, 42, 232)
     : 0
