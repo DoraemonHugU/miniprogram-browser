@@ -151,7 +151,7 @@ miniprogram-browser exceptions --session feat-a
 - 不传路径：保存到默认截图目录（当前仓库默认是 `artifacts/screenshots`）
 - 传路径(优先推荐策略)：保存到显式指定的位置(推荐放在.artifacts/{时间戳}-{session}里)，方便后续查看和关联日志/trace.
 
-如果截图偶发超时，通常更像当前 session / DevTools 实例状态异常；优先 `close` 当前 session 后重新 `open`，再重试一次。必要时再重启 DevTools 实例。
+如果截图偶发超时，通常更像当前 session / DevTools 实例状态不稳定。优先做法不是立刻重开，而是先放慢操作节奏：每次 `goto / click / fill / call / native` 后适度 `wait`，截图前再用 `path` 或 `snapshot -i` 确认页面已经稳定。如果仍然失败，再人工 `close` 当前 session 后重新 `open`，必要时再重启 DevTools 实例。
 
 ## Ref 使用边界
 
@@ -169,3 +169,4 @@ miniprogram-browser exceptions --session feat-a
 - 误以为 `eval` 等价于浏览器 DOM 脚本；这里执行的是小程序 AppService 运行时
 - 误以为 `native` 是普通 click；它走的是开发者工具暴露的原生控制通道
 - 误以为 session 名不同就一定隔离；真正的 live instance 隔离取决于 `devtoolsPort + autoPort`
+- 误以为很多操作可以无间隔链起来；当前截图链路更稳妥的方式是每步后适度 `wait`

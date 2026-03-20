@@ -775,7 +775,7 @@ function deriveRuntimeBusinessKey(attributes) {
 
 function deriveRuntimeSelector(tagName, attributes) {
   if (attributes.id) {
-    return `#${attributes.id}`
+    return `[id="${String(attributes.id).replace(/(["\\])/gu, '\\$1')}"]`
   }
 
   if (attributes['data-sid']) {

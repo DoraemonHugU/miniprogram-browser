@@ -101,7 +101,7 @@ npx miniprogram-browser help
 ## 已知边界
 
 - fresh `open` 后，DevTools 模拟器首帧有时还没稳定；建议先 `path` / `app inspect`，必要时再 `goto` 当前页一次
-- 如果 `screenshot` 偶发超时，通常更像当前 session / DevTools 实例状态异常；优先 `close` 当前 session 后重新 `open`，再重试一次
+- 如果 `screenshot` 偶发超时，通常更像当前 session / DevTools 实例状态不稳定；优先先放慢操作节奏，确认 `path` / `snapshot` 已稳定；如果仍失败，再人工 `close` 当前 session 后重新 `open` 重试
 - 某些自定义组件在 automator 运行时里不透明，语义增强不能 100% 覆盖
 - 当前更适合定位为 **beta**，不建议直接宣称为稳定版 `1.0`
 
@@ -119,10 +119,12 @@ npx miniprogram-browser help
 当前建议：
 
 - 优先避免在 WSL 路径上做高频截图
-- 一旦第一次出现 `screenshot timeout`，优先 `close` 当前 session，然后重新 `open` 后再截一次
-- 尽量不要在已经发生过超时的同一个 session 里连续重试很多次
+- 鼓励在每次 `goto / click / fill / call / native` 之后适度 `wait`，避免操作链过快
+- 截图前先 `path` / `snapshot -i` 确认页面已经稳定，再执行 `screenshot`
+- 尽量不要把很多跳转、点击、截图压成一条过快的链式命令
+- 如果已经出现过 `screenshot timeout`，不要在同一个节奏里连续硬试很多次；先停一下，再人工决定是否 `close/open`
 
-### 2. `wait 800` 只是固定 sleep，不等于页面真的稳定
+### 2. `wait 800` 只是固定 sleep，但仍然值得显式使用
 
 例如：
 
@@ -132,12 +134,13 @@ miniprogram-browser wait 800 --session demo
 miniprogram-browser screenshot --session demo
 ```
 
-这里的 `wait 800` 只是额外等 800ms，不会检查页面是否真的完成异步渲染。
+这里的 `wait 800` 只是额外等 800ms，不会检查页面是否真的完成异步渲染；但在当前 DevTools / automator 截图链路下，显式 `wait` 仍然有现实价值，因为它能减少“操作刚发生就立刻截图”的失败率。
 
 更稳妥的方式是：
 
+- 每次页面操作后都适度 `wait`，不要让命令链跑得太快
 - 先 `path` / `app inspect` 确认状态
-- 或先 `snapshot -i` / `wait <selector>` 确认关键节点已经出现
+- 或先 `snapshot -i` 确认关键节点已经出现、结构已经稳定
 - 再执行截图
 
 ## Skill 集成

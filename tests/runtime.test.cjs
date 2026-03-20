@@ -279,7 +279,7 @@ test('queryRecords business mode uses rebuilt runtime tree', async () => {
   const result = await queryRecords(page, createState(), 'business', 'data-sid:save-btn')
   assert.equal(result.records.length, 1)
   assert.equal(result.records[0].businessKey, 'data-sid:save-btn')
-  assert.equal(result.records[0].strategy.selector, '#save-btn')
+  assert.equal(result.records[0].strategy.selector, '[id="save-btn"]')
 })
 
 test('applySnapshotOptions compact flattens empty view containers', () => {
@@ -670,6 +670,31 @@ test('queryRecords selector mode still uses official selector lookup', async () 
   assert.equal(result.records.length, 1)
   assert.equal(result.records[0].strategy.selector, '.dashboard-add-button')
   assert.deepEqual(result.lines, ['@e1 [view] +'])
+})
+
+test('readRuntimeTree uses attribute selector for ids that are not valid CSS identifiers', async () => {
+  const page = {
+    path: 'pages/tools/index',
+    async $$(tagName) {
+      if (tagName === 'view') {
+        return [
+          {
+            tagName: 'view',
+            async outerWxml() {
+              return '<view id="79c6a90d--_Bg" bindtap="onTap">工具箱</view>'
+            },
+            async text() {
+              return '工具箱'
+            },
+          },
+        ]
+      }
+      return []
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+  assert.equal(tree.nodes[0].selector, '[id="79c6a90d--_Bg"]')
 })
 
 test('queryRecords selector mode keeps all official matches', async () => {
