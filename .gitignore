@@ -1,0 +1,6 @@
+.opencode/
+.memory/
+node_modules/
+artifacts/
+*.tgz
+.DS_Store

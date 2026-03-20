@@ -1,0 +1,45 @@
+{
+  "name": "miniprogram-browser",
+  "version": "0.1.0-beta.1",
+  "description": "面向微信小程序的 agent-browser 风格自动化 CLI 与 skill。",
+  "keywords": [
+    "wechat",
+    "miniprogram",
+    "automation",
+    "cli",
+    "agent",
+    "opencode"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DoraemonHugU/miniprogram-browser.git"
+  },
+  "homepage": "https://github.com/DoraemonHugU/miniprogram-browser#readme",
+  "bugs": {
+    "url": "https://github.com/DoraemonHugU/miniprogram-browser/issues"
+  },
+  "bin": {
+    "miniprogram-browser": "scripts/miniprogram-browser.cjs"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "SKILL.md",
+    "scripts/"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "jimp": "0.6.4",
+    "miniprogram-automator": "0.12.1"
+  }
+}
