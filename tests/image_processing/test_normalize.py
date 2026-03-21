@@ -55,7 +55,17 @@ class NormalizeCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             input_path = temp_path / "source.png"
-            Image.new("RGBA", (80, 40), (0, 128, 255, 255)).save(input_path)
+            source = Image.new("RGBA", (90, 30), (0, 0, 0, 0))
+            for x in range(90):
+                if x < 30:
+                    color = (255, 0, 0, 255)
+                elif x < 60:
+                    color = (0, 255, 0, 255)
+                else:
+                    color = (0, 0, 255, 255)
+                for y in range(30):
+                    source.putpixel((x, y), color)
+            source.save(input_path)
 
             result = subprocess.run(
                 [
@@ -79,7 +89,9 @@ class NormalizeCliTests(unittest.TestCase):
 
             with Image.open(output_path) as normalized:
                 self.assertEqual(normalized.size, (100, 100))
-                self.assertEqual(normalized.getpixel((0, 0)), (0, 128, 255, 255))
+                self.assertEqual(normalized.getpixel((5, 50)), (255, 0, 0, 255))
+                self.assertEqual(normalized.getpixel((50, 50)), (0, 255, 0, 255))
+                self.assertEqual(normalized.getpixel((95, 50)), (0, 0, 255, 255))
 
 
 if __name__ == "__main__":
