@@ -1,5 +1,7 @@
 .opencode/
 .memory/
+__pycache__/
+*.pyc
 node_modules/
 artifacts/
 *.tgz
