@@ -66,6 +66,7 @@ const {
 
 const {
   captureAnnotatedScreenshot,
+  overlayFocusScreenshot,
   captureVisualScreenshot,
 } = require('./lib/visual.cjs')
 
@@ -323,7 +324,7 @@ function buildCommandHelpText(command) {
       return `screenshot
 
 用法:
-  miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate>] [--wait <ms>] [--json]
+  miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate>] [--focus <refs>] [--wait <ms>] [--json]
 
 模式:
   page      官方页面截图
@@ -332,6 +333,7 @@ function buildCommandHelpText(command) {
 
 说明:
   - 默认模式是 page
+  - --focus 支持 @e1,@e2 这类多个 ref，高亮时会自动换色
   - 不传路径时保存到默认截图目录
 `
     case 'session':
@@ -571,7 +573,11 @@ function parseArgs(argv) {
 
     const value = argv[index + 1]
     const normalizedKey = key.replace(/-([a-z])/gu, (_, char) => char.toUpperCase())
-    options[normalizedKey] = value
+    if (normalizedKey === 'focus' && options.focus) {
+      options.focus = `${options.focus},${value}`
+    } else {
+      options[normalizedKey] = value
+    }
     if (normalizedKey === 'session') {
       options.sessionProvided = true
     }
@@ -625,6 +631,19 @@ function emitProgress(message, options) {
   process.stderr.write(`${message}\n`)
 }
 
+function parseFocusRefs(value) {
+  if (!value) {
+    return []
+  }
+
+  return [...new Set(
+    String(value)
+      .split(/[\s,]+/u)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )]
+}
+
 async function resolveSession(options) {
   const baseConfig = createDefaultConfig()
   const state = await loadSessionState(options.session, baseConfig)
@@ -634,7 +653,7 @@ async function resolveSession(options) {
   delete state.config.interactiveSelectors
 
   if (explicitOverrides.devtoolsPort || explicitOverrides.autoPort) {
-    const otherConfigs = await loadOtherSessionConfigs(state.config.sessionDir, state.name)
+    const otherConfigs = await loadOtherSessionConfigs(state.config, state.name)
     validateSessionPortConflicts(state.config, otherConfigs)
   }
 
@@ -683,7 +702,7 @@ async function handleOpen(state, options) {
 
 async function handleSessionList(options) {
   const baseConfig = createDefaultConfig()
-  const sessions = await listSessionStates(baseConfig.sessionDir)
+  const sessions = await listSessionStates(baseConfig)
 
   if (options.json) {
     emit({ sessions }, options)
@@ -1110,34 +1129,57 @@ async function handleCall(state, target, method, args, options) {
 async function handleScreenshot(state, outputPath, options) {
   const payload = await withMiniProgram(state, async (miniProgram) => {
     const mode = options.mode || 'page'
+    const focusRefs = parseFocusRefs(options.focus)
+    const timeoutMs = Number(options.wait || 30000)
     const name = outputPath
       ? path.isAbsolute(outputPath)
         ? outputPath
         : path.join(process.cwd(), outputPath)
       : path.join(state.config.tempScreenshotDir, `shot-${Date.now()}.png`)
 
+    async function resolveRefs() {
+      const page = await getCurrentPage(miniProgram)
+      const snapshot = await snapshotInteractive(page, state, null, { compact: true })
+      Object.assign(state, snapshot.state)
+      return collectRecordRects(page, snapshot.records, await miniProgram.systemInfo())
+    }
+
     if (mode === 'visual') {
       const result = await captureVisualScreenshot({
         miniProgram,
         targetPath: name,
         config: state.config,
-        timeoutMs: Number(options.wait || 30000),
+        timeoutMs,
         pageCapture: async (targetPath, timeoutMs) => {
           return captureScreenshotToPath(miniProgram, targetPath, timeoutMs)
         },
       })
 
+      let focusLegend
+      let source = result.source
+      if (focusRefs.length) {
+        const focus = await overlayFocusScreenshot({
+          targetPath: name,
+          config: state.config,
+          refs: await resolveRefs(),
+          focusRefs,
+        })
+        focusLegend = focus.focusLegend
+        source = `${source}+focus`
+      }
+
       return {
-        message: `截图已保存 ${result.path} mode=${result.mode} source=${result.source}`,
+        message: `截图已保存 ${result.path} mode=${result.mode} source=${source}`,
         path: result.path,
         mode: result.mode,
-        source: result.source,
+        source,
+        focusLegend,
       }
     }
 
     if (mode === 'annotate') {
       const page = await getCurrentPage(miniProgram)
-      await captureScreenshotToPath(miniProgram, name, Number(options.wait || 30000))
+      await captureScreenshotToPath(miniProgram, name, timeoutMs)
       const snapshot = await snapshotInteractive(page, state, null, { compact: true })
       Object.assign(state, snapshot.state)
       const refs = await collectRecordRects(page, snapshot.records, await miniProgram.systemInfo())
@@ -1146,7 +1188,8 @@ async function handleScreenshot(state, outputPath, options) {
         targetPath: name,
         config: state.config,
         refs,
-        timeoutMs: Number(options.wait || 30000),
+        focusRefs,
+        timeoutMs,
         pageCapture: async (targetPath) => targetPath,
       })
 
@@ -1156,16 +1199,31 @@ async function handleScreenshot(state, outputPath, options) {
         mode: result.mode,
         source: result.source,
         legend: result.legend,
+        focusLegend: result.focusLegend,
       }
     }
 
-    const screenshotPath = await captureScreenshotToPath(miniProgram, name, Number(options.wait || 30000))
+    const screenshotPath = await captureScreenshotToPath(miniProgram, name, timeoutMs)
+    let source = 'page'
+    let focusLegend
+
+    if (focusRefs.length) {
+      const focus = await overlayFocusScreenshot({
+        targetPath: screenshotPath,
+        config: state.config,
+        refs: await resolveRefs(),
+        focusRefs,
+      })
+      focusLegend = focus.focusLegend
+      source = 'page+focus'
+    }
 
     return {
-      message: `截图已保存 ${screenshotPath} mode=page source=page`,
+      message: `截图已保存 ${screenshotPath} mode=page source=${source}`,
       path: screenshotPath,
       mode: 'page',
-      source: 'page',
+      source,
+      focusLegend,
     }
   })
 
@@ -1325,6 +1383,7 @@ module.exports = {
   buildHelpText,
   buildCommandHelpText,
   getVersionText,
+  parseFocusRefs,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
   summarizeTimelinePayload,

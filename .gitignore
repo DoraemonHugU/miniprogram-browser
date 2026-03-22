@@ -1,5 +1,6 @@
 .opencode/
 .memory/
+.worktrees/
 node_modules/
 artifacts/
 *.tgz

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict')
 const {
   captureVisualScreenshot,
   captureAnnotatedScreenshot,
+  overlayFocusScreenshot,
   readOfficialMenuButtonRect,
   resolveCapsulePaintSpec,
   resolveNavigationMetrics,
@@ -181,4 +182,61 @@ test('captureAnnotatedScreenshot overlays legend and returns annotate mode', asy
   assert.deepEqual(result.legend, ['@e1 [button] 开始'])
   assert.deepEqual(pageCaptureCalls, [{ targetPath: '/tmp/annotate.png', timeoutMs: 1234 }])
   assert.equal(printed.length > 0, true)
+})
+
+test('overlayFocusScreenshot highlights multiple refs with color legend', async () => {
+  const printed = []
+  const bitmap = {
+    width: 200,
+    height: 100,
+    data: Buffer.alloc(200 * 100 * 4, 255),
+  }
+  const image = {
+    bitmap,
+    scan(x, y, width, height, iterator) {
+      for (let pixelY = y; pixelY < y + height; pixelY += 1) {
+        for (let pixelX = x; pixelX < x + width; pixelX += 1) {
+          const idx = (bitmap.width * pixelY + pixelX) << 2
+          iterator.call(this, pixelX, pixelY, idx)
+        }
+      }
+    },
+    print(...args) {
+      printed.push(args)
+    },
+    writeAsync: async () => {},
+  }
+  const result = await overlayFocusScreenshot({
+    targetPath: '/tmp/focus.png',
+    config: { repoRoot: '/repo' },
+    refs: [
+      { ref: '@e1', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 20, h: 12 } },
+      { ref: '@e2', kind: 'button', text: '我的', rectPct: { x: 40, y: 20, w: 20, h: 12 } },
+    ],
+    focusRefs: ['@e1', '@e2'],
+    createImageAdapter: async () => image,
+    colorAdapter: {
+      rgbaToInt: (r, g, b, a) => (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | (a & 255)) >>> 0,
+      loadFont: async () => ({}),
+      FONT_SANS_16_WHITE: 'font',
+    },
+  })
+
+  const insideIdx = (bitmap.width * 25 + 30) << 2
+  const insidePixel = Array.from(bitmap.data.slice(insideIdx, insideIdx + 4))
+  const borderIdx = (bitmap.width * 20 + 20) << 2
+  const borderPixel = Array.from(bitmap.data.slice(borderIdx, borderIdx + 4))
+  const stripeIdx = (bitmap.width * 26 + 27) << 2
+  const stripePixel = Array.from(bitmap.data.slice(stripeIdx, stripeIdx + 4))
+  const gapIdx = (bitmap.width * 26 + 28) << 2
+  const gapPixel = Array.from(bitmap.data.slice(gapIdx, gapIdx + 4))
+
+  assert.deepEqual(result.focusLegend, [
+    '@e1 [button] 工具箱 color=blue',
+    '@e2 [button] 我的 color=green',
+  ])
+  assert.equal(printed.length >= 2, true)
+  assert.notDeepEqual(insidePixel, [255, 255, 255, 255])
+  assert.deepEqual(borderPixel, [15, 23, 42, 255])
+  assert.notDeepEqual(stripePixel, gapPixel)
 })

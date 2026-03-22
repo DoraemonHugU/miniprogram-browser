@@ -73,6 +73,7 @@ miniprogram-browser snapshot -i --session demo
 miniprogram-browser click @e1 --session demo
 miniprogram-browser timeline --session demo
 miniprogram-browser screenshot --session demo --mode annotate
+miniprogram-browser screenshot --session demo --mode annotate --focus @e16,@e17
 
 # 未安装时
 npx miniprogram-browser help
@@ -86,6 +87,7 @@ npx miniprogram-browser help
 - `app inspect / timeline / logs / exceptions`
 - `eval / native / call wx / call page`
 - `screenshot --mode page|visual|annotate`
+- `screenshot --focus @e1,@e2`
 
 它不是浏览器 DOM 自动化，而是基于 `miniprogram-automator` 的运行时元素能力重建语义树。
 

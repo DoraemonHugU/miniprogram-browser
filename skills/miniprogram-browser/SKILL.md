@@ -51,6 +51,7 @@ miniprogram-browser snapshot -i --session feat-a
 miniprogram-browser click @e1 --session feat-a
 miniprogram-browser timeline --session feat-a
 miniprogram-browser screenshot --session feat-a --mode annotate
+miniprogram-browser screenshot --session feat-a --mode annotate --focus @e16,@e17
 miniprogram-browser close --session feat-a
 
 miniprogram-browser help
@@ -143,6 +144,7 @@ miniprogram-browser exceptions --session feat-a
 - `--mode page`：官方页面截图
 - `--mode visual`：页面截图 + 胶囊视觉合成
 - `--mode annotate`：页面截图 + `@eNN` 标注叠加
+- `--focus @e1,@e2`：对指定 ref 叠加高亮框，支持多元素自动换色；当前样式是高对比配色 + 双层边框 + 轻纹理填充
 
 默认模式是 `page`。
 
@@ -153,11 +155,18 @@ miniprogram-browser exceptions --session feat-a
 
 如果截图偶发超时，通常更像当前 session / DevTools 实例状态不稳定。优先做法不是立刻重开，而是先放慢操作节奏：每次 `goto / click / fill / call / native` 后适度 `wait`，截图前再用 `path` 或 `snapshot -i` 确认页面已经稳定。如果仍然失败，再人工 `close` 当前 session 后重新 `open`，必要时再重启 DevTools 实例。
 
+`--focus` 的推荐用法：
+
+1. 先 `snapshot -i` 拿当前页面的 ref
+2. 再 `screenshot --focus @e1,@e2`
+3. 如果需要更简洁视图，可以先看 `snapshot -i -c`；但 compact 现在只是同一套 ref 的子集，不会再重新编号
+
 ## Ref 使用边界
 
 - ref 代表“可重解算的节点身份”，不是旧元素句柄
 - 页面明显变化后，重新执行 `snapshot -i`
 - 如果当前路由和 ref 绑定路由不一致，应重新 query 或 snapshot
+- `snapshot -i -c` 只是更紧凑的显示方式；compact 视图中的 ref 现在会复用普通快照里的同一 identity
 
 ## 常见误区
 
@@ -168,5 +177,5 @@ miniprogram-browser exceptions --session feat-a
 - 误以为 `timeline` 是截图历史；它记录的是路由事件，不是视觉历史
 - 误以为 `eval` 等价于浏览器 DOM 脚本；这里执行的是小程序 AppService 运行时
 - 误以为 `native` 是普通 click；它走的是开发者工具暴露的原生控制通道
-- 误以为 session 名不同就一定隔离；真正的 live instance 隔离取决于 `devtoolsPort + autoPort`
+- 误以为 session 名不同就一定隔离；当前更可靠的隔离边界是 `projectPath + autoPort`，不要依赖抢占不同 `devtoolsPort` 来做多分支并行
 - 误以为很多操作可以无间隔链起来；当前截图链路更稳妥的方式是每步后适度 `wait`

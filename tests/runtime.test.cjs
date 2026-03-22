@@ -30,6 +30,7 @@ const {
   formatAutomationCliError,
   callWxMethod,
   callPageMethod,
+  buildAutomationArgs,
   connectOrEnable,
 } = require('../scripts/lib/runtime.cjs')
 
@@ -344,6 +345,85 @@ test('snapshotInteractive applies depth limit before ref allocation', async () =
   assert.equal(result.records[0].kind, 'button')
 })
 
+test('snapshotInteractive compact view reuses canonical refs from full snapshot', async () => {
+  const page = {
+    path: 'pages/dashboard/index',
+    async $$(selector) {
+      if (selector === 'view') {
+        return [
+          {
+            tagName: 'view',
+            async text() {
+              return '首页 工具箱 我的'
+            },
+            async outerWxml() {
+              return '<view data-sid="root"><view data-sid="tabbar"><button data-sid="home">首页</button><button data-sid="tools">工具箱</button><button data-sid="profile">我的</button></view></view>'
+            },
+          },
+          {
+            tagName: 'view',
+            async text() {
+              return '首页 工具箱 我的'
+            },
+            async outerWxml() {
+              return '<view data-sid="tabbar"><button data-sid="home">首页</button><button data-sid="tools">工具箱</button><button data-sid="profile">我的</button></view>'
+            },
+          },
+        ]
+      }
+
+      if (selector === 'button') {
+        return [
+          {
+            tagName: 'button',
+            async text() {
+              return '首页'
+            },
+            async outerWxml() {
+              return '<button data-sid="home">首页</button>'
+            },
+          },
+          {
+            tagName: 'button',
+            async text() {
+              return '工具箱'
+            },
+            async outerWxml() {
+              return '<button data-sid="tools">工具箱</button>'
+            },
+          },
+          {
+            tagName: 'button',
+            async text() {
+              return '我的'
+            },
+            async outerWxml() {
+              return '<button data-sid="profile">我的</button>'
+            },
+          },
+        ]
+      }
+
+      return []
+    },
+  }
+
+  const full = await snapshotInteractive(page, createState())
+  const compact = await snapshotInteractive(page, full.state, null, { compact: true })
+
+  assert.deepEqual(full.records.map((record) => [record.text, record.ref]), [
+    ['', '@e1'],
+    ['首页', '@e2'],
+    ['工具箱', '@e3'],
+    ['我的', '@e4'],
+  ])
+  assert.deepEqual(compact.records.map((record) => [record.text, record.ref]), [
+    ['首页', '@e2'],
+    ['工具箱', '@e3'],
+    ['我的', '@e4'],
+  ])
+})
+
 test('getStoredRuntimeEvents returns latest console entries with limit', () => {
   const state = createState()
   state.consoleEvents = [
@@ -644,6 +724,19 @@ test('connectOrEnable reports fallback phases after initial connect failure', as
     'connect:2',
   ])
   assert.deepEqual(result, { ok: true })
+})
+
+test('buildAutomationArgs uses project path and auto-port without forcing HTTP port', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '39085',
+  })
+
+  assert.deepEqual(result.args.slice(0, 2), ['auto', '--project'])
+  assert.equal(result.args.includes('--port'), false)
+  assert.deepEqual(result.args.slice(-2), ['--auto-port', '9421'])
 })
 
 test('queryRecords selector mode still uses official selector lookup', async () => {

@@ -79,6 +79,196 @@ function requireJimp(config) {
   return jimp
 }
 
+const FOCUS_PALETTE = [
+  { name: 'blue', rgb: [0, 102, 255] },
+  { name: 'green', rgb: [0, 214, 143] },
+  { name: 'amber', rgb: [255, 176, 0] },
+  { name: 'pink', rgb: [255, 0, 153] },
+  { name: 'purple', rgb: [153, 0, 255] },
+  { name: 'red', rgb: [255, 69, 58] },
+  { name: 'cyan', rgb: [0, 214, 255] },
+  { name: 'lime', rgb: [164, 214, 0] },
+]
+
+function rgba(Jimp, r, g, b, a) {
+  return typeof Jimp.rgbaToInt === 'function'
+    ? Jimp.rgbaToInt(r, g, b, a)
+    : 0
+}
+
+function unpackRgba(color) {
+  return {
+    r: (color >>> 24) & 255,
+    g: (color >>> 16) & 255,
+    b: (color >>> 8) & 255,
+    a: color & 255,
+  }
+}
+
+function clampBox(box, bitmap) {
+  const x = Math.max(0, Math.min(bitmap.width - 1, Math.round(box.x)))
+  const y = Math.max(0, Math.min(bitmap.height - 1, Math.round(box.y)))
+  const width = Math.max(1, Math.min(bitmap.width - x, Math.round(box.width)))
+  const height = Math.max(1, Math.min(bitmap.height - y, Math.round(box.height)))
+
+  return { x, y, width, height }
+}
+
+function insetBox(box, inset) {
+  const safeInset = Math.max(0, Math.round(inset))
+  const width = Math.max(1, box.width - safeInset * 2)
+  const height = Math.max(1, box.height - safeInset * 2)
+
+  return {
+    x: box.x + safeInset,
+    y: box.y + safeInset,
+    width,
+    height,
+  }
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function drawRectFill(image, box, color) {
+  image.scan(box.x, box.y, box.width, box.height, function scan(_pixelX, _pixelY, idx) {
+    this.bitmap.data.writeUInt32BE(color, idx)
+  })
+}
+
+function blendRectFill(image, box, color) {
+  const { r, g, b, a } = unpackRgba(color)
+  const alpha = a / 255
+
+  image.scan(box.x, box.y, box.width, box.height, function scan(_pixelX, _pixelY, idx) {
+    const currentR = this.bitmap.data[idx]
+    const currentG = this.bitmap.data[idx + 1]
+    const currentB = this.bitmap.data[idx + 2]
+    this.bitmap.data[idx] = Math.round(currentR * (1 - alpha) + r * alpha)
+    this.bitmap.data[idx + 1] = Math.round(currentG * (1 - alpha) + g * alpha)
+    this.bitmap.data[idx + 2] = Math.round(currentB * (1 - alpha) + b * alpha)
+    this.bitmap.data[idx + 3] = 255
+  })
+}
+
+function blendPixel(buffer, idx, r, g, b, alpha) {
+  buffer[idx] = Math.round(buffer[idx] * (1 - alpha) + r * alpha)
+  buffer[idx + 1] = Math.round(buffer[idx + 1] * (1 - alpha) + g * alpha)
+  buffer[idx + 2] = Math.round(buffer[idx + 2] * (1 - alpha) + b * alpha)
+  buffer[idx + 3] = 255
+}
+
+function blendHatchFill(image, box, color, options = {}) {
+  const { r, g, b } = unpackRgba(color)
+  const minDimension = Math.max(1, Math.min(box.width, box.height))
+  const spacing = clampNumber(options.spacing || Math.round(minDimension * 0.5), 6, 12)
+  const stripeWidth = clampNumber(options.stripeWidth || Math.round(spacing / 3), 1, 3)
+  const baseAlpha = options.baseAlpha || 0.04
+  const stripeAlpha = options.stripeAlpha || 0.18
+
+  image.scan(box.x, box.y, box.width, box.height, function scan(pixelX, pixelY, idx) {
+    const localX = pixelX - box.x
+    const localY = pixelY - box.y
+    const stripe = ((localX + localY) % spacing) < stripeWidth
+    blendPixel(this.bitmap.data, idx, r, g, b, stripe ? stripeAlpha : baseAlpha)
+  })
+}
+
+function drawRectOutline(image, box, color, thickness = 3) {
+  const safeThickness = Math.max(1, Math.round(thickness))
+  drawRectFill(image, { x: box.x, y: box.y, width: box.width, height: Math.min(box.height, safeThickness) }, color)
+  drawRectFill(image, { x: box.x, y: Math.max(box.y, box.y + box.height - safeThickness), width: box.width, height: Math.min(box.height, safeThickness) }, color)
+  drawRectFill(image, { x: box.x, y: box.y, width: Math.min(box.width, safeThickness), height: box.height }, color)
+  drawRectFill(image, { x: Math.max(box.x, box.x + box.width - safeThickness), y: box.y, width: Math.min(box.width, safeThickness), height: box.height }, color)
+}
+
+function resolveFocusTargets(refs, focusRefs) {
+  const requested = Array.isArray(focusRefs) ? focusRefs : []
+  if (!requested.length) {
+    return []
+  }
+
+  const byRef = new Map((refs || []).map((item) => [item.ref, item]))
+  const missing = requested.filter((ref) => !byRef.has(ref))
+  if (missing.length) {
+    throw new Error(`Unknown focus refs: ${missing.join(', ')}`)
+  }
+
+  return requested.map((ref, index) => ({
+    ...byRef.get(ref),
+    color: FOCUS_PALETTE[index % FOCUS_PALETTE.length],
+  }))
+}
+
+function renderFocusOverlay(image, Jimp, refs, font) {
+  const legend = []
+
+  for (const item of refs || []) {
+    if (!item.rectPct) {
+      continue
+    }
+
+    const box = clampBox({
+      x: image.bitmap.width * (item.rectPct.x / 100),
+      y: image.bitmap.height * (item.rectPct.y / 100),
+      width: image.bitmap.width * (item.rectPct.w / 100),
+      height: image.bitmap.height * (item.rectPct.h / 100),
+    }, image.bitmap)
+    const minDimension = Math.max(1, Math.min(box.width, box.height))
+    const borderThickness = clampNumber(Math.round(minDimension * 0.08), 2, 8)
+    const outerThickness = clampNumber(borderThickness + 2, 3, 10)
+    const innerBox = insetBox(box, 1)
+    const borderColor = rgba(Jimp, ...item.color.rgb, 255)
+    const outerBorderColor = rgba(Jimp, 15, 23, 42, 255)
+    const fillColor = rgba(Jimp, ...item.color.rgb, 255)
+    const labelFill = rgba(Jimp, ...item.color.rgb, 228)
+    const labelBorder = rgba(Jimp, 15, 23, 42, 216)
+    const labelWidth = Math.max(52, item.ref.length * 10 + 18)
+    const labelBox = clampBox({
+      x: box.x,
+      y: Math.max(0, box.y - 28),
+      width: Math.min(labelWidth, image.bitmap.width - box.x),
+      height: 24,
+    }, image.bitmap)
+
+    blendHatchFill(image, box, fillColor)
+    drawRectOutline(image, box, outerBorderColor, outerThickness)
+    drawRectOutline(image, innerBox, borderColor, borderThickness)
+    drawRoundedRect(image, labelBox, labelFill, labelBorder)
+    if (font && typeof image.print === 'function') {
+      image.print(font, labelBox.x + 6, labelBox.y + 5, item.ref)
+    }
+    legend.push(`${item.ref} [${item.kind}] ${item.text || ''} color=${item.color.name}`.trim())
+  }
+
+  return legend
+}
+
+async function overlayFocusScreenshot({
+  targetPath,
+  config,
+  refs,
+  focusRefs,
+  createImageAdapter,
+  colorAdapter,
+}) {
+  const targets = resolveFocusTargets(refs, focusRefs)
+  const Jimp = colorAdapter || requireJimp(config)
+  const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
+  const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
+    ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
+    : null
+  const focusLegend = renderFocusOverlay(image, Jimp, targets, font)
+
+  await image.writeAsync(targetPath)
+
+  return {
+    path: targetPath,
+    focusLegend,
+  }
+}
+
 async function readOfficialMenuButtonRect(miniProgram, timeoutMs = 800) {
   const tasks = []
 
@@ -241,6 +431,7 @@ async function captureAnnotatedScreenshot({
   targetPath,
   config,
   refs,
+  focusRefs,
   timeoutMs = 15000,
   pageCapture,
   createImageAdapter,
@@ -265,6 +456,7 @@ async function captureAnnotatedScreenshot({
     ? Jimp.rgbaToInt(148, 163, 184, 180)
     : 0
   const legend = []
+  const focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(refs, focusRefs), font)
 
   for (const item of refs || []) {
     if (!item.rectPct) {
@@ -294,13 +486,15 @@ async function captureAnnotatedScreenshot({
   return {
     path: targetPath,
     mode: 'annotate',
-    source: 'page+refs',
+    source: focusLegend.length ? 'page+refs+focus' : 'page+refs',
     legend,
+    focusLegend,
   }
 }
 
 module.exports = {
   captureAnnotatedScreenshot,
+  overlayFocusScreenshot,
   resolveNavigationMetrics,
   resolveCapsuleBox,
   resolveCapsulePaintSpec,

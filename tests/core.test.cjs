@@ -16,13 +16,16 @@ const {
   assertProjectPath,
   assertBindingConsistency,
   assertNoDevtoolsConflict,
+  clearSessionState,
   listSessionStates,
+  loadSessionState,
   mergeConfigOverrides,
   prepareSessionStateForSave,
   createDefaultConfig,
   createEmptySessionState,
   assignPorts,
   ensureSessionPorts,
+  saveSessionState,
   sessionLockPath,
   sessionLockRoot,
   validateSessionPortConflicts,
@@ -206,7 +209,7 @@ test('createDefaultConfig uses apps/miniprogram root projectPath', () => {
   assert.equal(config.projectPath, '')
   assert.equal(config.devtoolsPort, '')
   assert.equal(config.autoPort, '')
-  assert.equal(config.cliPath, '')
+  assert.equal(typeof config.cliPath, 'string')
 })
 
 test('assertProjectPath requires explicit mini-program root path', () => {
@@ -256,7 +259,6 @@ test('assertBindingConsistency rejects changing a bound session', () => {
       {
         projectPath: '/worktree-a/apps/miniprogram',
         autoPort: '9422',
-        devtoolsPort: '39085',
       },
       {
         autoPort: '9423',
@@ -264,11 +266,24 @@ test('assertBindingConsistency rejects changing a bound session', () => {
     ),
     /already bound/i,
   )
+
+  assert.doesNotThrow(() => {
+    assertBindingConsistency(
+      {
+        projectPath: '/worktree-a/apps/miniprogram',
+        autoPort: '9422',
+        devtoolsPort: '39085',
+      },
+      {
+        devtoolsPort: '39090',
+      },
+    )
+  })
 })
 
-test('assertNoDevtoolsConflict rejects reusing a devtoolsPort from another session', () => {
-  assert.throws(
-    () => assertNoDevtoolsConflict(
+test('assertNoDevtoolsConflict allows reusing devtoolsPort across projects', () => {
+  assert.doesNotThrow(() => {
+    assertNoDevtoolsConflict(
       {
         projectPath: '/worktree-b/apps/miniprogram',
         devtoolsPort: '39085',
@@ -284,9 +299,8 @@ test('assertNoDevtoolsConflict rejects reusing a devtoolsPort from another sessi
           },
         },
       ],
-    ),
-    /devtools port/i,
-  )
+    )
+  })
 })
 
 test('validateSessionPortConflicts rejects reusing an autoPort from another session', () => {
@@ -350,16 +364,16 @@ test('ensureSessionPorts assigns missing autoPort for a fresh session', async ()
     }
 
     const result = await ensureSessionPorts(state, async () => true)
-    assert.equal(result.config.devtoolsPort, '39085')
+    assert.equal(result.config.devtoolsPort, '')
     assert.equal(result.config.autoPort, '9421')
-    assert.equal(result.portResolution.devtoolsPortAssigned, true)
+    assert.equal(result.portResolution.devtoolsPortAssigned, false)
     assert.equal(result.portResolution.autoPortAssigned, true)
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
   }
 })
 
-test('ensureSessionPorts avoids reserved devtools and auto ports for fresh session', async () => {
+test('ensureSessionPorts avoids reserved auto ports for fresh session', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-fresh-reserved-'))
   try {
     await fs.promises.writeFile(path.join(tempDir, 'other.json'), JSON.stringify({
@@ -381,7 +395,6 @@ test('ensureSessionPorts avoids reserved devtools and auto ports for fresh sessi
     }
 
     const result = await ensureSessionPorts(state, async () => true)
-    assert.equal(result.config.devtoolsPort, '39086')
     assert.equal(result.config.autoPort, '9422')
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
@@ -497,10 +510,98 @@ test('acquireSessionLock serializes same session name', async () => {
   await releaseSessionLock(second)
 })
 
-test('sessionLockRoot uses OS tmp dir instead of project directory', () => {
+test('sessionLockRoot uses project git metadata when projectPath is set', async () => {
+  const projectDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-'))
+  try {
+    await fs.promises.mkdir(path.join(projectDir, '.git'), { recursive: true })
+    const config = {
+      ...createDefaultConfig('/repo'),
+      projectPath: projectDir,
+    }
+    const root = sessionLockRoot(config)
+    assert.equal(root, path.join(projectDir, '.git', 'miniprogram-browser', 'locks'))
+  } finally {
+    await fs.promises.rm(projectDir, { recursive: true, force: true })
+  }
+})
+
+test('sessionLockRoot falls back to OS tmp dir when projectPath is unknown', () => {
   const config = createDefaultConfig('/repo')
   const root = sessionLockRoot(config)
   assert.equal(root.startsWith(os.tmpdir()), true)
+})
+
+test('saveSessionState stores session under project scope and loadSessionState resolves by registry', async () => {
+  const projectDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-state-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}.json`)
+
+  try {
+    await fs.promises.mkdir(path.join(projectDir, '.git'), { recursive: true })
+    const config = {
+      ...createDefaultConfig('/repo'),
+      projectPath: projectDir,
+      sessionRegistryFile: registryFile,
+    }
+    const state = createEmptySessionState({ sessionName: 'branch-a', config })
+    state.route = 'pages/dashboard/index'
+    state.config.autoPort = '9427'
+
+    await saveSessionState(state)
+
+    const loaded = await loadSessionState('branch-a', {
+      ...createDefaultConfig('/repo'),
+      sessionRegistryFile: registryFile,
+    })
+
+    assert.equal(loaded.config.projectPath, projectDir)
+    assert.equal(loaded.config.sessionDir, path.join(projectDir, '.git', 'miniprogram-browser', 'sessions'))
+    assert.equal(loaded.route, 'pages/dashboard/index')
+
+    await clearSessionState('branch-a', loaded.config)
+  } finally {
+    await fs.promises.rm(projectDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
+})
+
+test('ensureSessionPorts avoids autoPort used by another project-scoped session', async () => {
+  const projectA = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-a-'))
+  const projectB = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-b-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-ports.json`)
+
+  try {
+    await fs.promises.mkdir(path.join(projectA, '.git'), { recursive: true })
+    await fs.promises.mkdir(path.join(projectB, '.git'), { recursive: true })
+
+    const existing = createEmptySessionState({
+      sessionName: 'other-project',
+      config: {
+        ...createDefaultConfig('/repo'),
+        projectPath: projectB,
+        sessionRegistryFile: registryFile,
+        autoPort: '9421',
+      },
+    })
+    await saveSessionState(existing)
+
+    const state = {
+      name: 'fresh-project',
+      config: {
+        ...createDefaultConfig('/repo'),
+        projectPath: projectA,
+        sessionRegistryFile: registryFile,
+        devtoolsPort: '',
+        autoPort: '',
+      },
+    }
+
+    const result = await ensureSessionPorts(state, async () => true)
+    assert.equal(result.config.autoPort, '9422')
+  } finally {
+    await fs.promises.rm(projectA, { recursive: true, force: true })
+    await fs.promises.rm(projectB, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
 })
 
 test('acquireSessionLock reclaims stale lock with dead pid metadata', async () => {

@@ -1,4 +1,4 @@
-const { existsSync } = require('node:fs')
+const { existsSync, readFileSync, statSync } = require('node:fs')
 const { mkdir, readdir, readFile, rm, stat, writeFile } = require('node:fs/promises')
 const { createHash } = require('node:crypto')
 const net = require('node:net')
@@ -17,6 +17,7 @@ function detectRepoRoot() {
 
 function createDefaultConfig(repoRoot = detectRepoRoot()) {
   const merged = { ...process.env }
+  const legacySessionDir = path.join(repoRoot, '.memory/miniprogram-browser/sessions')
 
   let defaultCliPath = ''
   if (process.platform === 'darwin') {
@@ -31,9 +32,174 @@ function createDefaultConfig(repoRoot = detectRepoRoot()) {
     devtoolsPort: merged.WECHAT_DEVTOOLS_PORT ? String(merged.WECHAT_DEVTOOLS_PORT) : '',
     autoPort: merged.WECHAT_AUTO_PORT ? String(merged.WECHAT_AUTO_PORT) : '',
     projectPath: '',
-    sessionDir: path.join(repoRoot, '.memory/miniprogram-browser/sessions'),
+    legacySessionDir,
+    sessionDir: legacySessionDir,
+    sessionRegistryFile: path.join(os.homedir(), '.miniprogram-browser', 'session-registry.json'),
     screenshotDir: path.join(repoRoot, 'artifacts/screenshots'),
     tempScreenshotDir: path.join(os.tmpdir(), 'miniprogram-browser'),
+  }
+}
+
+function normalizeProjectPath(projectPath) {
+  if (!projectPath) {
+    return ''
+  }
+
+  return path.resolve(String(projectPath).trim())
+}
+
+function resolveGitDir(projectPath) {
+  const normalizedProjectPath = normalizeProjectPath(projectPath)
+  if (!normalizedProjectPath) {
+    return ''
+  }
+
+  const dotGitPath = path.join(normalizedProjectPath, '.git')
+  if (!existsSync(dotGitPath)) {
+    return ''
+  }
+
+  try {
+    const info = statSync(dotGitPath)
+    if (info.isDirectory()) {
+      return dotGitPath
+    }
+    if (info.isFile()) {
+      const raw = readFileSync(dotGitPath, 'utf8')
+      const match = raw.match(/^gitdir:\s*(.+)\s*$/imu)
+      if (!match) {
+        return ''
+      }
+      return path.resolve(normalizedProjectPath, match[1])
+    }
+  } catch (_) {
+  }
+
+  return ''
+}
+
+function projectStateRoot(config) {
+  const projectPath = normalizeProjectPath(config && config.projectPath)
+  if (!projectPath) {
+    const legacySessionDir = String((config && (config.legacySessionDir || config.sessionDir)) || '').trim()
+    if (legacySessionDir) {
+      return path.dirname(legacySessionDir)
+    }
+    const repoKey = createHash('sha1')
+      .update(String((config && config.repoRoot) || 'default'))
+      .digest('hex')
+      .slice(0, 12)
+    return path.join(os.tmpdir(), 'miniprogram-browser-state', repoKey)
+  }
+
+  const gitDir = resolveGitDir(projectPath)
+  if (gitDir) {
+    return path.join(gitDir, 'miniprogram-browser')
+  }
+
+  return path.join(projectPath, '.miniprogram-browser')
+}
+
+function resolveSessionDir(config) {
+  const projectPath = normalizeProjectPath(config && config.projectPath)
+  if (!projectPath) {
+    return String((config && (config.legacySessionDir || config.sessionDir)) || '').trim()
+  }
+
+  return path.join(projectStateRoot(config), 'sessions')
+}
+
+function sessionRegistryFilePath(config) {
+  return String((config && config.sessionRegistryFile) || path.join(os.homedir(), '.miniprogram-browser', 'session-registry.json'))
+}
+
+function sessionIdentityKey(sessionName, projectPath) {
+  return `${sessionName}::${normalizeProjectPath(projectPath)}`
+}
+
+async function readSessionRegistry(config) {
+  const filePath = sessionRegistryFilePath(config)
+
+  try {
+    const raw = await readFile(filePath, 'utf8')
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && parsed.sessions ? parsed : { sessions: {} }
+  } catch (_) {
+    return { sessions: {} }
+  }
+}
+
+async function writeSessionRegistry(config, registry) {
+  const filePath = sessionRegistryFilePath(config)
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, JSON.stringify(registry, null, 2))
+}
+
+async function registerSessionProject(sessionName, config) {
+  const projectPath = normalizeProjectPath(config && config.projectPath)
+  if (!projectPath) {
+    return
+  }
+
+  const registry = await readSessionRegistry(config)
+  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] : []
+  registry.sessions[sessionName] = [
+    ...entries.filter((item) => normalizeProjectPath(item && item.projectPath) !== projectPath),
+    { projectPath, updatedAt: new Date().toISOString() },
+  ]
+  await writeSessionRegistry(config, registry)
+}
+
+async function unregisterSessionProject(sessionName, config) {
+  const projectPath = normalizeProjectPath(config && config.projectPath)
+  if (!projectPath) {
+    return
+  }
+
+  const registry = await readSessionRegistry(config)
+  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] : []
+  const nextEntries = entries.filter((item) => normalizeProjectPath(item && item.projectPath) !== projectPath)
+  if (nextEntries.length) {
+    registry.sessions[sessionName] = nextEntries
+  } else {
+    delete registry.sessions[sessionName]
+  }
+  await writeSessionRegistry(config, registry)
+}
+
+async function resolveSessionConfig(sessionName, config) {
+  const explicitProjectPath = normalizeProjectPath(config && config.projectPath)
+  if (explicitProjectPath) {
+    return {
+      ...config,
+      projectPath: explicitProjectPath,
+      sessionDir: resolveSessionDir({ ...config, projectPath: explicitProjectPath }),
+    }
+  }
+
+  const registry = await readSessionRegistry(config)
+  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] : []
+  const candidates = entries
+    .map((item) => normalizeProjectPath(item && item.projectPath))
+    .filter(Boolean)
+    .map((projectPath) => ({
+      ...config,
+      projectPath,
+      sessionDir: resolveSessionDir({ ...config, projectPath }),
+    }))
+    .filter((candidate) => existsSync(path.join(candidate.sessionDir, `${sessionName}.json`)))
+
+  if (candidates.length === 1) {
+    return candidates[0]
+  }
+
+  if (candidates.length > 1) {
+    throw new Error(`Session name "${sessionName}" exists in multiple projects; pass --project to disambiguate.`)
+  }
+
+  return {
+    ...config,
+    sessionDir: String((config && (config.legacySessionDir || config.sessionDir)) || '').trim(),
   }
 }
 
@@ -57,7 +223,7 @@ function mergeConfigOverrides(baseConfig, overrides = {}) {
 }
 
 function assertBindingConsistency(existingConfig, overrides = {}) {
-  const keys = ['projectPath', 'devtoolsPort', 'autoPort']
+  const keys = ['projectPath', 'autoPort']
 
   for (const key of keys) {
     const existingValue = String((existingConfig && existingConfig[key]) || '').trim()
@@ -74,20 +240,7 @@ function assertBindingConsistency(existingConfig, overrides = {}) {
 }
 
 function assertNoDevtoolsConflict(config, otherSessions = []) {
-  const currentDevtoolsPort = String((config && config.devtoolsPort) || '').trim()
-  if (!currentDevtoolsPort) {
-    return
-  }
-
-  for (const item of otherSessions) {
-    const otherConfig = item && item.config ? item.config : item
-    const otherDevtoolsPort = String((otherConfig && otherConfig.devtoolsPort) || '').trim()
-    if (!otherDevtoolsPort || otherDevtoolsPort !== currentDevtoolsPort) {
-      continue
-    }
-
-    throw new Error(`DevTools port ${currentDevtoolsPort} is already bound to another session; choose a different --devtools-port or reuse that session.`)
-  }
+  return
 }
 
 function validateSessionPortConflicts(config, otherSessions = []) {
@@ -141,30 +294,83 @@ async function isPortAvailable(port) {
 }
 
 async function loadOtherSessionConfigs(sessionDir, sessionName) {
-  if (!existsSync(sessionDir)) {
-    return []
+  const currentConfig = sessionDir
+  const registry = await readSessionRegistry(currentConfig)
+  const configs = []
+  const seen = new Set()
+
+  for (const [name, entries] of Object.entries(registry.sessions || {})) {
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const projectPath = normalizeProjectPath(entry && entry.projectPath)
+      if (!projectPath) {
+        continue
+      }
+
+      const candidateConfig = {
+        ...currentConfig,
+        projectPath,
+        sessionDir: resolveSessionDir({ ...currentConfig, projectPath }),
+      }
+      const filePath = path.join(candidateConfig.sessionDir, `${name}.json`)
+      if (!existsSync(filePath)) {
+        continue
+      }
+
+      if (name === sessionName && projectPath === normalizeProjectPath(currentConfig.projectPath)) {
+        continue
+      }
+
+      const identity = sessionIdentityKey(name, projectPath)
+      if (seen.has(identity)) {
+        continue
+      }
+      seen.add(identity)
+
+      try {
+        const raw = await readFile(filePath, 'utf8')
+        const parsed = JSON.parse(raw)
+        if (parsed && parsed.config) {
+          configs.push({
+            name,
+            route: parsed.route || '',
+            epoch: Number(parsed.epoch || 0),
+            config: { ...candidateConfig, ...(parsed.config || {}) },
+          })
+        }
+      } catch (_) {
+      }
+    }
   }
 
-  const entries = await readdir(sessionDir, { withFileTypes: true })
-  const configs = []
-
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) {
-      continue
-    }
-
-    const name = entry.name.slice(0, -'.json'.length)
-    if (name === sessionName) {
-      continue
-    }
-
-    try {
-      const raw = await readFile(path.join(sessionDir, entry.name), 'utf8')
-      const parsed = JSON.parse(raw)
-      if (parsed && parsed.config) {
-        configs.push({ name, config: parsed.config })
+  const legacySessionDir = String((currentConfig && (currentConfig.legacySessionDir || currentConfig.sessionDir)) || '').trim()
+  if (legacySessionDir && existsSync(legacySessionDir)) {
+    const entries = await readdir(legacySessionDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue
       }
-    } catch (_) {
+      const name = entry.name.slice(0, -'.json'.length)
+      if (name === sessionName && !normalizeProjectPath(currentConfig.projectPath)) {
+        continue
+      }
+      const identity = sessionIdentityKey(name, '')
+      if (seen.has(identity)) {
+        continue
+      }
+      try {
+        const raw = await readFile(path.join(legacySessionDir, entry.name), 'utf8')
+        const parsed = JSON.parse(raw)
+        if (parsed && parsed.config) {
+          configs.push({
+            name,
+            route: parsed.route || '',
+            epoch: Number(parsed.epoch || 0),
+            config: { ...currentConfig, ...(parsed.config || {}), sessionDir: legacySessionDir },
+          })
+          seen.add(identity)
+        }
+      } catch (_) {
+      }
     }
   }
 
@@ -198,13 +404,8 @@ async function selectPort(preferredPort, range, reservedPorts, availabilityCheck
 async function assignPorts(config, otherConfigs = [], availabilityChecker = isPortAvailable) {
   validateSessionPortConflicts(config, otherConfigs)
 
-  const reservedDevtoolsPorts = new Set()
   const reservedAutoPorts = new Set()
   for (const item of otherConfigs) {
-    const devtoolsPort = Number(item && item.config ? item.config.devtoolsPort : item && item.devtoolsPort)
-    if (devtoolsPort) {
-      reservedDevtoolsPorts.add(devtoolsPort)
-    }
     const autoPort = Number(item && item.config ? item.config.autoPort : item && item.autoPort)
     if (autoPort) {
       reservedAutoPorts.add(autoPort)
@@ -212,14 +413,15 @@ async function assignPorts(config, otherConfigs = [], availabilityChecker = isPo
   }
 
   const nextConfig = { ...config }
-  nextConfig.devtoolsPort = await selectPort(nextConfig.devtoolsPort, DEVTOOLS_PORT_RANGE, reservedDevtoolsPorts, availabilityChecker)
-  reservedAutoPorts.add(Number(nextConfig.devtoolsPort))
+  nextConfig.devtoolsPort = normalizePort(nextConfig.devtoolsPort)
+  if (nextConfig.devtoolsPort) {
+    reservedAutoPorts.add(Number(nextConfig.devtoolsPort))
+  }
   nextConfig.autoPort = await selectPort(nextConfig.autoPort, AUTO_PORT_RANGE, reservedAutoPorts, availabilityChecker)
   return nextConfig
 }
 
 async function ensureSessionPorts(state, availabilityChecker = isPortAvailable) {
-  const needsDevtoolsPort = !normalizePort(state.config.devtoolsPort)
   const needsAutoPort = !normalizePort(state.config.autoPort)
 
   state.portResolution = {
@@ -227,15 +429,20 @@ async function ensureSessionPorts(state, availabilityChecker = isPortAvailable) 
     devtoolsPortAssigned: false,
   }
 
-  if (!needsDevtoolsPort && !needsAutoPort) {
+  if (!state.config.legacySessionDir && state.config.sessionDir) {
+    state.config.legacySessionDir = state.config.sessionDir
+  }
+  state.config.projectPath = normalizeProjectPath(state.config.projectPath)
+  state.config.sessionDir = resolveSessionDir(state.config)
+
+  if (!needsAutoPort) {
     state.config.devtoolsPort = normalizePort(state.config.devtoolsPort)
     state.config.autoPort = normalizePort(state.config.autoPort)
     return state
   }
 
-  const otherConfigs = await loadOtherSessionConfigs(state.config.sessionDir, state.name)
+  const otherConfigs = await loadOtherSessionConfigs(state.config, state.name)
   state.config = await assignPorts(state.config, otherConfigs, availabilityChecker)
-  state.portResolution.devtoolsPortAssigned = needsDevtoolsPort
   state.portResolution.autoPortAssigned = needsAutoPort
   return state
 }
@@ -260,10 +467,13 @@ function createEmptySessionState({ sessionName, config }) {
 }
 
 function sessionFilePath(name, config) {
-  return path.join(config.sessionDir, `${name}.json`)
+  return path.join(resolveSessionDir(config), `${name}.json`)
 }
 
 function sessionLockRoot(config) {
+  if (normalizeProjectPath(config && config.projectPath)) {
+    return path.join(projectStateRoot(config), 'locks')
+  }
   const repoKey = createHash('sha1')
     .update(String((config && (config.repoRoot || config.sessionDir)) || 'default'))
     .digest('hex')
@@ -403,18 +613,21 @@ async function releaseSessionLock(lock) {
 }
 
 async function loadSessionState(sessionName, config) {
-  const filePath = sessionFilePath(sessionName, config)
+  const resolvedConfig = await resolveSessionConfig(sessionName, config)
+  const filePath = sessionFilePath(sessionName, resolvedConfig)
 
   if (!existsSync(filePath)) {
-    return createEmptySessionState({ sessionName, config })
+    return createEmptySessionState({ sessionName, config: resolvedConfig })
   }
 
   const raw = await readFile(filePath, 'utf8')
   const parsed = JSON.parse(raw)
-  const mergedConfig = { ...config, ...(parsed.config || {}) }
+  const mergedConfig = { ...resolvedConfig, ...(parsed.config || {}) }
+  mergedConfig.projectPath = normalizeProjectPath(mergedConfig.projectPath)
+  mergedConfig.sessionDir = resolveSessionDir(mergedConfig)
   delete mergedConfig.interactiveSelectors
   return {
-    ...createEmptySessionState({ sessionName, config }),
+    ...createEmptySessionState({ sessionName, config: resolvedConfig }),
     ...parsed,
     name: sessionName,
     config: mergedConfig,
@@ -431,9 +644,12 @@ async function loadSessionState(sessionName, config) {
 }
 
 async function saveSessionState(state) {
+  state.config.projectPath = normalizeProjectPath(state.config.projectPath)
+  state.config.sessionDir = resolveSessionDir(state.config)
   await mkdir(state.config.sessionDir, { recursive: true })
   const prepared = prepareSessionStateForSave(state)
   await writeFile(sessionFilePath(state.name, state.config), JSON.stringify(prepared, null, 2))
+  await registerSessionProject(state.name, state.config)
 }
 
 function prepareSessionStateForSave(state, options = {}) {
@@ -478,6 +694,20 @@ function prepareSessionStateForSave(state, options = {}) {
 }
 
 async function listSessionStates(sessionDir) {
+  if (typeof sessionDir === 'object' && sessionDir) {
+    const otherConfigs = await loadOtherSessionConfigs(sessionDir, '')
+    return otherConfigs
+      .map((item) => ({
+        name: item.name,
+        projectPath: item.config && item.config.projectPath ? item.config.projectPath : '',
+        devtoolsPort: item.config && item.config.devtoolsPort ? item.config.devtoolsPort : '',
+        autoPort: item.config && item.config.autoPort ? item.config.autoPort : '',
+        route: item.route || '',
+        epoch: Number(item.epoch || 0),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  }
+
   if (!existsSync(sessionDir)) {
     return []
   }
@@ -510,7 +740,9 @@ async function listSessionStates(sessionDir) {
 }
 
 async function clearSessionState(sessionName, config) {
-  await rm(sessionFilePath(sessionName, config), { force: true })
+  const resolvedConfig = await resolveSessionConfig(sessionName, config)
+  await rm(sessionFilePath(sessionName, resolvedConfig), { force: true })
+  await unregisterSessionProject(sessionName, resolvedConfig)
 }
 
 module.exports = {

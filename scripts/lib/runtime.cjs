@@ -349,21 +349,26 @@ function toWindowsPath(inputPath) {
   return result.stdout.trim()
 }
 
+function buildAutomationArgs(config) {
+  const hasWindowsBundle = config.cliPath.endsWith('.bat')
+
+  return {
+    hasWindowsBundle,
+    args: [
+      'auto',
+      '--project',
+      hasWindowsBundle ? toWindowsPath(config.projectPath) : config.projectPath,
+      '--auto-port',
+      String(config.autoPort),
+    ],
+  }
+}
+
 function enableAutomation(config) {
   const cliDirectory = path.dirname(config.cliPath)
   const nodeExePath = path.join(cliDirectory, 'node.exe')
   const cliJsPath = path.join(cliDirectory, 'cli.js')
-  const hasWindowsBundle = config.cliPath.endsWith('.bat')
-
-  const args = [
-    'auto',
-    '--project',
-    hasWindowsBundle ? toWindowsPath(config.projectPath) : config.projectPath,
-    '--auto-port',
-    String(config.autoPort),
-    '--port',
-    String(config.devtoolsPort),
-  ]
+  const { hasWindowsBundle, args } = buildAutomationArgs(config)
 
   const result = hasWindowsBundle
     ? spawnSync(nodeExePath, [
@@ -1002,6 +1007,53 @@ function compactSnapshotNodes(nodes) {
   return compacted
 }
 
+function buildCanonicalIdentity(node) {
+  if (!node || typeof node !== 'object') {
+    return null
+  }
+
+  if (node.registryId) {
+    return `registry:${String(node.registryId)}`
+  }
+  if (node.testid) {
+    return `testid:${String(node.testid)}`
+  }
+  if (node.businessKey) {
+    return `business:${String(node.businessKey)}`
+  }
+  if (node.scopeKey) {
+    return `scope:${String(node.scopeKey)}`
+  }
+  if (node.selector) {
+    return `${node.kind || 'custom'}:${String(node.selector)}`
+  }
+
+  return null
+}
+
+function assignCanonicalPaths(nodes, parentPath = '') {
+  const siblingOccurrences = new Map()
+
+  return (nodes || []).map((node) => {
+    const identity = buildCanonicalIdentity(node)
+    let canonicalPath = parentPath
+
+    if (identity) {
+      const seenCount = siblingOccurrences.get(identity) || 0
+      siblingOccurrences.set(identity, seenCount + 1)
+      const occurrenceSuffix = seenCount > 0 ? `#${seenCount + 1}` : ''
+      const segment = `${identity}${occurrenceSuffix}`
+      canonicalPath = parentPath ? `${parentPath}/${segment}` : segment
+    }
+
+    return {
+      ...node,
+      canonicalPath,
+      children: assignCanonicalPaths(node.children || [], canonicalPath),
+    }
+  })
+}
+
 function applySnapshotOptions(nodes, options = {}) {
   let nextNodes = nodes || []
 
@@ -1348,10 +1400,10 @@ async function snapshotInteractive(page, state, scopeRef = null, snapshotOptions
   }
   const scopeRecord = scopeRef ? state.refs[scopeRef] : null
   const epoch = nextEpoch(state)
-  const nodes = applySnapshotOptions(subtreeForScope(treeData.nodes, scopeRecord), snapshotOptions)
+  const subtree = assignCanonicalPaths(subtreeForScope(treeData.nodes, scopeRecord))
 
-  const result = buildTreeSnapshotRecords({
-    nodes,
+  const canonicalResult = buildTreeSnapshotRecords({
+    nodes: subtree,
     epoch,
     route: page.path,
     pageKey: treeData.pageKey,
@@ -1367,12 +1419,25 @@ async function snapshotInteractive(page, state, scopeRef = null, snapshotOptions
     ...state,
     epoch,
     route: page.path,
-  }, result.records, true)
+  }, canonicalResult.records, true)
+  const visibleNodes = applySnapshotOptions(subtree, snapshotOptions)
+  const visibleResult = buildTreeSnapshotRecords({
+    nodes: visibleNodes,
+    epoch,
+    route: page.path,
+    pageKey: treeData.pageKey,
+    scopeRef,
+    startIndex: 1,
+    previousState: {
+      nextRefIndex: nextState.nextRefIndex,
+      stableKeyToRef: nextState.stableKeyToRef,
+    },
+  })
 
   return {
-      state: ensureNextRefIndex(nextState, result.nextIndex),
-      records: result.records,
-      lines: formatSnapshotLines(result.records),
+      state: ensureNextRefIndex(nextState, canonicalResult.nextIndex),
+      records: visibleResult.records,
+      lines: formatSnapshotLines(visibleResult.records),
   }
 }
 
@@ -1507,5 +1572,6 @@ module.exports = {
   snapshotInteractive,
   queryRecords,
   isRefToken,
+  buildAutomationArgs,
   connectOrEnable,
 }

@@ -5,6 +5,7 @@ const {
   buildHelpText,
   buildCommandHelpText,
   getVersionText,
+  parseFocusRefs,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
   summarizeTimelinePayload,
@@ -49,7 +50,13 @@ test('buildCommandHelpText returns screenshot mode details', () => {
 
   assert.match(help, /^screenshot/m)
   assert.match(help, /--mode <page\|visual\|annotate>/)
+  assert.match(help, /--focus <refs>/)
   assert.match(help, /annotate/)
+})
+
+test('parseFocusRefs normalizes comma separated focus refs', () => {
+  assert.deepEqual(parseFocusRefs('@e1,@e2  @e3,@e1'), ['@e1', '@e2', '@e3'])
+  assert.deepEqual(parseFocusRefs(undefined), [])
 })
 
 test('summarizeTimelinePayload keeps only high-value route fields by default', () => {

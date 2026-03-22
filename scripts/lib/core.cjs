@@ -162,7 +162,8 @@ function buildTreeSnapshotRecords({
 
     for (const node of currentNodes || []) {
       const currentPath = buildScopedPath(parentPath, node, siblingOccurrences)
-      const stableKey = currentPath ? `${pageKey || route}|${currentPath}` : null
+      const stablePath = node && node.canonicalPath ? String(node.canonicalPath) : currentPath
+      const stableKey = stablePath ? `${pageKey || route}|${stablePath}` : null
       const ref = stableKey
         ? allocateRef(stableKey, previousState, nextIndexState)
         : nextRefName(nextIndexState.value++)
