@@ -1,6 +1,6 @@
 # miniprogram-browser
 
-面向微信小程序的 `agent-browser` 风格自动化 CLI。配套 skill 单独放在 `skills/miniprogram-browser/`。
+面向微信小程序的 `agent-browser` 风格自动化 CLI。配套 skills 分别放在 `skills/miniprogram-browser/` 和 `skills/image-processing/`。
 
 当前状态：**beta / preview**。
 
@@ -30,6 +30,12 @@ npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/ski
 
 这个 skill 目录现在只包含 `SKILL.md`，不会再把 `tests/` 或 CLI 源码一起装进去。
 
+如果要安装离线图片处理 skill，可使用：
+
+```bash
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/image-processing
+```
+
 如果只想给特定 agent 安装，可继续使用 `skills` CLI 的 `--agent` / `--global` 等参数。
 
 ### 本地开发
@@ -39,6 +45,8 @@ npm install
 npm test
 node scripts/miniprogram-browser.cjs help
 ```
+
+本地跑完整测试前，还需要系统里有可用的 `python` 命令（用于图片处理 skill 的隔离虚拟环境和测试）。
 
 ## 前置条件
 
@@ -92,6 +100,17 @@ npx miniprogram-browser help
 - `screenshot --mode layout`
 
 它不是浏览器 DOM 自动化，而是基于 `miniprogram-automator` 的运行时元素能力重建语义树。
+
+仓库里还附带一个独立的离线图片处理 skill：`skills/image-processing/`。
+
+它用于把已有图片整理成更适合人和模型分析的输入，当前包含：
+
+- `img_montage.py`：多图拼接
+- `img_diff.py`：差异分析与差异框输出
+- `img_focus.py`：按显式 box 裁剪并放大局部
+- `img_overlay.py`：叠加对比辅助图
+
+这个 skill 不负责自动截图或自动回归；它更适合和 `miniprogram-browser` 产出的截图配合使用。
 
 ## 当前能力
 
@@ -196,6 +215,7 @@ miniprogram-browser screenshot out.png --session demo --mode layout -c
 
 - npm / npx 负责 CLI 运行时
 - `skills/miniprogram-browser/` 负责 agent skill 安装
+- `skills/image-processing/` 负责离线图片处理 skill 安装
 
 如果你要作为 OpenCode / `.opencode` skill 使用，安装这个目录即可：
 
@@ -224,6 +244,7 @@ npx miniprogram-browser ...
 
 ```bash
 npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/miniprogram-browser
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/image-processing
 ```
 
 本地调试 skill 时，也可以直接装仓库内子目录：
@@ -245,6 +266,12 @@ npm test
 
 其中图片处理测试会在 `artifacts/.venv-image-processing-tests/` 下创建隔离虚拟环境并安装 `skills/image-processing/requirements.txt`。
 
+因此本地开发或 CI 运行完整测试时，需要：
+
+- 系统里能直接调用 `python`
+- Python 自带 `venv`
+- 能通过 `pip` 安装 `skills/image-processing/requirements.txt` 里的依赖
+
 `tests/` 会随仓库一起提交。对这类自动化工具，测试不是噪音，而是可信度的重要部分。
 
 ## 仓库结构
@@ -252,6 +279,7 @@ npm test
 ```text
 scripts/                     CLI 与运行时实现
 skills/miniprogram-browser/  可安装的标准 skill 目录（仅 SKILL.md）
+skills/image-processing/     可安装的离线图片处理 skill
 tests/                       行为测试
 README.md                    面向人类开发者的开源说明
 ```
