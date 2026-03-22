@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "skills" / "image-processing" / "scripts"
-PYTHON = "/tmp/miniprogram-image-skill-venv/bin/python"
+PYTHON = sys.executable
 
 
 def _make_inputs(before_path: Path, after_path: Path) -> None:
@@ -137,6 +138,90 @@ class WorkflowCliTests(unittest.TestCase):
             )
             self.assertEqual(review.stdout.strip(), str(review_sheet_path))
             self.assertTrue(review_sheet_path.exists())
+
+    def test_default_outputs_work_for_jpeg_inputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            before_path = temp_path / "before.jpg"
+            after_path = temp_path / "after.jpg"
+
+            before = Image.new("RGB", (20, 20), (255, 255, 255))
+            after = Image.new("RGB", (40, 40), (255, 255, 255))
+            ImageDraw.Draw(before).rectangle((5, 5, 14, 14), fill=(0, 0, 0))
+            ImageDraw.Draw(after).rectangle((15, 15, 24, 24), fill=(0, 0, 0))
+            ImageDraw.Draw(after).rectangle((28, 28, 34, 34), fill=(0, 0, 0))
+            before.save(before_path)
+            after.save(after_path)
+
+            normalize = subprocess.run(
+                [
+                    PYTHON,
+                    str(SCRIPTS_DIR / "img_normalize.py"),
+                    str(before_path),
+                    "--size",
+                    "40x40",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(Path(normalize.stdout.strip()).exists())
+
+            montage = subprocess.run(
+                [
+                    PYTHON,
+                    str(SCRIPTS_DIR / "img_montage.py"),
+                    str(before_path),
+                    str(after_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(Path(montage.stdout.strip()).exists())
+
+            diff = subprocess.run(
+                [
+                    PYTHON,
+                    str(SCRIPTS_DIR / "img_diff.py"),
+                    str(before_path),
+                    str(after_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            diff_path = Path(diff.stdout.strip())
+            self.assertTrue(diff_path.exists())
+            self.assertTrue(
+                diff_path.with_name(f"{diff_path.stem}.regions.json").exists()
+            )
+
+            overlay = subprocess.run(
+                [
+                    PYTHON,
+                    str(SCRIPTS_DIR / "img_overlay.py"),
+                    str(before_path),
+                    str(after_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(Path(overlay.stdout.strip()).exists())
+
+            focus = subprocess.run(
+                [
+                    PYTHON,
+                    str(SCRIPTS_DIR / "img_focus_crops.py"),
+                    str(before_path),
+                    str(after_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertTrue(Path(focus.stdout.strip()).exists())
 
 
 if __name__ == "__main__":

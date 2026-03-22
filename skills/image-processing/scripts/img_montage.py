@@ -12,7 +12,7 @@ LIB_DIR = SCRIPT_DIR / "lib"
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 
-from io_utils import derive_output_path, ensure_output_parent
+from io_utils import derive_output_path, save_image
 from layout import horizontal_montage
 
 
@@ -38,12 +38,11 @@ def create_montage(
     target_path = derive_output_path(
         source_paths[0], suffix=DEFAULT_SUFFIX, output=output_path
     )
-    ensure_output_parent(target_path)
 
     opened = [Image.open(path).convert("RGBA") for path in source_paths]
     try:
         montage = horizontal_montage(opened)
-        montage.save(target_path)
+        save_image(montage, target_path)
     finally:
         for image in opened:
             image.close()

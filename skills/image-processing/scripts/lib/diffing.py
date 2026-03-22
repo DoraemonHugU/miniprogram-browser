@@ -14,7 +14,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from io_utils import derive_output_path, ensure_output_parent
+from io_utils import derive_output_path, ensure_output_parent, save_image
 from normalize import normalize_image
 
 
@@ -116,7 +116,7 @@ def create_diff_artifacts(
 
     with Image.open(before_source) as before_img, Image.open(after_source) as after_img:
         score, diff_image, boxes = compute_diff_regions(before_img, after_img)
-        diff_image.save(target_path)
+        save_image(diff_image, target_path)
 
     payload = {
         "imageSize": {"width": diff_image.width, "height": diff_image.height},

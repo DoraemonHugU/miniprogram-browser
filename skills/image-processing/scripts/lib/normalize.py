@@ -10,12 +10,11 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from io_utils import derive_output_path, ensure_output_parent
+from io_utils import derive_output_path, save_image
 
 
 SUPPORTED_MODES = {"pad", "fit", "crop"}
 DEFAULT_SUFFIX = "-normalized"
-JPEG_SUFFIXES = {".jpg", ".jpeg"}
 RESAMPLE = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 
 
@@ -75,20 +74,9 @@ def normalize_image_file(
     target_path = derive_output_path(
         source_path, suffix=DEFAULT_SUFFIX, output=output_path
     )
-    ensure_output_parent(target_path)
 
     with Image.open(source_path) as image:
         normalized = normalize_image(image, size=size, mode=mode)
-        _save_image(normalized, target_path)
+        save_image(normalized, target_path)
 
     return target_path
-
-
-def _save_image(image: Image.Image, output_path: Path) -> None:
-    if output_path.suffix.lower() in JPEG_SUFFIXES:
-        flattened = Image.new("RGB", image.size, (255, 255, 255))
-        flattened.paste(image, mask=image.getchannel("A"))
-        flattened.save(output_path)
-        return
-
-    image.save(output_path)

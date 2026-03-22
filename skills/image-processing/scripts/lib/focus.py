@@ -12,7 +12,7 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from diffing import compute_diff_regions
-from io_utils import derive_output_path, ensure_output_parent
+from io_utils import derive_output_path, save_image
 from layout import horizontal_montage
 from normalize import normalize_image
 
@@ -102,7 +102,6 @@ def create_focus_sheet(
     target_path = derive_output_path(
         before_source, suffix=DEFAULT_SUFFIX, output=output_path
     )
-    ensure_output_parent(target_path)
 
     with Image.open(before_source) as before_img, Image.open(after_source) as after_img:
         if regions_path:
@@ -110,6 +109,6 @@ def create_focus_sheet(
         else:
             _score, _diff_image, boxes = compute_diff_regions(before_img, after_img)
         sheet = build_focus_sheet(before_img, after_img, boxes)
-        sheet.save(target_path)
+        save_image(sheet, target_path)
 
     return target_path

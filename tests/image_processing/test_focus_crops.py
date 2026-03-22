@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ SCRIPT_PATH = (
     / "scripts"
     / "img_focus_crops.py"
 )
-PYTHON = "/tmp/miniprogram-image-skill-venv/bin/python"
+PYTHON = sys.executable
 
 
 def _make_images(before_path: Path, after_path: Path) -> None:

@@ -11,7 +11,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from io_utils import derive_output_path, ensure_output_parent
+from io_utils import derive_output_path, save_image
 from normalize import normalize_image
 
 
@@ -75,10 +75,9 @@ def create_overlay(
     target_path = derive_output_path(
         before_source, suffix=DEFAULT_SUFFIX, output=output_path
     )
-    ensure_output_parent(target_path)
 
     with Image.open(before_source) as before_img, Image.open(after_source) as after_img:
         overlay = color_overlay(before_img, after_img)
-        overlay.save(target_path)
+        save_image(overlay, target_path)
 
     return target_path
