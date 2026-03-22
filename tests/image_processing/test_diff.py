@@ -84,6 +84,8 @@ class DiffCliTests(unittest.TestCase):
 
             with Image.open(diff_path) as diff_image:
                 self.assertEqual(diff_image.size, (40, 40))
+                self.assertEqual(diff_image.getpixel((10, 10)), (255, 255, 255, 255))
+                self.assertEqual(diff_image.getpixel((28, 28)), (120, 0, 0, 255))
 
     def test_diff_auto_normalizes_mismatched_input_sizes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
