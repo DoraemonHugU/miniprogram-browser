@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -20,6 +19,69 @@ from normalize import normalize_image
 
 DEFAULT_SUFFIX = "-diff"
 MIN_CONTOUR_AREA = 4
+BOX_STYLES = [
+    {"outline": (17, 24, 39, 255), "fill": (17, 24, 39, 96)},
+    {"outline": (30, 64, 175, 255), "fill": (37, 99, 235, 92)},
+    {"outline": (21, 128, 61, 255), "fill": (34, 197, 94, 92)},
+    {"outline": (107, 33, 168, 255), "fill": (168, 85, 247, 92)},
+    {"outline": (194, 65, 12, 255), "fill": (249, 115, 22, 92)},
+    {"outline": (250, 204, 21, 255), "fill": (250, 204, 21, 108)},
+    {"outline": (34, 211, 238, 255), "fill": (34, 211, 238, 96)},
+    {"outline": (255, 255, 255, 255), "fill": (255, 255, 255, 112)},
+]
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def convert(channel: int) -> float:
+        value = channel / 255.0
+        if value <= 0.03928:
+            return value / 12.92
+        return ((value + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * convert(r) + 0.7152 * convert(g) + 0.0722 * convert(b)
+
+
+def _contrast_ratio(rgb_a: tuple[int, int, int], rgb_b: tuple[int, int, int]) -> float:
+    lum_a = _relative_luminance(rgb_a)
+    lum_b = _relative_luminance(rgb_b)
+    lighter = max(lum_a, lum_b)
+    darker = min(lum_a, lum_b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _sample_region_color(
+    image: Image.Image, box: dict[str, int]
+) -> tuple[int, int, int]:
+    left = max(0, box["x"])
+    top = max(0, box["y"])
+    right = min(image.width, box["x"] + box["w"])
+    bottom = min(image.height, box["y"] + box["h"])
+    if left >= right or top >= bottom:
+        return (255, 255, 255)
+    region = np.array(
+        image.crop((left, top, right, bottom)).convert("RGB"), dtype=np.uint8
+    )
+    mean = region.mean(axis=(0, 1))
+    return (int(mean[0]), int(mean[1]), int(mean[2]))
+
+
+def pick_box_style(
+    index: int,
+    sample_color: tuple[int, int, int] = (255, 255, 255),
+    used_outlines: set[tuple[int, int, int, int]] | None = None,
+) -> dict[str, tuple[int, int, int, int]]:
+    used_outlines = used_outlines or set()
+    ranked = sorted(
+        BOX_STYLES,
+        key=lambda style: _contrast_ratio(style["outline"][:3], sample_color),
+        reverse=True,
+    )
+    rotated = ranked[index % len(ranked) :] + ranked[: index % len(ranked)]
+    for style in rotated:
+        if style["outline"] not in used_outlines:
+            return style
+    return rotated[0]
 
 
 def _normalize_pair(
@@ -42,27 +104,33 @@ def _to_gray_array(image: Image.Image) -> np.ndarray:
 def _build_highlighted_diff(
     after: Image.Image, threshold_mask: np.ndarray, boxes: list[dict[str, int]]
 ) -> Image.Image:
-    rgba = np.array(after.convert("RGBA"), dtype=np.uint8)
-    overlay = np.zeros_like(rgba)
-    overlay[..., 0] = 255
-    overlay[..., 3] = np.where(threshold_mask > 0, 120, 0).astype(np.uint8)
-    highlighted = Image.alpha_composite(
-        after.convert("RGBA"), Image.fromarray(overlay, mode="RGBA")
-    )
+    highlighted = after.convert("RGBA").copy()
+    overlay_image = Image.new("RGBA", highlighted.size, (0, 0, 0, 0))
     drawer = ImageDraw.Draw(highlighted)
-    for box in boxes:
+    used_outlines: set[tuple[int, int, int, int]] = set()
+    for index, box in enumerate(boxes):
+        sample_color = _sample_region_color(after, box)
+        style = pick_box_style(
+            index, sample_color=sample_color, used_outlines=used_outlines
+        )
+        used_outlines.add(style["outline"])
         left = box["x"]
         top = box["y"]
         right = left + box["w"]
         bottom = top + box["h"]
-        drawer.rectangle(
-            (left, top, right, bottom), outline=(255, 196, 0, 255), width=2
-        )
-    return highlighted
+        mask = threshold_mask[top:bottom, left:right]
+        if mask.size:
+            mask_image = Image.fromarray(mask.astype("uint8"), mode="L")
+            fill_layer = Image.new("RGBA", mask_image.size, style["fill"])
+            overlay_image.paste(fill_layer, (left, top), mask_image)
+        drawer.rectangle((left, top, right, bottom), outline=style["outline"], width=2)
+    return Image.alpha_composite(highlighted, overlay_image)
 
 
 def compute_diff_regions(
-    before_img: Image.Image, after_img: Image.Image
+    before_img: Image.Image,
+    after_img: Image.Image,
+    granularity: str = "coarse",
 ) -> tuple[float, Image.Image, list[dict[str, int]]]:
     normalized_before, normalized_after = _normalize_pair(before_img, after_img)
     before_gray = _to_gray_array(normalized_before)
@@ -73,12 +141,22 @@ def compute_diff_regions(
     _, threshold = cv2.threshold(
         diff_uint8, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU
     )
-    threshold = cv2.morphologyEx(
-        threshold,
-        cv2.MORPH_CLOSE,
-        np.ones((3, 3), dtype=np.uint8),
-        iterations=1,
-    )
+    if granularity == "coarse":
+        threshold = cv2.morphologyEx(
+            threshold,
+            cv2.MORPH_CLOSE,
+            np.ones((3, 3), dtype=np.uint8),
+            iterations=1,
+        )
+    elif granularity == "fine":
+        threshold = cv2.morphologyEx(
+            threshold,
+            cv2.MORPH_OPEN,
+            np.ones((2, 2), dtype=np.uint8),
+            iterations=1,
+        )
+    else:
+        raise ValueError(f"unsupported granularity: {granularity}")
 
     contours, _ = cv2.findContours(
         threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -95,32 +173,23 @@ def compute_diff_regions(
     return float(score), diff_image, boxes
 
 
-def derive_regions_path(output_path: str | Path) -> Path:
-    path = Path(output_path)
-    return path.with_name(f"{path.stem}.regions.json")
-
-
 def create_diff_artifacts(
     before_path: str | Path,
     after_path: str | Path,
     output_path: str | Path | None = None,
-) -> tuple[Path, Path, float, list[dict[str, int]]]:
+    granularity: str = "coarse",
+) -> tuple[Path, list[dict[str, int]]]:
     before_source = Path(before_path)
     after_source = Path(after_path)
     target_path = derive_output_path(
         before_source, suffix=DEFAULT_SUFFIX, output=output_path
     )
-    regions_path = derive_regions_path(target_path)
     ensure_output_parent(target_path)
-    ensure_output_parent(regions_path)
 
     with Image.open(before_source) as before_img, Image.open(after_source) as after_img:
-        score, diff_image, boxes = compute_diff_regions(before_img, after_img)
+        _score, diff_image, boxes = compute_diff_regions(
+            before_img, after_img, granularity=granularity
+        )
         save_image(diff_image, target_path)
 
-    payload = {
-        "imageSize": {"width": diff_image.width, "height": diff_image.height},
-        "boxes": boxes,
-    }
-    regions_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return target_path, regions_path, score, boxes
+    return target_path, boxes

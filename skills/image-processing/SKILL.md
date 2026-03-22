@@ -1,72 +1,74 @@
 ---
 name: image-processing
-description: Use when you need offline image-processing helpers for visual comparison, screenshot review, diffing, or focus-crop analysis.
+description: 当需要离线处理图片，用于拼图、差异分析、局部放大或叠加对比时使用。
 ---
 
-# Image Processing
+# 图片处理
 
-## 概述
+用于把已有图片整理成更适合人和模型分析的输入。
 
-这是一组离线图片处理脚本，用来把多张截图整理成更适合人和模型分析的输入。
-
-它不负责自动截图，也不负责自动生成回归结论；它只提供可组合的图片处理原语。
+这不是自动截图或自动回归系统，而是一组离线图片处理原语。
 
 ## 何时使用
 
 - 需要把 before / after / reference 拼成一张图
-- 需要生成差异热区图
-- 需要看两张图的彩色叠加效果
-- 需要把局部变化区域放大，帮助模型把注意力集中到变化点
+- 需要生成差异图
+- 需要单独放大某个局部区域
+- 需要做辅助叠加对比
 
-## 安装依赖
+## 脚本
 
-```bash
-python -m pip install -r skills/image-processing/requirements.txt
-```
+- `scripts/img_montage.py`：多图横向拼接
+- `scripts/img_diff.py`：生成差异图，并回显差异框
+- `scripts/img_focus.py`：按显式 `box` 裁剪单张图片
+- `scripts/img_overlay.py`：生成彩色叠加图
 
-如果项目里不想污染全局 Python，优先使用虚拟环境。
+## 怎么选
 
-## 核心脚本
+默认先看 `img_montage.py` 和 `img_diff.py`；需要单独放大某一块时，再自己指定 `box` 调 `img_focus.py`；`img_overlay.py` 只作辅助。
 
-- `img_normalize.py`：把单张图片归一化到指定画布
-- `img_montage.py`：把 2 张或多张图横向拼接成一张
-- `img_diff.py`：生成差异图，并自动写 `*.regions.json`
-- `img_overlay.py`：生成颜色区分叠加图（before=red, after=cyan）
-- `img_focus_crops.py`：根据变化区域生成局部放大 sheet
+- 先看整体布局：`img_montage.py`
+- 先找哪里变了：`img_diff.py`
+- 已经知道要看哪一块：`img_focus.py`
+- 想看微小位移或重叠：`img_overlay.py`
 
-## 推荐顺序
+## 怎么理解输出
 
-默认先看：
-
-1. `img_montage.py`
-2. `img_diff.py`
-3. `img_focus_crops.py`
-
-`img_overlay.py` 是辅助视图，更适合看微小位移，不适合作为唯一证据。
-
-## 常用组合
-
-### 先做差异，再做局部放大
-
-```bash
-python skills/image-processing/scripts/img_diff.py before.png after.png -o diff.png
-python skills/image-processing/scripts/img_focus_crops.py before.png after.png --regions diff.regions.json -o focus.png
-```
-
-### 最后拼成一张 review sheet
-
-```bash
-python skills/image-processing/scripts/img_montage.py before.png after.png diff.png focus.png -o review-sheet.png
-```
-
-### 显式归一化单张图
-
-```bash
-python skills/image-processing/scripts/img_normalize.py screenshot.png --size 1280x720 --mode pad
-```
+- `img_montage.py` 适合先建立整体上下文
+- `img_diff.py` 的 `box1 / box2 ...` 是“候选变化区域”，不是绝对真理
+- `img_focus.py` 不替你决定看哪一块；它只是把你指定的区域裁出来并自动放大
+- `img_overlay.py` 更适合看细微位移，不适合作为唯一证据
 
 ## 边界
 
-- 这些脚本默认只做文件输入/输出，不做浏览器自动化
-- 它们会自动处理尺寸不一致，但不负责高级图像配准
-- 如果两张图没有像素级大体对齐，diff/overlay 的结果可能会放大误差
+- `img_focus.py` 不负责自动找区域，区域选择权完全交给调用方
+- 尺寸统一属于内部实现细节，由脚本在需要时自动处理
+- 不负责自动截图、浏览器/小程序自动化、自动回归结论、高级图像配准
+
+## 常见误区
+
+- 只看 `img_overlay.py`，不看 `montage` 或 `diff`
+- 把 `img_diff.py` 回显的 box 当成绝对精确框
+- 拿来源不同、分辨率不同、压缩方式不同的图片直接硬比，然后把缩放误差当成真实变化
+- 期待 `img_focus.py` 自动帮你决定关注区域
+
+## 最小配方
+
+### 先定位变化，再手动放大局部
+
+1. 跑 `img_diff.py`
+2. 从回显里挑一个 box
+3. 用同一个 box 去裁原图或 diff 图
+
+### 给模型看图时的主顺序
+
+1. `img_montage.py`
+2. `img_diff.py`
+3. `img_focus.py`
+
+如果还要看细微位移，再补 `img_overlay.py`
+
+## 依赖与参数
+
+- 安装依赖：`python -m pip install -r requirements.txt`
+- 具体参数以各脚本的 `--help` 为准

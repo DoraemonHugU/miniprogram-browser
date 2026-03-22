@@ -67,8 +67,10 @@ class OverlayCliTests(unittest.TestCase):
                 check=True,
             )
 
-            output_path = Path(result.stdout.strip())
-
+            self.assertIn(
+                f"叠加图已保存 {temp_path / 'before-overlay.png'}", result.stdout
+            )
+            output_path = temp_path / "before-overlay.png"
             self.assertEqual(output_path, temp_path / "before-overlay.png")
             self.assertTrue(output_path.exists())
 

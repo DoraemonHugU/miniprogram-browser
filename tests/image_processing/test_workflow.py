@@ -30,29 +30,11 @@ class WorkflowCliTests(unittest.TestCase):
             after_path = temp_path / "after.png"
             _make_inputs(before_path, after_path)
 
-            normalized_path = temp_path / "normalized.png"
             montage_path = temp_path / "montage.png"
             diff_path = temp_path / "diff.png"
             overlay_path = temp_path / "overlay.png"
             focus_path = temp_path / "focus.png"
             review_sheet_path = temp_path / "review-sheet.png"
-
-            normalize = subprocess.run(
-                [
-                    PYTHON,
-                    str(SCRIPTS_DIR / "img_normalize.py"),
-                    str(before_path),
-                    "--size",
-                    "40x40",
-                    "-o",
-                    str(normalized_path),
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            self.assertEqual(normalize.stdout.strip(), str(normalized_path))
-            self.assertTrue(normalized_path.exists())
 
             montage = subprocess.run(
                 [
@@ -67,7 +49,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertEqual(montage.stdout.strip(), str(montage_path))
+            self.assertIn(f"拼图已保存 {montage_path}", montage.stdout)
             self.assertTrue(montage_path.exists())
 
             diff = subprocess.run(
@@ -83,9 +65,9 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertEqual(diff.stdout.strip(), str(diff_path))
+            self.assertIn(f"差异图已保存 {diff_path}", diff.stdout)
+            self.assertIn("box1:", diff.stdout)
             self.assertTrue(diff_path.exists())
-            self.assertTrue((temp_path / "diff.regions.json").exists())
 
             overlay = subprocess.run(
                 [
@@ -100,17 +82,16 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertEqual(overlay.stdout.strip(), str(overlay_path))
+            self.assertIn(f"叠加图已保存 {overlay_path}", overlay.stdout)
             self.assertTrue(overlay_path.exists())
 
             focus = subprocess.run(
                 [
                     PYTHON,
-                    str(SCRIPTS_DIR / "img_focus_crops.py"),
-                    str(before_path),
+                    str(SCRIPTS_DIR / "img_focus.py"),
                     str(after_path),
-                    "--regions",
-                    str(temp_path / "diff.regions.json"),
+                    "--box",
+                    "15,15,10,10",
                     "-o",
                     str(focus_path),
                 ],
@@ -118,8 +99,12 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertEqual(focus.stdout.strip(), str(focus_path))
+            self.assertIn(f"裁剪图已保存 {focus_path}", focus.stdout)
             self.assertTrue(focus_path.exists())
+
+            with Image.open(focus_path) as focus_img:
+                self.assertGreaterEqual(focus_img.width, 128)
+                self.assertGreaterEqual(focus_img.height, 128)
 
             review = subprocess.run(
                 [
@@ -136,7 +121,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertEqual(review.stdout.strip(), str(review_sheet_path))
+            self.assertIn(f"拼图已保存 {review_sheet_path}", review.stdout)
             self.assertTrue(review_sheet_path.exists())
 
     def test_default_outputs_work_for_jpeg_inputs(self):
@@ -154,20 +139,6 @@ class WorkflowCliTests(unittest.TestCase):
                 before.save(before_path)
                 after.save(after_path)
 
-                normalize = subprocess.run(
-                    [
-                        PYTHON,
-                        str(SCRIPTS_DIR / "img_normalize.py"),
-                        str(before_path),
-                        "--size",
-                        "40x40",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                self.assertTrue(Path(normalize.stdout.strip()).exists())
-
                 montage = subprocess.run(
                     [
                         PYTHON,
@@ -179,7 +150,8 @@ class WorkflowCliTests(unittest.TestCase):
                     text=True,
                     check=True,
                 )
-                self.assertTrue(Path(montage.stdout.strip()).exists())
+                self.assertIn("拼图已保存 ", montage.stdout)
+                self.assertTrue(Path(montage.stdout.strip().split()[-1]).exists())
 
                 diff = subprocess.run(
                     [
@@ -187,16 +159,17 @@ class WorkflowCliTests(unittest.TestCase):
                         str(SCRIPTS_DIR / "img_diff.py"),
                         str(before_path),
                         str(after_path),
+                        "-o",
+                        str(temp_path / f"diff{suffix}"),
                     ],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
-                diff_path = Path(diff.stdout.strip())
+                diff_path = temp_path / f"diff{suffix}"
+                self.assertIn(f"差异图已保存 {diff_path}", diff.stdout)
+                self.assertIn("box1:", diff.stdout)
                 self.assertTrue(diff_path.exists())
-                self.assertTrue(
-                    diff_path.with_name(f"{diff_path.stem}.regions.json").exists()
-                )
 
                 overlay = subprocess.run(
                     [
@@ -209,20 +182,28 @@ class WorkflowCliTests(unittest.TestCase):
                     text=True,
                     check=True,
                 )
-                self.assertTrue(Path(overlay.stdout.strip()).exists())
+                self.assertIn("叠加图已保存 ", overlay.stdout)
+                self.assertTrue(Path(overlay.stdout.strip().split()[-1]).exists())
 
                 focus = subprocess.run(
                     [
                         PYTHON,
-                        str(SCRIPTS_DIR / "img_focus_crops.py"),
-                        str(before_path),
+                        str(SCRIPTS_DIR / "img_focus.py"),
                         str(after_path),
+                        "--box",
+                        "15,15,10,10",
+                        "-o",
+                        str(temp_path / f"focus{suffix}"),
                     ],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
-                self.assertTrue(Path(focus.stdout.strip()).exists())
+                self.assertIn("裁剪图已保存 ", focus.stdout)
+                with Image.open(Path(focus.stdout.strip().split()[-1])) as focus_img:
+                    self.assertGreaterEqual(focus_img.width, 128)
+                    self.assertGreaterEqual(focus_img.height, 128)
+                self.assertTrue(Path(focus.stdout.strip().split()[-1]).exists())
 
 
 if __name__ == "__main__":

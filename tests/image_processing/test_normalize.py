@@ -1,6 +1,3 @@
-import subprocess
-import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,7 +13,7 @@ derive_output_path = io_utils.derive_output_path
 normalize_image = normalize_lib.normalize_image
 
 
-SCRIPT_PATH = (
+PUBLIC_SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
     / "skills"
     / "image-processing"
@@ -50,48 +47,9 @@ class NormalizeImageTests(unittest.TestCase):
         self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 0))
 
 
-class NormalizeCliTests(unittest.TestCase):
-    def test_img_normalize_supports_explicit_fit_mode(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            input_path = temp_path / "source.png"
-            source = Image.new("RGBA", (90, 30), (0, 0, 0, 0))
-            for x in range(90):
-                if x < 30:
-                    color = (255, 0, 0, 255)
-                elif x < 60:
-                    color = (0, 255, 0, 255)
-                else:
-                    color = (0, 0, 255, 255)
-                for y in range(30):
-                    source.putpixel((x, y), color)
-            source.save(input_path)
-
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPT_PATH),
-                    str(input_path),
-                    "--size",
-                    "100x100",
-                    "--mode",
-                    "fit",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            output_path = Path(result.stdout.strip())
-
-            self.assertEqual(output_path, temp_path / "source-normalized.png")
-            self.assertTrue(output_path.exists())
-
-            with Image.open(output_path) as normalized:
-                self.assertEqual(normalized.size, (100, 100))
-                self.assertEqual(normalized.getpixel((5, 50)), (255, 0, 0, 255))
-                self.assertEqual(normalized.getpixel((50, 50)), (0, 255, 0, 255))
-                self.assertEqual(normalized.getpixel((95, 50)), (0, 0, 255, 255))
+class NormalizeSurfaceTests(unittest.TestCase):
+    def test_normalize_is_internal_only(self):
+        self.assertFalse(PUBLIC_SCRIPT_PATH.exists())
 
 
 if __name__ == "__main__":
