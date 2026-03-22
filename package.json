@@ -25,7 +25,8 @@
   "files": [
     "README.md",
     "LICENSE",
-    "scripts/"
+    "scripts/miniprogram-browser.cjs",
+    "scripts/lib/"
   ],
   "scripts": {
     "test:node": "node --test tests/*.test.cjs",

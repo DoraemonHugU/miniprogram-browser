@@ -35,10 +35,12 @@ npx miniprogram-browser ...
 1. `open` 绑定的是一个**小程序实例**，不是页面 URL
 2. 绑定后先 `path` 或 `app inspect` 确认当前状态
 3. 再 `goto` 到目标路由(默认首页)
-4. 再 `snapshot -i` 生成 `@eN` refs
-5. 页面明显变化后，重新 `snapshot -i`
+4. 优先用 `snapshot -i --layout` 或 `screenshot --mode layout` 理解页面结构
+5. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
+6. 只有在确实需要真实像素证据时，再退回 `page/visual/annotate`
+7. 页面明显变化后，重新 `snapshot -i`
 
-如果你需要让模型通过文字理解布局，可以改用：
+如果你的目标是让模型稳定理解页面结构，优先使用：
 
 ```bash
 miniprogram-browser snapshot -i --layout --session feat-a
@@ -46,7 +48,7 @@ miniprogram-browser snapshot -i --layout --session feat-a
 
 它会为每个 ref 附加相对窗口的比例位置/尺寸（`x/y/w/h` 百分比）。
 
-如果真实截图不稳定，也可以直接生成结构替代图：
+如果希望直接得到一张更适合 agent 阅读的结构图，也优先使用：
 
 ```bash
 miniprogram-browser screenshot out.png --session feat-a --mode layout --focus @e20,@e21
@@ -72,11 +74,12 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 miniprogram-browser open --session feat-a --project /path/to/miniprogram-root
 miniprogram-browser app inspect --session feat-a
 miniprogram-browser goto /pages/dashboard/index --session feat-a
+miniprogram-browser snapshot -i --layout --session feat-a
+miniprogram-browser screenshot artifacts/layout.png --session feat-a --mode layout --focus @e16,@e17
 miniprogram-browser snapshot -i --session feat-a
 miniprogram-browser click @e1 --session feat-a
 miniprogram-browser timeline --session feat-a
 miniprogram-browser screenshot --session feat-a --mode annotate
-miniprogram-browser screenshot --session feat-a --mode annotate --focus @e16,@e17
 miniprogram-browser close --session feat-a
 
 miniprogram-browser help
@@ -164,8 +167,18 @@ miniprogram-browser exceptions --session feat-a
 
 ## screenshot
 
-支持三种模式：
+对 agent 而言，推荐顺序通常是：
 
+1. `--mode layout`
+2. `snapshot -i --layout`
+3. `--mode annotate`
+4. `--mode page` / `--mode visual`
+
+原因：`layout` 更稳定，也更适合把结构、层次和 focus 交给模型分析；真实像素截图更适合留证或核对视觉细节。
+
+支持四种模式：
+
+- `--mode layout`：结构化布局图，优先推荐给 agent
 - `--mode page`：官方页面截图
 - `--mode visual`：页面截图 + 胶囊视觉合成
 - `--mode annotate`：页面截图 + `@eNN` 标注叠加
@@ -178,7 +191,7 @@ miniprogram-browser exceptions --session feat-a
 - 不传路径：保存到默认截图目录（当前仓库默认是 `artifacts/screenshots`）
 - 传路径(优先推荐策略)：保存到显式指定的位置(推荐放在.artifacts/{时间戳}-{session}里)，方便后续查看和关联日志/trace.
 
-如果截图偶发超时，通常更像当前 session / DevTools 实例状态不稳定。优先做法不是立刻重开，而是先放慢操作节奏：每次 `goto / click / fill / call / native` 后适度 `wait`，截图前再用 `path` 或 `snapshot -i` 确认页面已经稳定。如果仍然失败，再人工 `close` 当前 session 后重新 `open`，必要时再重启 DevTools 实例。
+如果你主要是为了让模型理解页面，不要默认先追求真实截图；优先走 `layout`。如果截图偶发超时，通常更像当前 session / DevTools 实例状态不稳定。优先做法不是立刻重开，而是先放慢操作节奏：每次 `goto / click / fill / call / native` 后适度 `wait`，截图前再用 `path` 或 `snapshot -i` 确认页面已经稳定。如果仍然失败，再人工 `close` 当前 session 后重新 `open`，必要时再重启 DevTools 实例。
 
 `--focus` 的推荐用法：
 
