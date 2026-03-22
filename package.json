@@ -28,7 +28,9 @@
     "scripts/"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.cjs",
+    "test:node": "node --test tests/*.test.cjs",
+    "test:image-processing": "python scripts/run-image-processing-tests.py",
+    "test": "npm run test:node && npm run test:image-processing",
     "pack:check": "npm pack --dry-run"
   },
   "engines": {
