@@ -39,6 +39,7 @@ const {
   getCurrentPage,
   getSystemInfo,
   getRuntimeAppConfig,
+  readRuntimeTree,
   getPageStack,
   callWxMethod,
   callPageMethod,
@@ -66,7 +67,9 @@ const {
 
 const {
   captureAnnotatedScreenshot,
+  captureLayoutScreenshot,
   overlayFocusScreenshot,
+  readOfficialMenuButtonRect,
   captureVisualScreenshot,
 } = require('./lib/visual.cjs')
 
@@ -184,7 +187,7 @@ function buildCommandHelpText(command) {
       return `snapshot
 
 用法:
-  miniprogram-browser snapshot -i --session <name> [-c] [-d <n>] [--json] [--all]
+  miniprogram-browser snapshot -i --session <name> [-c] [-d <n>] [--layout] [--json] [--all]
 
 作用:
   生成当前页面的语义 refs（@eN）。
@@ -193,6 +196,7 @@ function buildCommandHelpText(command) {
   -i               生成交互 ref
   -c, --compact    折叠空容器，减少噪音
   -d, --depth <n>  限制层级，先看总览时使用
+  --layout         为每个 ref 附加比例位置/尺寸信息
   --json           输出摘要化结构
   --all            输出完整细节
 `
@@ -324,16 +328,19 @@ function buildCommandHelpText(command) {
       return `screenshot
 
 用法:
-  miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate>] [--focus <refs>] [--wait <ms>] [--json]
+  miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate|layout>] [--focus <refs>] [--capsule] [--raw] [-c|--compact] [--wait <ms>] [--json]
 
 模式:
   page      官方页面截图
   visual    页面截图 + 胶囊视觉合成
   annotate  页面截图 + @eNN 标注叠加
+  layout    基于运行时 rect 的布局替代渲染
 
 说明:
   - 默认模式是 page
   - --focus 支持 @e1,@e2 这类多个 ref，高亮时会自动换色
+  - layout 默认用语义布局；加 --raw 可切到更底层的运行时节点布局
+  - --capsule 可在 layout/visual 图上叠加右上角微信胶囊
   - 不传路径时保存到默认截图目录
 `
     case 'session':
@@ -397,6 +404,7 @@ function summarizeSnapshotPayload(payload, options) {
     kind: record.kind,
     text: record.text,
     route: record.route,
+    ...(record.rectPct ? { rectPct: record.rectPct } : {}),
   })) : []
 
   const summary = {
@@ -411,6 +419,28 @@ function summarizeSnapshotPayload(payload, options) {
   }
 
   return summary
+}
+
+function mergeRecordLayouts(records, rects) {
+  const identityOf = (item) => item && (item.ref || item.businessKey || item.selector || '')
+  const byRef = new Map((rects || []).map((item) => [identityOf(item), item.rectPct]))
+  return (records || []).map((record) => ({
+    ...record,
+    ...(byRef.has(identityOf(record)) ? { rectPct: byRef.get(identityOf(record)) } : {}),
+  }))
+}
+
+function flattenRuntimeNodes(nodes, parentRef = '') {
+  const flattened = []
+  for (const node of nodes || []) {
+    const current = {
+      ...node,
+      parentRef,
+    }
+    flattened.push(current)
+    flattened.push(...flattenRuntimeNodes(node.children || [], current.ref || current.businessKey || ''))
+  }
+  return flattened
 }
 
 function shouldEmitPreludeNotices(command) {
@@ -756,16 +786,26 @@ async function handleSnapshot(state, options, scopeRef = null) {
       depth: options.depth === undefined ? undefined : Number(options.depth),
     })
     Object.assign(state, result.state)
+    let records = result.records
+    let lines = result.lines
+
+    if (options.layout) {
+      const rects = await collectRecordRects(page, records, await miniProgram.systemInfo())
+      records = mergeRecordLayouts(records, rects)
+      lines = formatSnapshotLines(records, { layout: true })
+    }
 
     let visual = null
     if (shouldAttemptVisualProbe(state, page.path, scopeRef)) {
       const visualProbePath = path.join(state.config.tempScreenshotDir, `visual-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
-      const currentProbe = await captureVisualProbeForSnapshot(miniProgram, page, state, result.records, visualProbePath)
+      const currentProbe = await captureVisualProbeForSnapshot(miniProgram, page, state, records, visualProbePath)
       visual = maybeBuildImplicitVisualChange(state, currentProbe)
     }
 
     return {
       ...result,
+      records,
+      lines,
       visual,
     }
   })
@@ -1199,6 +1239,42 @@ async function handleScreenshot(state, outputPath, options) {
         mode: result.mode,
         source: result.source,
         legend: result.legend,
+        focusLegend: result.focusLegend,
+      }
+    }
+
+    if (mode === 'layout') {
+      const page = await getCurrentPage(miniProgram)
+      const systemInfo = await miniProgram.systemInfo()
+      const snapshot = await snapshotInteractive(page, state, null, { compact: Boolean(options.compact) })
+      Object.assign(state, snapshot.state)
+      const semanticRecords = mergeRecordLayouts(snapshot.records, await collectRecordRects(page, snapshot.records, systemInfo))
+      let refs = semanticRecords
+      if (options.raw) {
+        const rawTree = await readRuntimeTree(page, { raw: true })
+        const rawRecords = flattenRuntimeNodes(rawTree ? rawTree.nodes : [])
+        refs = mergeRecordLayouts(rawRecords, await collectRecordRects(page, rawRecords, systemInfo))
+      }
+      const menuButtonRect = options.capsule
+        ? await readOfficialMenuButtonRect(miniProgram, 800)
+        : undefined
+      const result = await captureLayoutScreenshot({
+        targetPath: name,
+        config: state.config,
+        refs,
+        badgeRecords: semanticRecords,
+        focusRecords: semanticRecords,
+        focusRefs,
+        systemInfo,
+        menuButtonRect,
+        capsule: Boolean(options.capsule),
+      })
+
+      return {
+        message: `截图已保存 ${result.path} mode=${result.mode} source=${result.source}`,
+        path: result.path,
+        mode: result.mode,
+        source: result.source,
         focusLegend: result.focusLegend,
       }
     }

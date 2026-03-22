@@ -192,7 +192,22 @@ function formatAutomationCliError(rawMessage) {
     }
   }
 
+  const initializeMatch = message.match(/IDE may already started at port\s+(\d+),\s*trying to connect/iu)
+  if (initializeMatch && /wait IDE port timeout/iu.test(message)) {
+    const [, port] = initializeMatch
+    return {
+      message: `检测到已有 DevTools IDE 实例正在使用端口 ${port}，但这次 attach 连接超时；通常说明该 DevTools 实例当前不健康、仍在初始化，或已经卡住。请先完全关闭微信开发者工具后重试 open；如果确认该 IDE 仍可用，也可稍后重试 open。`,
+      raw: message,
+    }
+  }
+
   return { message, raw: message }
+}
+
+function parseResolvedIdePort(rawMessage) {
+  const message = String(rawMessage || '')
+  const match = message.match(/IDE server has started, listening on http:\/\/127\.0\.0\.1:(\d+)/iu)
+  return match ? String(match[1]) : ''
 }
 
 function buildNativeDiagnostic(method, result, context = {}) {
@@ -285,7 +300,7 @@ async function captureScreenshotToPath(miniProgram, targetPath, timeoutMs = 1500
     )
   } catch (error) {
     if (error && /screenshot timeout/i.test(String(error.message || ''))) {
-      const nextError = new Error('screenshot timeout; 当前 session / DevTools 实例可能已失效，建议 close 当前 session 后重新 open，再重试一次截图。')
+      const nextError = new Error('screenshot timeout; 当前 session / DevTools 实例可能已失效，建议先 close 当前 session 后重新 open，再重试一次截图。如果不同 session / 项目也持续出现同样超时，说明当前 DevTools IDE 实例本身可能不健康，应完全关闭并重启 DevTools。')
       nextError.cause = error
       throw nextError
     }
@@ -351,20 +366,25 @@ function toWindowsPath(inputPath) {
 
 function buildAutomationArgs(config) {
   const hasWindowsBundle = config.cliPath.endsWith('.bat')
+  const args = [
+    'auto',
+    '--project',
+    hasWindowsBundle ? toWindowsPath(config.projectPath) : config.projectPath,
+    '--auto-port',
+    String(config.autoPort),
+  ]
+
+  if (String(config.devtoolsPort || '').trim()) {
+    args.push('--port', String(config.devtoolsPort))
+  }
 
   return {
     hasWindowsBundle,
-    args: [
-      'auto',
-      '--project',
-      hasWindowsBundle ? toWindowsPath(config.projectPath) : config.projectPath,
-      '--auto-port',
-      String(config.autoPort),
-    ],
+    args,
   }
 }
 
-function enableAutomation(config) {
+function runAutomationCli(config) {
   const cliDirectory = path.dirname(config.cliPath)
   const nodeExePath = path.join(cliDirectory, 'node.exe')
   const cliJsPath = path.join(cliDirectory, 'cli.js')
@@ -383,12 +403,34 @@ function enableAutomation(config) {
       timeout: 30000,
     })
 
+  return {
+    ...result,
+    raw: `${result.stdout || ''}${result.stderr || ''}`.trim(),
+  }
+}
+
+function enableAutomation(config) {
+  const result = runAutomationCli(config)
+
   if (result.status !== 0) {
-    const formatted = formatAutomationCliError(`${result.stdout || ''}${result.stderr || ''}`.trim())
+    const formatted = formatAutomationCliError(result.raw)
     const error = new Error(formatted.message)
     error.raw = formatted.raw
     throw error
   }
+
+  const resolvedDevtoolsPort = parseResolvedIdePort(result.raw)
+  if (!String(config.devtoolsPort || '').trim() && resolvedDevtoolsPort) {
+    const pinnedConfig = { ...config, devtoolsPort: resolvedDevtoolsPort }
+    const pinnedResult = runAutomationCli(pinnedConfig)
+    if (pinnedResult.status === 0) {
+      config.devtoolsPort = resolvedDevtoolsPort
+    } else {
+      config.devtoolsPort = resolvedDevtoolsPort
+    }
+  }
+
+  return { resolvedDevtoolsPort }
 }
 
 async function connectWithRetry(config) {
@@ -417,7 +459,10 @@ async function connectOrEnable(config, options = {}, overrides = {}) {
 
   if (options.preferEnable) {
     onProgress && onProgress('enable')
-    enable(config)
+    const metadata = enable(config) || {}
+    if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
+      config.devtoolsPort = metadata.resolvedDevtoolsPort
+    }
     await sleepFn(5000)
     onProgress && onProgress('connect')
     return connect(config)
@@ -428,7 +473,10 @@ async function connectOrEnable(config, options = {}, overrides = {}) {
     return await connect(config)
   } catch (_) {
     onProgress && onProgress('enable')
-    enable(config)
+    const metadata = enable(config) || {}
+    if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
+      config.devtoolsPort = metadata.resolvedDevtoolsPort
+    }
     await sleepFn(5000)
     onProgress && onProgress('connect')
     return connect(config)
@@ -872,6 +920,22 @@ function toSnapshotNode(node, children = []) {
   }
 }
 
+function toRawRuntimeNode(node, children = []) {
+  return {
+    businessKey: node.businessKey || undefined,
+    selector: node.selector,
+    kind: node.kind || node.tagName || 'view',
+    tagName: node.tagName || 'view',
+    text: normalizeRuntimeText(node.text),
+    strategy: {
+      kind: 'selector',
+      selector: node.selector,
+      index: 0,
+    },
+    children,
+  }
+}
+
 function enrichRuntimeNodeContext(nodes, inheritedSection = '') {
   const nextNodes = []
   let currentSection = inheritedSection
@@ -1172,7 +1236,38 @@ function buildRuntimeSnapshotTree(items) {
   return collapseRedundantTextNodes(enrichRuntimeNodeContext(pruned))
 }
 
-async function readRuntimeTree(page) {
+function buildRawRuntimeTree(items) {
+  const itemsByKey = new Map()
+  const roots = []
+
+  for (const item of items) {
+    item.children = []
+    if (item.businessKey) {
+      itemsByKey.set(item.businessKey, item)
+    }
+  }
+
+  for (const item of items) {
+    if (item.parentKey && itemsByKey.has(item.parentKey)) {
+      itemsByKey.get(item.parentKey).children.push(item)
+      continue
+    }
+    roots.push(item)
+  }
+
+  const sortNodes = (nodes) => {
+    nodes.sort((left, right) => left.order - right.order)
+    for (const node of nodes) {
+      sortNodes(node.children)
+    }
+  }
+  sortNodes(roots)
+
+  const convert = (nodes) => (nodes || []).map((node) => toRawRuntimeNode(node, convert(node.children || [])))
+  return convert(roots)
+}
+
+async function readRuntimeTree(page, options = {}) {
   const seedItems = []
   for (const tagName of RUNTIME_SNAPSHOT_SEED_TAGS) {
     const items = await collectRuntimeSnapshotItems(page, tagName).catch(() => [])
@@ -1208,7 +1303,7 @@ async function readRuntimeTree(page) {
 
   return {
     pageKey: buildDefaultPageKey(page),
-    nodes: buildRuntimeSnapshotTree(allItems),
+    nodes: options.raw ? buildRawRuntimeTree(allItems) : buildRuntimeSnapshotTree(allItems),
   }
 }
 
@@ -1562,6 +1657,7 @@ module.exports = {
   buildNativeDiagnostic,
   buildClickNotices,
   formatAutomationCliError,
+  parseResolvedIdePort,
   formatConsoleEventLine,
   formatExceptionEventLine,
   readRuntimeTree,

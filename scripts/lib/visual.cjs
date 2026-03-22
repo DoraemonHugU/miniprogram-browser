@@ -1,4 +1,8 @@
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
+const PImage = require('pureimage')
+const fontkit = require('fontkit')
 
 function resolveNavigationMetrics(windowInfo, menuButtonRect) {
   const screenWidth = windowInfo.screenWidth ?? windowInfo.windowWidth ?? 375
@@ -79,6 +83,13 @@ function requireJimp(config) {
   return jimp
 }
 
+async function createBlankImage(Jimp, width, height, color) {
+  if (typeof Jimp.create === 'function') {
+    return Jimp.create(width, height, color)
+  }
+  throw new Error('Jimp blank image creation is not available')
+}
+
 const FOCUS_PALETTE = [
   { name: 'blue', rgb: [0, 102, 255] },
   { name: 'green', rgb: [0, 214, 143] },
@@ -89,6 +100,48 @@ const FOCUS_PALETTE = [
   { name: 'cyan', rgb: [0, 214, 255] },
   { name: 'lime', rgb: [164, 214, 0] },
 ]
+
+function hashString(value) {
+  let hash = 2166136261
+  const input = String(value || '')
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function hslToRgb(h, s, l) {
+  const hue = ((h % 360) + 360) % 360 / 360
+  const saturation = clampNumber(s, 0, 100) / 100
+  const lightness = clampNumber(l, 0, 100) / 100
+  if (saturation === 0) {
+    const gray = Math.round(lightness * 255)
+    return [gray, gray, gray]
+  }
+  const q = lightness < 0.5
+    ? lightness * (1 + saturation)
+    : lightness + saturation - lightness * saturation
+  const p = 2 * lightness - q
+  const toRgb = (t) => {
+    let channel = t
+    if (channel < 0) channel += 1
+    if (channel > 1) channel -= 1
+    if (channel < 1 / 6) return p + (q - p) * 6 * channel
+    if (channel < 1 / 2) return q
+    if (channel < 2 / 3) return p + (q - p) * (2 / 3 - channel) * 6
+    return p
+  }
+  return [
+    Math.round(toRgb(hue + 1 / 3) * 255),
+    Math.round(toRgb(hue) * 255),
+    Math.round(toRgb(hue - 1 / 3) * 255),
+  ]
+}
+
+function layoutIdentity(record) {
+  return record && (record.ref || record.businessKey || record.selector || `${record.kind || 'node'}:${record.text || ''}`)
+}
 
 function rgba(Jimp, r, g, b, a) {
   return typeof Jimp.rgbaToInt === 'function'
@@ -129,6 +182,28 @@ function insetBox(box, inset) {
 
 function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value))
+}
+
+function boxesOverlap(left, right) {
+  return !(left.x + left.width <= right.x || right.x + right.width <= left.x || left.y + left.height <= right.y || right.y + right.height <= left.y)
+}
+
+function placeBadgeBox(preferredBox, image, occupiedBadges) {
+  const candidateOffsets = [0, 28, 56, -28, 84, -56]
+  for (const offset of candidateOffsets) {
+    const candidate = clampBox({
+      x: preferredBox.x,
+      y: preferredBox.y + offset,
+      width: preferredBox.width,
+      height: preferredBox.height,
+    }, image.bitmap)
+    if (!occupiedBadges.some((item) => boxesOverlap(item, candidate))) {
+      occupiedBadges.push(candidate)
+      return candidate
+    }
+  }
+  occupiedBadges.push(preferredBox)
+  return preferredBox
 }
 
 function drawRectFill(image, box, color) {
@@ -181,6 +256,487 @@ function drawRectOutline(image, box, color, thickness = 3) {
   drawRectFill(image, { x: box.x, y: Math.max(box.y, box.y + box.height - safeThickness), width: box.width, height: Math.min(box.height, safeThickness) }, color)
   drawRectFill(image, { x: box.x, y: box.y, width: Math.min(box.width, safeThickness), height: box.height }, color)
   drawRectFill(image, { x: Math.max(box.x, box.x + box.width - safeThickness), y: box.y, width: Math.min(box.width, safeThickness), height: box.height }, color)
+}
+
+function kindVisualStyle(Jimp, kind) {
+  const styles = {
+    button: {
+      fill: rgba(Jimp, 219, 234, 254, 255),
+      border: rgba(Jimp, 37, 99, 235, 255),
+      labelBg: rgba(Jimp, 37, 99, 235, 228),
+    },
+    text: {
+      fill: rgba(Jimp, 241, 245, 249, 255),
+      border: rgba(Jimp, 148, 163, 184, 255),
+      labelBg: rgba(Jimp, 71, 85, 105, 216),
+    },
+    input: {
+      fill: rgba(Jimp, 255, 255, 255, 255),
+      border: rgba(Jimp, 51, 65, 85, 255),
+      labelBg: rgba(Jimp, 51, 65, 85, 220),
+    },
+    image: {
+      fill: rgba(Jimp, 226, 232, 240, 255),
+      border: rgba(Jimp, 71, 85, 105, 255),
+      labelBg: rgba(Jimp, 71, 85, 105, 220),
+    },
+    default: {
+      fill: rgba(Jimp, 248, 250, 252, 255),
+      border: rgba(Jimp, 148, 163, 184, 255),
+      labelBg: rgba(Jimp, 71, 85, 105, 220),
+    },
+  }
+
+  return styles[kind] || styles.default
+}
+
+function resolveLayoutFontPath(config) {
+  const candidates = [
+    process.env.MINIPROGRAM_BROWSER_LAYOUT_FONT,
+    process.env.MPB_LAYOUT_FONT,
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf',
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return ''
+}
+
+function resolveFontkitFont(fontPath) {
+  const opened = fontkit.openSync(fontPath)
+  if (opened && Array.isArray(opened.fonts) && opened.fonts.length) {
+    return opened.fonts[0]
+  }
+  return opened
+}
+
+function measureGlyphRun(font, text, fontSize) {
+  const run = font.layout(text)
+  const scale = fontSize / font.unitsPerEm
+  const width = run.positions.reduce((sum, position) => sum + (position.xAdvance || 0), 0) * scale
+  return { run, width }
+}
+
+function fitLayoutText(font, text, fontSize, maxWidth) {
+  const raw = String(text || '').trim()
+  if (!raw) {
+    return ''
+  }
+
+  if (measureGlyphRun(font, raw, fontSize).width <= maxWidth) {
+    return raw
+  }
+
+  const chars = Array.from(raw)
+  let current = ''
+  for (const char of chars) {
+    const next = `${current}${char}`
+    if (measureGlyphRun(font, `${next}…`, fontSize).width > maxWidth) {
+      return current ? `${current}…` : raw.slice(0, 1)
+    }
+    current = next
+  }
+
+  return raw
+}
+
+function drawGlyphRun(ctx, font, text, x, baselineY, fontSize) {
+  const { run } = measureGlyphRun(font, text, fontSize)
+  const scale = fontSize / font.unitsPerEm
+  let penX = x
+
+  for (let index = 0; index < run.glyphs.length; index += 1) {
+    const glyph = run.glyphs[index]
+    const position = run.positions[index]
+    const glyphPath = glyph.path
+    let hasPath = false
+    ctx.beginPath()
+
+    for (const command of glyphPath.commands) {
+      const args = command.args || []
+      if (command.command === 'moveTo') {
+        hasPath = true
+        ctx.moveTo(penX + args[0] * scale + position.xOffset * scale, baselineY - args[1] * scale - position.yOffset * scale)
+      } else if (command.command === 'lineTo') {
+        hasPath = true
+        ctx.lineTo(penX + args[0] * scale + position.xOffset * scale, baselineY - args[1] * scale - position.yOffset * scale)
+      } else if (command.command === 'quadraticCurveTo') {
+        hasPath = true
+        ctx.quadraticCurveTo(
+          penX + args[0] * scale + position.xOffset * scale,
+          baselineY - args[1] * scale - position.yOffset * scale,
+          penX + args[2] * scale + position.xOffset * scale,
+          baselineY - args[3] * scale - position.yOffset * scale,
+        )
+      } else if (command.command === 'bezierCurveTo') {
+        hasPath = true
+        ctx.bezierCurveTo(
+          penX + args[0] * scale + position.xOffset * scale,
+          baselineY - args[1] * scale - position.yOffset * scale,
+          penX + args[2] * scale + position.xOffset * scale,
+          baselineY - args[3] * scale - position.yOffset * scale,
+          penX + args[4] * scale + position.xOffset * scale,
+          baselineY - args[5] * scale - position.yOffset * scale,
+        )
+      } else if (command.command === 'closePath') {
+        ctx.closePath()
+      }
+    }
+
+    if (hasPath) {
+      ctx.fill()
+    }
+    penX += position.xAdvance * scale
+  }
+}
+
+function stripLayoutContextSuffix(text) {
+  return String(text || '').replace(/\s*<[^>]+>\s*$/u, '').trim()
+}
+
+function buildLayoutTextItems(image, refs) {
+  const parentRefs = new Set((refs || []).map((record) => record.parentRef).filter(Boolean))
+  const byId = new Map((refs || []).map((record) => [record.ref || record.businessKey || record.selector, record]))
+  const childrenByParent = new Map()
+  for (const record of refs || []) {
+    const parentId = record.parentRef
+    if (parentId) {
+      const existingChildren = childrenByParent.get(parentId) || []
+      existingChildren.push(record)
+      childrenByParent.set(parentId, existingChildren)
+    }
+  }
+
+  const textByNode = new Map()
+  function collectDescendantTexts(record) {
+    const id = record.ref || record.businessKey || record.selector
+    if (!id) {
+      return new Set()
+    }
+    if (textByNode.has(id)) {
+      return textByNode.get(id)
+    }
+
+    const texts = new Set()
+    for (const child of childrenByParent.get(id) || []) {
+      const childText = stripLayoutContextSuffix(child.text)
+      if (child.kind === 'text' && childText) {
+        texts.add(childText)
+      }
+      for (const item of collectDescendantTexts(child)) {
+        texts.add(item)
+      }
+    }
+    textByNode.set(id, texts)
+    return texts
+  }
+
+  for (const record of refs || []) {
+    if (!record || record.kind !== 'text' || !record.parentRef) {
+      continue
+    }
+    const normalized = stripLayoutContextSuffix(record.text)
+    if (!normalized) {
+      continue
+    }
+    collectDescendantTexts(byId.get(record.parentRef) || record)
+  }
+  const items = []
+
+  for (const record of refs || []) {
+    const text = stripLayoutContextSuffix(record && record.text)
+    if (!record || !record.rectPct || !text) {
+      continue
+    }
+    if (record.kind === 'view' && parentRefs.has(record.ref)) {
+      continue
+    }
+    if (record.kind !== 'text') {
+      const childTexts = collectDescendantTexts(record)
+      if (childTexts && childTexts.has(text)) {
+        continue
+      }
+    }
+
+    const box = clampBox({
+      x: image.bitmap.width * (record.rectPct.x / 100),
+      y: image.bitmap.height * (record.rectPct.y / 100),
+      width: image.bitmap.width * (record.rectPct.w / 100),
+      height: image.bitmap.height * (record.rectPct.h / 100),
+    }, image.bitmap)
+
+    items.push({ ref: record.ref, kind: record.kind, text, box, safeBox: { ...box } })
+  }
+
+  return items
+}
+
+function computeTextSafeBoxes(textItems, occupiedBadges) {
+  for (const item of textItems || []) {
+    const safeBox = {
+      x: item.box.x + 8,
+      y: item.box.y + 6,
+      width: Math.max(1, item.box.width - 16),
+      height: Math.max(1, item.box.height - 10),
+    }
+    for (const badge of occupiedBadges || []) {
+      if (!boxesOverlap(safeBox, badge)) {
+        continue
+      }
+      const badgeBottom = badge.y + badge.height + 4
+      const badgeRight = badge.x + badge.width + 6
+      if (badgeBottom > safeBox.y && badgeBottom < item.box.y + item.box.height) {
+        const delta = badgeBottom - safeBox.y
+        safeBox.y += delta
+        safeBox.height = Math.max(1, safeBox.height - delta)
+      }
+      if (badgeRight > safeBox.x && badgeRight < item.box.x + item.box.width) {
+        const delta = badgeRight - safeBox.x
+        safeBox.x += delta
+        safeBox.width = Math.max(1, safeBox.width - delta)
+      }
+    }
+    item.safeBox = safeBox
+  }
+  return textItems
+}
+
+function drawCapsuleOverlay(image, Jimp, systemInfo, menuButtonRect) {
+  const navigationMetrics = resolveNavigationMetrics(systemInfo || {}, menuButtonRect)
+  const box = resolveCapsuleBox({
+    imageWidth: image.bitmap.width,
+    navigationMetrics,
+    windowWidth: (systemInfo && (systemInfo.windowWidth || systemInfo.screenWidth)) || 375,
+    pixelRatio: (systemInfo && systemInfo.pixelRatio) || 1,
+  })
+  const fillColor = rgba(Jimp, 255, 255, 255, 232)
+  const borderColor = rgba(Jimp, 148, 163, 184, 168)
+  const iconColor = rgba(Jimp, 71, 85, 105, 255)
+  const paint = resolveCapsulePaintSpec(box)
+
+  drawRoundedRect(image, box, fillColor, borderColor)
+  drawLine(image, box.separatorX, box.y + paint.separatorInset, box.separatorX, box.y + box.height - paint.separatorInset, borderColor, paint.dividerThickness)
+  const leftCenterX = box.x + Math.round(box.width * 0.25)
+  const rightCenterX = box.x + Math.round(box.width * 0.75)
+  drawCircle(image, leftCenterX - paint.menuDotGap, box.centerY, paint.menuDotRadius, iconColor)
+  drawCircle(image, leftCenterX, box.centerY, paint.menuDotRadius, iconColor)
+  drawCircle(image, leftCenterX + paint.menuDotGap, box.centerY, paint.menuDotRadius, iconColor)
+  drawRing(image, rightCenterX, box.centerY, paint.closeRingRadius, paint.closeRingStroke, iconColor)
+}
+
+async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }) {
+  const fontPath = resolveLayoutFontPath()
+  if (!fontPath) {
+    return false
+  }
+
+  const font = resolveFontkitFont(fontPath)
+  const canvas = PImage.make(image.bitmap.width, image.bitmap.height)
+  const ctx = canvas.getContext('2d')
+  canvas.data.fill(0)
+  ctx.fillStyle = '#0f172a'
+
+  for (const record of textItems || []) {
+    const box = record.safeBox || record.box
+    const fontSize = clampNumber(Math.round(box.height * 0.56), 10, 24)
+    const maxWidth = Math.max(8, box.width)
+    const text = fitLayoutText(font, record.text, fontSize, maxWidth)
+    if (!text) {
+      continue
+    }
+    drawGlyphRun(ctx, font, text, box.x, box.y + fontSize, fontSize)
+  }
+
+  const overlayPath = path.join(os.tmpdir(), `mpb-layout-text-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+  await PImage.encodePNGToStream(canvas, fs.createWriteStream(overlayPath))
+  const Jimp = requireJimp({})
+  const overlay = await Jimp.read(overlayPath)
+  image.composite(overlay, 0, 0)
+  try {
+    await fs.promises.unlink(overlayPath)
+  } catch (_) {
+  }
+  return true
+}
+
+function buildLayoutMetrics(refs) {
+  const byRef = new Map((refs || []).map((record) => [layoutIdentity(record), record]))
+  const cache = new Map()
+  let rootIndex = 0
+
+  function resolve(record) {
+    if (!record) {
+      return { depth: 0, group: 0 }
+    }
+    const identity = layoutIdentity(record)
+    if (cache.has(identity)) {
+      return cache.get(identity)
+    }
+    if (!record.parentRef) {
+      const result = { depth: 0, group: rootIndex++ }
+      cache.set(identity, result)
+      return result
+    }
+    const parentMetrics = resolve(byRef.get(record.parentRef))
+    const result = { depth: parentMetrics.depth + 1, group: parentMetrics.group }
+    cache.set(identity, result)
+    return result
+  }
+
+  for (const record of refs || []) {
+    resolve(record)
+  }
+
+  return cache
+}
+
+function layoutColorScheme(Jimp, record, metrics) {
+  const metric = metrics.get(layoutIdentity(record)) || { depth: 0, group: 0 }
+  const identityHash = hashString(layoutIdentity(record))
+  const hue = (metric.group * 83 + identityHash) % 360
+  const fill = hslToRgb(hue, 72, clampNumber(88 - metric.depth * 4, 62, 90))
+  const border = hslToRgb(hue, 82, clampNumber(52 - metric.depth * 2, 34, 56))
+  const label = hslToRgb(hue, 76, clampNumber(40 - metric.depth, 28, 44))
+
+  return {
+    fill: rgba(Jimp, ...fill, 255),
+    border: rgba(Jimp, ...border, 255),
+    labelBg: rgba(Jimp, ...label, 228),
+    labelText: rgba(Jimp, 255, 255, 255, 255),
+    metric,
+  }
+}
+
+function textForLayout(record) {
+  return record.ref
+}
+
+function drawLayoutNode(image, Jimp, record, font, metrics, badgeState, options = {}) {
+  if (!record || !record.rectPct) {
+    return
+  }
+
+  const box = clampBox({
+    x: image.bitmap.width * (record.rectPct.x / 100),
+    y: image.bitmap.height * (record.rectPct.y / 100),
+    width: image.bitmap.width * (record.rectPct.w / 100),
+    height: image.bitmap.height * (record.rectPct.h / 100),
+  }, image.bitmap)
+  const minDimension = Math.max(1, Math.min(box.width, box.height))
+  const borderThickness = clampNumber(Math.round(minDimension * 0.05), 1, 6)
+  const innerBox = insetBox(box, 1)
+  const paletteStyle = layoutColorScheme(Jimp, record, metrics)
+  const fillAlpha = record.kind === 'view'
+    ? clampNumber(28 + (paletteStyle.metric.depth * 10), 28, 64)
+    : 255
+  blendRectFill(image, box, (paletteStyle.fill & 0xffffff00) | fillAlpha)
+  drawRectOutline(image, box, rgba(Jimp, 15, 23, 42, 180), borderThickness + 1)
+  drawRectOutline(image, innerBox, paletteStyle.border, borderThickness)
+
+  if (options.drawBadge) {
+    drawSemanticBadge(image, Jimp, record, font, badgeState, paletteStyle.metric.depth)
+  }
+}
+
+function drawSemanticBadge(image, Jimp, record, font, badgeState, depth = 0) {
+  if (!record || !record.ref || !record.rectPct) {
+    return
+  }
+
+  const box = clampBox({
+    x: image.bitmap.width * (record.rectPct.x / 100),
+    y: image.bitmap.height * (record.rectPct.y / 100),
+    width: image.bitmap.width * (record.rectPct.w / 100),
+    height: image.bitmap.height * (record.rectPct.h / 100),
+  }, image.bitmap)
+  const labelWidth = clampNumber(Math.max(56, record.ref.length * 10 + 18), 56, Math.max(56, image.bitmap.width - box.x))
+  const labelBox = placeBadgeBox(clampBox({
+    x: (depth % 2 === 0)
+      ? box.x
+      : Math.max(0, box.x + box.width - labelWidth),
+    y: Math.max(0, box.y - 24),
+    width: labelWidth,
+    height: 20,
+  }, image.bitmap), image, badgeState.badges)
+  const badgeMetrics = badgeState.metrics || new Map()
+  const badgePalette = layoutColorScheme(Jimp, record, badgeMetrics)
+  drawRoundedRect(image, labelBox, badgePalette.labelBg, rgba(Jimp, 15, 23, 42, 220))
+  if (font && typeof image.print === 'function') {
+    image.print(font, labelBox.x + 6, labelBox.y + 4, record.ref, Math.max(1, labelWidth - 12))
+  }
+}
+
+async function captureLayoutScreenshot({
+  targetPath,
+  config,
+  refs,
+  focusRefs,
+  focusRecords,
+  badgeRecords,
+  systemInfo,
+  menuButtonRect,
+  capsule,
+  createImageAdapter,
+  colorAdapter,
+  textRenderer,
+}) {
+  const Jimp = colorAdapter || requireJimp(config)
+  const windowWidth = Number(systemInfo && (systemInfo.windowWidth || systemInfo.screenWidth)) || 375
+  const windowHeight = Number(systemInfo && (systemInfo.windowHeight || systemInfo.screenHeight)) || 812
+  const imageWidth = Math.max(1080, Math.round(windowWidth * 2.5))
+  const imageHeight = Math.max(320, Math.round(imageWidth * (windowHeight / windowWidth)))
+  const image = createImageAdapter
+    ? await createImageAdapter(targetPath)
+    : await createBlankImage(Jimp, imageWidth, imageHeight, rgba(Jimp, 248, 250, 252, 255))
+  const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
+    ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
+    : null
+  const metrics = buildLayoutMetrics(refs)
+  const badgeState = { badges: [], metrics: buildLayoutMetrics(badgeRecords || refs) }
+  const suppressedBadgeRefs = new Set(Array.isArray(focusRefs) ? focusRefs : [])
+  const semanticBadges = badgeRecords || refs || []
+
+  drawRectFill(image, { x: 0, y: 0, width: image.bitmap.width, height: image.bitmap.height }, rgba(Jimp, 248, 250, 252, 255))
+  if (capsule) {
+    drawCapsuleOverlay(image, Jimp, systemInfo, menuButtonRect)
+  }
+  for (const record of refs || []) {
+    drawLayoutNode(image, Jimp, record, font, metrics, badgeState, { drawBadge: false })
+  }
+
+  for (const record of semanticBadges) {
+    if (suppressedBadgeRefs.has(record.ref)) {
+      continue
+    }
+    drawSemanticBadge(image, Jimp, record, font, badgeState, 0)
+  }
+
+  const textItems = computeTextSafeBoxes(buildLayoutTextItems(image, refs), badgeState.badges)
+
+  if (textRenderer) {
+    await textRenderer({ image, refs, systemInfo, textItems })
+  } else if (typeof image.composite === 'function') {
+    await renderLayoutTextOverlay({ image, refs, textItems, systemInfo })
+  }
+
+  let focusLegend = []
+  if (Array.isArray(focusRefs) && focusRefs.length) {
+    focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(focusRecords || semanticBadges || refs, focusRefs), font)
+  }
+
+  await image.writeAsync(targetPath)
+
+  return {
+    path: targetPath,
+    mode: 'layout',
+    source: focusLegend.length ? 'layout+focus' : 'layout',
+    focusLegend,
+  }
 }
 
 function resolveFocusTargets(refs, focusRefs) {
@@ -494,7 +1050,9 @@ async function captureAnnotatedScreenshot({
 
 module.exports = {
   captureAnnotatedScreenshot,
+  captureLayoutScreenshot,
   overlayFocusScreenshot,
+  layoutColorScheme,
   resolveNavigationMetrics,
   resolveCapsuleBox,
   resolveCapsulePaintSpec,

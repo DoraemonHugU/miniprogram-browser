@@ -38,7 +38,9 @@
     "access": "public"
   },
   "dependencies": {
+    "fontkit": "^2.0.4",
     "jimp": "0.6.4",
-    "miniprogram-automator": "0.12.1"
+    "miniprogram-automator": "0.12.1",
+    "pureimage": "^0.4.18"
   }
 }

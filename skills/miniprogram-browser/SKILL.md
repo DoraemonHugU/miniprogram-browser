@@ -38,6 +38,31 @@ npx miniprogram-browser ...
 4. 再 `snapshot -i` 生成 `@eN` refs
 5. 页面明显变化后，重新 `snapshot -i`
 
+如果你需要让模型通过文字理解布局，可以改用：
+
+```bash
+miniprogram-browser snapshot -i --layout --session feat-a
+```
+
+它会为每个 ref 附加相对窗口的比例位置/尺寸（`x/y/w/h` 百分比）。
+
+如果真实截图不稳定，也可以直接生成结构替代图：
+
+```bash
+miniprogram-browser screenshot out.png --session feat-a --mode layout --focus @e20,@e21
+miniprogram-browser screenshot out.png --session feat-a --mode layout -c --capsule
+```
+
+`layout` 模式会：
+
+- 默认使用语义布局层渲染结构图
+- `-c/--compact` 时输出更紧凑的语义布局
+- `--raw` 时切到更底层的运行时节点布局
+- 用确定性多色分组增强层次区分
+- 通过纯 JS 字体路径叠加中文文本
+- 继续支持 `--focus` 高亮
+- 可选 `--capsule` 叠加右上角微信胶囊
+
 ## 最常用流程
 
 ```bash
@@ -167,6 +192,7 @@ miniprogram-browser exceptions --session feat-a
 - 页面明显变化后，重新执行 `snapshot -i`
 - 如果当前路由和 ref 绑定路由不一致，应重新 query 或 snapshot
 - `snapshot -i -c` 只是更紧凑的显示方式；compact 视图中的 ref 现在会复用普通快照里的同一 identity
+- `snapshot -i --layout` 会附加比例 rect；适合让模型做纯文字布局分析
 
 ## 常见误区
 

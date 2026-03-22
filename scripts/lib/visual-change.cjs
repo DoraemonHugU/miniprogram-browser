@@ -143,6 +143,8 @@ async function collectRecordRects(page, records, systemInfo) {
         const top = Number(offset && offset.top) || 0
         refs.push({
           ref: record.ref,
+          businessKey: record.businessKey,
+          selector,
           kind: record.kind,
           text: record.text,
           rectPct: {

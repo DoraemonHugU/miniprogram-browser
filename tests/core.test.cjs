@@ -204,6 +204,21 @@ test('formatSnapshotLines outputs readable interactive refs', () => {
   ])
 })
 
+test('formatSnapshotLines appends proportional layout info when enabled', () => {
+  const output = formatSnapshotLines([
+    {
+      ref: '@e1',
+      kind: 'view',
+      text: '工具箱',
+      rectPct: { x: 12.5, y: 20, w: 75, h: 10.5 },
+    },
+  ], { layout: true })
+
+  assert.deepEqual(output, [
+    '@e1 [view] 工具箱 {x:12.5,y:20,w:75,h:10.5}',
+  ])
+})
+
 test('createDefaultConfig uses apps/miniprogram root projectPath', () => {
   const config = createDefaultConfig('/repo')
   assert.equal(config.projectPath, '')
@@ -352,11 +367,13 @@ test('assignPorts rejects caller-specified autoPort already used by another sess
 
 test('ensureSessionPorts assigns missing autoPort for a fresh session', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-fresh-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-fresh.json`)
   try {
     const state = {
       name: 'fresh',
       config: {
         sessionDir: tempDir,
+        sessionRegistryFile: registryFile,
         projectPath: '/worktree-a/apps/miniprogram',
         devtoolsPort: '',
         autoPort: '',
@@ -366,15 +383,17 @@ test('ensureSessionPorts assigns missing autoPort for a fresh session', async ()
     const result = await ensureSessionPorts(state, async () => true)
     assert.equal(result.config.devtoolsPort, '')
     assert.equal(result.config.autoPort, '9421')
-    assert.equal(result.portResolution.devtoolsPortAssigned, false)
-    assert.equal(result.portResolution.autoPortAssigned, true)
+      assert.equal(result.portResolution.devtoolsPortAssigned, false)
+      assert.equal(result.portResolution.autoPortAssigned, true)
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
   }
 })
 
 test('ensureSessionPorts avoids reserved auto ports for fresh session', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-fresh-reserved-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-reserved.json`)
   try {
     await fs.promises.writeFile(path.join(tempDir, 'other.json'), JSON.stringify({
       config: {
@@ -388,6 +407,7 @@ test('ensureSessionPorts avoids reserved auto ports for fresh session', async ()
       name: 'fresh',
       config: {
         sessionDir: tempDir,
+        sessionRegistryFile: registryFile,
         projectPath: '/worktree-a/apps/miniprogram',
         devtoolsPort: '',
         autoPort: '',
@@ -398,6 +418,7 @@ test('ensureSessionPorts avoids reserved auto ports for fresh session', async ()
     assert.equal(result.config.autoPort, '9422')
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
   }
 })
 

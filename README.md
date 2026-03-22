@@ -88,6 +88,8 @@ npx miniprogram-browser help
 - `eval / native / call wx / call page`
 - `screenshot --mode page|visual|annotate`
 - `screenshot --focus @e1,@e2`
+- `snapshot -i --layout`
+- `screenshot --mode layout`
 
 它不是浏览器 DOM 自动化，而是基于 `miniprogram-automator` 的运行时元素能力重建语义树。
 
@@ -144,6 +146,49 @@ miniprogram-browser screenshot --session demo
 - 先 `path` / `app inspect` 确认状态
 - 或先 `snapshot -i` 确认关键节点已经出现、结构已经稳定
 - 再执行截图
+
+## 布局分析
+
+如果希望模型通过文字理解页面布局，可以在语义快照里附加比例布局信息：
+
+```bash
+miniprogram-browser snapshot -i --layout --session demo
+```
+
+开启后，每个 ref 会附带相对窗口的比例位置/尺寸：
+
+```text
+@e20 [button] 工具箱 {x:10.4,y:82.1,w:24.5,h:6.8}
+```
+
+含义：
+
+- `x` / `y`: 左上角相对窗口的百分比位置
+- `w` / `h`: 相对窗口的百分比宽高
+
+这比绝对像素更适合给模型做跨设备布局分析。
+
+如果希望在截图失败时生成一张可读的结构替代图，也可以直接用：
+
+```bash
+miniprogram-browser screenshot out.png --session demo --mode layout --focus @e20,@e21
+```
+
+如果想让布局图更接近当前语义快照，也可以切到紧凑模式：
+
+```bash
+miniprogram-browser screenshot out.png --session demo --mode layout -c
+```
+
+`layout` 模式特点：
+
+- 默认使用语义布局层，更适合快速阅读
+- `-c/--compact` 时改用更紧凑的语义布局
+- `--raw` 时切到更底层的运行时节点布局
+- 容器使用确定性多色分组，增强区分度
+- 中文文本通过纯 JS 字体路径渲染叠加，不依赖浏览器截图
+- 可继续叠加 `--focus` 高亮
+- 可选 `--capsule` 叠加右上角微信胶囊
 
 ## Skill 集成
 

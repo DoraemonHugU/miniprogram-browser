@@ -182,6 +182,8 @@ test('collectRecordRects maps selectors to percentage rects', async () => {
 
   assert.deepEqual(refs, [{
     ref: '@e1',
+    businessKey: undefined,
+    selector: '.cta',
     kind: 'button',
     text: '开始',
     rectPct: { x: 25, y: 25, w: 50, h: 50 },

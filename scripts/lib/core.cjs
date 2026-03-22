@@ -236,7 +236,7 @@ function buildFallbackSnapshotRecords({ matches, epoch, route, startIndex = 1, s
   return { records, nextIndex }
 }
 
-function formatSnapshotLines(records) {
+function formatSnapshotLines(records, options = {}) {
   const recordsByRef = new Map((records || []).map((record) => [record.ref, record]))
   const depthCache = new Map()
 
@@ -254,11 +254,21 @@ function formatSnapshotLines(records) {
     return parentDepth
   }
 
+  function formatLayout(record) {
+    if (!options.layout || !record || !record.rectPct) {
+      return ''
+    }
+
+    const { x, y, w, h } = record.rectPct
+    return ` {x:${x},y:${y},w:${w},h:${h}}`
+  }
+
   return (records || []).map((record) => {
     const indent = '  '.repeat(resolveDepth(record))
     const prefix = `${record.ref} [${record.kind || 'custom'}]`
     const text = String(record.text || '').trim()
-    return text ? `${indent}${prefix} ${text}` : `${indent}${prefix}`
+    const base = text ? `${indent}${prefix} ${text}` : `${indent}${prefix}`
+    return `${base}${formatLayout(record)}`
   })
 }
 

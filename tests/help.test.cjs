@@ -49,9 +49,19 @@ test('buildCommandHelpText returns screenshot mode details', () => {
   const help = buildCommandHelpText('screenshot')
 
   assert.match(help, /^screenshot/m)
-  assert.match(help, /--mode <page\|visual\|annotate>/)
+  assert.match(help, /--mode <page\|visual\|annotate\|layout>/)
   assert.match(help, /--focus <refs>/)
-  assert.match(help, /annotate/)
+  assert.match(help, /--capsule/)
+  assert.match(help, /-c\|--compact/)
+  assert.match(help, /--raw/)
+  assert.match(help, /layout/)
+})
+
+test('buildCommandHelpText returns snapshot layout option details', () => {
+  const help = buildCommandHelpText('snapshot')
+
+  assert.match(help, /^snapshot/m)
+  assert.match(help, /--layout/)
 })
 
 test('parseFocusRefs normalizes comma separated focus refs', () => {
@@ -88,14 +98,14 @@ test('summarizeTimelinePayload keeps only high-value route fields by default', (
 test('summarizeSnapshotPayload hides internal state unless --all', () => {
   const payload = {
     state: { route: 'pages/dashboard/index' },
-    records: [{ ref: '@e1', kind: 'button', text: '保存', route: 'pages/dashboard/index' }],
+    records: [{ ref: '@e1', kind: 'button', text: '保存', route: 'pages/dashboard/index', rectPct: { x: 10, y: 20, w: 30, h: 40 } }],
     lines: ['@e1 [button] 保存'],
   }
 
   assert.deepEqual(summarizeSnapshotPayload(payload, {}), {
     route: 'pages/dashboard/index',
     count: 1,
-    records: [{ ref: '@e1', kind: 'button', text: '保存', route: 'pages/dashboard/index' }],
+    records: [{ ref: '@e1', kind: 'button', text: '保存', route: 'pages/dashboard/index', rectPct: { x: 10, y: 20, w: 30, h: 40 } }],
     lines: ['@e1 [button] 保存'],
   })
   assert.equal(summarizeSnapshotPayload(payload, { all: true }).state.route, 'pages/dashboard/index')

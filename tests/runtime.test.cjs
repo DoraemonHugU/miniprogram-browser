@@ -28,6 +28,7 @@ const {
   buildNativeDiagnostic,
   buildClickNotices,
   formatAutomationCliError,
+  parseResolvedIdePort,
   callWxMethod,
   callPageMethod,
   buildAutomationArgs,
@@ -147,6 +148,80 @@ test('readRuntimeTree rebuilds nested structure from runtime outerWxml', async (
   assert.equal(tree.nodes[0].businessKey, 'data-sid:cta')
   assert.equal(tree.nodes[0].kind, 'button')
   assert.deepEqual(tree.nodes[0].children, [])
+})
+
+test('readRuntimeTree raw mode keeps structural descendants', async () => {
+  const page = {
+    path: 'pages/dashboard/index',
+    query: {},
+    async $$(selector) {
+      if (selector === 'view') {
+        return [
+          {
+            tagName: 'view',
+            async text() { return '保存' },
+            async outerWxml() {
+              return '<view data-sid="root"><view data-sid="cta" hover-class="hover"><text data-sid="label">保存</text></view></view>'
+            },
+          },
+          {
+            tagName: 'view',
+            async text() { return '保存' },
+            async outerWxml() {
+              return '<view data-sid="cta" hover-class="hover"><text data-sid="label">保存</text></view>'
+            },
+          },
+        ]
+      }
+      if (selector === 'text') {
+        return [
+          {
+            tagName: 'text',
+            async text() { return '保存' },
+            async outerWxml() {
+              return '<text data-sid="label">保存</text>'
+            },
+          },
+        ]
+      }
+      return []
+    },
+  }
+
+  const tree = await readRuntimeTree(page, { raw: true })
+  assert.equal(tree.nodes.length, 1)
+  assert.equal(tree.nodes[0].businessKey, 'data-sid:root')
+  assert.equal(tree.nodes[0].children.length, 1)
+  assert.equal(tree.nodes[0].children[0].businessKey, 'data-sid:cta')
+  assert.equal(tree.nodes[0].children[0].children.length, 1)
+})
+
+test('readRuntimeTree raw mode uses selector index zero for unique selectors', async () => {
+  const page = {
+    path: 'pages/dashboard/index',
+    query: {},
+    async $$(selector) {
+      if (selector === 'view') {
+        return [
+          {
+            tagName: 'view',
+            async text() { return 'A' },
+            async outerWxml() { return '<view id="a">A</view>' },
+          },
+          {
+            tagName: 'view',
+            async text() { return 'B' },
+            async outerWxml() { return '<view id="b">B</view>' },
+          },
+        ]
+      }
+      return []
+    },
+  }
+
+  const tree = await readRuntimeTree(page, { raw: true })
+  assert.equal(tree.nodes[0].strategy.index, 0)
+  assert.equal(tree.nodes[1].strategy.index, 0)
 })
 
 test('readRuntimeTree keeps clickable wrapper as button with combined text', async () => {
@@ -660,6 +735,18 @@ test('formatAutomationCliError adds actionable hint for devtools port restart re
   assert.match(error.message, /close 当前 session 或在微信开发者工具里重启服务端口/i)
 })
 
+test('formatAutomationCliError explains IDE initialize timeout with existing IDE port', () => {
+  const error = formatAutomationCliError([
+    '- initialize',
+    'IDE may already started at port 56305, trying to connect',
+    '#initialize-error: wait IDE port timeout',
+  ].join('\n'))
+
+  assert.match(error.message, /检测到已有 DevTools IDE 实例.*56305/i)
+  assert.match(error.message, /attach 超时|连接超时/i)
+  assert.match(error.message, /完全关闭微信开发者工具|重试 open/i)
+})
+
 test('connectOrEnable prefers enable-first for open-like calls', async () => {
   const calls = []
   const result = await connectOrEnable({ autoPort: 9421 }, {
@@ -688,6 +775,26 @@ test('connectOrEnable prefers enable-first for open-like calls', async () => {
     'connect',
   ])
   assert.deepEqual(result, { ok: true })
+})
+
+test('connectOrEnable adopts resolved devtools port from enable metadata', async () => {
+  const config = { autoPort: 9421, devtoolsPort: '' }
+  let observedPort = ''
+  await connectOrEnable(config, {
+    preferEnable: true,
+  }, {
+    async connect(nextConfig) {
+      observedPort = nextConfig.devtoolsPort
+      return { ok: true }
+    },
+    enable() {
+      return { resolvedDevtoolsPort: '38596' }
+    },
+    async sleepFn() {},
+  })
+
+  assert.equal(config.devtoolsPort, '38596')
+  assert.equal(observedPort, '38596')
 })
 
 test('connectOrEnable reports fallback phases after initial connect failure', async () => {
@@ -726,7 +833,20 @@ test('connectOrEnable reports fallback phases after initial connect failure', as
   assert.deepEqual(result, { ok: true })
 })
 
-test('buildAutomationArgs uses project path and auto-port without forcing HTTP port', () => {
+test('buildAutomationArgs omits HTTP port when devtoolsPort is empty', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  })
+
+  assert.deepEqual(result.args.slice(0, 2), ['auto', '--project'])
+  assert.equal(result.args.includes('--port'), false)
+  assert.deepEqual(result.args.slice(-2), ['--auto-port', '9421'])
+})
+
+test('buildAutomationArgs includes explicit HTTP port when provided', () => {
   const result = buildAutomationArgs({
     cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
     projectPath: '/home/wang/demo/apps/miniprogram',
@@ -734,9 +854,15 @@ test('buildAutomationArgs uses project path and auto-port without forcing HTTP p
     devtoolsPort: '39085',
   })
 
-  assert.deepEqual(result.args.slice(0, 2), ['auto', '--project'])
-  assert.equal(result.args.includes('--port'), false)
-  assert.deepEqual(result.args.slice(-2), ['--auto-port', '9421'])
+  assert.deepEqual(result.args.slice(-4), ['--auto-port', '9421', '--port', '39085'])
+})
+
+test('parseResolvedIdePort extracts listening IDE port from CLI output', () => {
+  assert.equal(
+    parseResolvedIdePort('✔ IDE server has started, listening on http://127.0.0.1:38596'),
+    '38596',
+  )
+  assert.equal(parseResolvedIdePort('no port here'), '')
 })
 
 test('queryRecords selector mode still uses official selector lookup', async () => {
@@ -867,6 +993,7 @@ test('captureScreenshotToPath fails fast on timeout', async () => {
   }, (error) => {
     assert.match(error.message, /screenshot timeout/i)
     assert.match(error.message, /close .* open/i)
+    assert.match(error.message, /重启 DevTools/i)
     return true
   })
 })
