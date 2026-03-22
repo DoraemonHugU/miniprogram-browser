@@ -238,6 +238,13 @@ npx skills add ./skills/miniprogram-browser
 npm test
 ```
 
+现在 `npm test` 会同时执行：
+
+- 现有 Node 测试
+- `skills/image-processing/` 的 Python 图片处理测试
+
+其中图片处理测试会在 `artifacts/.venv-image-processing-tests/` 下创建隔离虚拟环境并安装 `skills/image-processing/requirements.txt`。
+
 `tests/` 会随仓库一起提交。对这类自动化工具，测试不是噪音，而是可信度的重要部分。
 
 ## 仓库结构
