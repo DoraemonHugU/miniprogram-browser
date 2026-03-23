@@ -17,7 +17,6 @@ function detectRepoRoot() {
 
 function createDefaultConfig(repoRoot = detectRepoRoot()) {
   const merged = { ...process.env }
-  const legacySessionDir = path.join(repoRoot, '.memory/miniprogram-browser/sessions')
 
   let defaultCliPath = ''
   if (process.platform === 'darwin') {
@@ -32,8 +31,8 @@ function createDefaultConfig(repoRoot = detectRepoRoot()) {
     devtoolsPort: merged.WECHAT_DEVTOOLS_PORT ? String(merged.WECHAT_DEVTOOLS_PORT) : '',
     autoPort: merged.WECHAT_AUTO_PORT ? String(merged.WECHAT_AUTO_PORT) : '',
     projectPath: '',
-    legacySessionDir,
-    sessionDir: legacySessionDir,
+    legacySessionDir: '',
+    sessionDir: '',
     sessionRegistryFile: path.join(os.homedir(), '.miniprogram-browser', 'session-registry.json'),
     screenshotDir: path.join(repoRoot, 'artifacts/screenshots'),
     tempScreenshotDir: path.join(os.tmpdir(), 'miniprogram-browser'),
@@ -49,30 +48,35 @@ function normalizeProjectPath(projectPath) {
 }
 
 function resolveGitDir(projectPath) {
-  const normalizedProjectPath = normalizeProjectPath(projectPath)
-  if (!normalizedProjectPath) {
+  let currentPath = normalizeProjectPath(projectPath)
+  if (!currentPath) {
     return ''
   }
 
-  const dotGitPath = path.join(normalizedProjectPath, '.git')
-  if (!existsSync(dotGitPath)) {
-    return ''
-  }
-
-  try {
-    const info = statSync(dotGitPath)
-    if (info.isDirectory()) {
-      return dotGitPath
-    }
-    if (info.isFile()) {
-      const raw = readFileSync(dotGitPath, 'utf8')
-      const match = raw.match(/^gitdir:\s*(.+)\s*$/imu)
-      if (!match) {
-        return ''
+  while (true) {
+    const dotGitPath = path.join(currentPath, '.git')
+    if (existsSync(dotGitPath)) {
+      try {
+        const info = statSync(dotGitPath)
+        if (info.isDirectory()) {
+          return dotGitPath
+        }
+        if (info.isFile()) {
+          const raw = readFileSync(dotGitPath, 'utf8')
+          const match = raw.match(/^gitdir:\s*(.+)\s*$/imu)
+          if (match) {
+            return path.resolve(currentPath, match[1])
+          }
+        }
+      } catch (_) {
       }
-      return path.resolve(normalizedProjectPath, match[1])
     }
-  } catch (_) {
+
+    const parentPath = path.dirname(currentPath)
+    if (!parentPath || parentPath === currentPath) {
+      break
+    }
+    currentPath = parentPath
   }
 
   return ''
@@ -92,12 +96,11 @@ function projectStateRoot(config) {
     return path.join(os.tmpdir(), 'miniprogram-browser-state', repoKey)
   }
 
-  const gitDir = resolveGitDir(projectPath)
-  if (gitDir) {
-    return path.join(gitDir, 'miniprogram-browser')
-  }
-
-  return path.join(projectPath, '.miniprogram-browser')
+  const projectKey = createHash('sha1')
+    .update(projectPath)
+    .digest('hex')
+    .slice(0, 12)
+  return path.join(os.homedir(), '.miniprogram-browser', 'projects', projectKey)
 }
 
 function resolveSessionDir(config) {

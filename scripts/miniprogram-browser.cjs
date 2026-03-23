@@ -16,6 +16,10 @@ const {
 } = require('./lib/visual-change.cjs')
 
 const {
+  formatSnapshotLines,
+} = require('./lib/core.cjs')
+
+const {
   assertBindingConsistency,
   assertProjectPath,
   acquireSessionLock,
@@ -121,14 +125,15 @@ function buildHelpText() {
   tap                          click 的别名
   input                        fill 的别名
 
-选项:
+  选项:
   --session <name>             session 名称；open/connect 首次绑定必须显式传
   --json                       以 JSON 输出
   --project <path>             小程序项目根目录；首次绑定必填
   --cli-path <path>            DevTools CLI 路径
   --auto-port <port>           自动化 ws 端口；不传则自动分配
   --devtools-port <port>       DevTools HTTP 端口
-  --mode <page|visual|annotate> 截图模式，默认 page
+  --mode <page|visual|annotate|layout> 截图模式，默认 page
+  --no-ref                     截图时不绘制 @eN 标签
   --wait <ms>                  等待时间或截图超时，截图默认 30000ms
   --limit <n>                  logs/exceptions 默认输出条数
   --sections <a,b,c>           app inspect 指定输出分区
@@ -328,7 +333,7 @@ function buildCommandHelpText(command) {
       return `screenshot
 
 用法:
-  miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate|layout>] [--focus <refs>] [--capsule] [--raw] [-c|--compact] [--wait <ms>] [--json]
+  miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate|layout>] [--focus <refs>] [--no-ref] [--capsule] [--raw] [-c|--compact] [--wait <ms>] [--json]
 
 模式:
   page      官方页面截图
@@ -336,9 +341,10 @@ function buildCommandHelpText(command) {
   annotate  页面截图 + @eNN 标注叠加
   layout    基于运行时 rect 的布局替代渲染
 
-说明:
+  说明:
   - 默认模式是 page
   - --focus 支持 @e1,@e2 这类多个 ref，高亮时会自动换色
+  - --no-ref 会隐藏图片里的 @eN 标签，但不会影响 focus 框或 session/ref 解析
   - layout 默认用语义布局；加 --raw 可切到更底层的运行时节点布局
   - --capsule 可在 layout/visual 图上叠加右上角微信胶囊
   - 不传路径时保存到默认截图目录
@@ -538,6 +544,18 @@ function parseArgs(argv) {
     sessionProvided: false,
     json: false,
   }
+  const booleanFlags = new Set([
+    'json',
+    'help',
+    'version',
+    'compact',
+    'all',
+    'stdin',
+    'layout',
+    'raw',
+    'capsule',
+    'no-ref',
+  ])
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -571,38 +589,13 @@ function parseArgs(argv) {
     }
 
     const key = token.slice(2)
-    if (key === 'json') {
-      options.json = true
-      continue
-    }
-
-    if (key === 'help') {
-      options.help = true
-      continue
-    }
-
-    if (key === 'version') {
-      options.version = true
-      continue
-    }
-
-    if (key === 'compact') {
-      options.compact = true
-      continue
-    }
-
-    if (key === 'all') {
-      options.all = true
-      continue
-    }
-
-    if (key === 'stdin') {
-      options.stdin = true
+    const normalizedKey = key.replace(/-([a-z])/gu, (_, char) => char.toUpperCase())
+    if (booleanFlags.has(key)) {
+      options[normalizedKey] = true
       continue
     }
 
     const value = argv[index + 1]
-    const normalizedKey = key.replace(/-([a-z])/gu, (_, char) => char.toUpperCase())
     if (normalizedKey === 'focus' && options.focus) {
       options.focus = `${options.focus},${value}`
     } else {
@@ -1203,6 +1196,7 @@ async function handleScreenshot(state, outputPath, options) {
           config: state.config,
           refs: await resolveRefs(),
           focusRefs,
+          noRef: Boolean(options.noRef),
         })
         focusLegend = focus.focusLegend
         source = `${source}+focus`
@@ -1229,6 +1223,7 @@ async function handleScreenshot(state, outputPath, options) {
         config: state.config,
         refs,
         focusRefs,
+        noRef: Boolean(options.noRef),
         timeoutMs,
         pageCapture: async (targetPath) => targetPath,
       })
@@ -1265,6 +1260,7 @@ async function handleScreenshot(state, outputPath, options) {
         badgeRecords: semanticRecords,
         focusRecords: semanticRecords,
         focusRefs,
+        noRef: Boolean(options.noRef),
         systemInfo,
         menuButtonRect,
         capsule: Boolean(options.capsule),
@@ -1289,6 +1285,7 @@ async function handleScreenshot(state, outputPath, options) {
         config: state.config,
         refs: await resolveRefs(),
         focusRefs,
+        noRef: Boolean(options.noRef),
       })
       focusLegend = focus.focusLegend
       source = 'page+focus'
@@ -1459,6 +1456,7 @@ module.exports = {
   buildHelpText,
   buildCommandHelpText,
   getVersionText,
+  parseArgs,
   parseFocusRefs,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,

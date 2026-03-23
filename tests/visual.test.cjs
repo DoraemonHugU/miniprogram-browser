@@ -186,6 +186,37 @@ test('captureAnnotatedScreenshot overlays legend and returns annotate mode', asy
   assert.equal(printed.length > 0, true)
 })
 
+test('captureAnnotatedScreenshot hides ref labels when noRef is enabled', async () => {
+  const printed = []
+  const result = await captureAnnotatedScreenshot({
+    miniProgram: {},
+    targetPath: '/tmp/annotate-no-ref.png',
+    config: { repoRoot: '/repo' },
+    refs: [
+      { ref: '@e1', kind: 'button', text: '开始', rectPct: { x: 10, y: 20, w: 20, h: 10 } },
+    ],
+    noRef: true,
+    pageCapture: async (targetPath) => targetPath,
+    createImageAdapter: async () => ({
+      bitmap: { width: 200, height: 100 },
+      scan: () => {},
+      composite: () => {},
+      print: (...args) => { printed.push(args) },
+      writeAsync: async () => {},
+    }),
+    colorAdapter: {
+      rgbaToInt: () => 0,
+      create: async () => ({ bitmap: { width: 1, height: 1 }, scan: () => {} }),
+      loadFont: async () => ({}),
+      FONT_SANS_16_WHITE: 'font',
+    },
+  })
+
+  assert.equal(result.mode, 'annotate')
+  assert.deepEqual(result.legend, [])
+  assert.equal(printed.length, 0)
+})
+
 test('overlayFocusScreenshot highlights multiple refs with color legend', async () => {
   const printed = []
   const bitmap = {
@@ -243,6 +274,48 @@ test('overlayFocusScreenshot highlights multiple refs with color legend', async 
   assert.notDeepEqual(stripePixel, gapPixel)
 })
 
+test('overlayFocusScreenshot hides focus labels when noRef is enabled', async () => {
+  const printed = []
+  const bitmap = {
+    width: 200,
+    height: 100,
+    data: Buffer.alloc(200 * 100 * 4, 255),
+  }
+  const image = {
+    bitmap,
+    scan(x, y, width, height, iterator) {
+      for (let pixelY = y; pixelY < y + height; pixelY += 1) {
+        for (let pixelX = x; pixelX < x + width; pixelX += 1) {
+          const idx = (bitmap.width * pixelY + pixelX) << 2
+          iterator.call(this, pixelX, pixelY, idx)
+        }
+      }
+    },
+    print(...args) {
+      printed.push(args)
+    },
+    writeAsync: async () => {},
+  }
+  const result = await overlayFocusScreenshot({
+    targetPath: '/tmp/focus-no-ref.png',
+    config: { repoRoot: '/repo' },
+    refs: [
+      { ref: '@e1', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 20, h: 12 } },
+    ],
+    focusRefs: ['@e1'],
+    noRef: true,
+    createImageAdapter: async () => image,
+    colorAdapter: {
+      rgbaToInt: (r, g, b, a) => (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | (a & 255)) >>> 0,
+      loadFont: async () => ({}),
+      FONT_SANS_16_WHITE: 'font',
+    },
+  })
+
+  assert.deepEqual(result.focusLegend, ['@e1 [button] 工具箱 color=blue'])
+  assert.equal(printed.length, 0)
+})
+
 test('captureLayoutScreenshot renders layout fallback and supports focus overlay', async () => {
   const printed = []
   const bitmap = {
@@ -289,6 +362,56 @@ test('captureLayoutScreenshot renders layout fallback and supports focus overlay
   assert.equal(result.source, 'layout+focus')
   assert.deepEqual(result.focusLegend, ['@e2 [button] 工具箱 color=blue'])
   assert.equal(printed.length >= 3, true)
+})
+
+test('captureLayoutScreenshot hides semantic ref badges when noRef is enabled', async () => {
+  const printed = []
+  const bitmap = {
+    width: 420,
+    height: 800,
+    data: Buffer.alloc(420 * 800 * 4, 255),
+  }
+  const image = {
+    bitmap,
+    scan(x, y, width, height, iterator) {
+      for (let pixelY = y; pixelY < y + height; pixelY += 1) {
+        for (let pixelX = x; pixelX < x + width; pixelX += 1) {
+          const idx = (bitmap.width * pixelY + pixelX) << 2
+          iterator.call(this, pixelX, pixelY, idx)
+        }
+      }
+    },
+    print(...args) {
+      printed.push(args)
+    },
+    writeAsync: async () => {},
+  }
+
+  await captureLayoutScreenshot({
+    targetPath: '/tmp/layout-no-ref.png',
+    config: { repoRoot: '/repo' },
+    refs: [
+      { ref: '@e1', kind: 'view', text: '', rectPct: { x: 0, y: 0, w: 100, h: 100 } },
+      { ref: '@e2', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
+    ],
+    badgeRecords: [
+      { ref: '@e1', kind: 'view', text: '', rectPct: { x: 0, y: 0, w: 100, h: 100 } },
+      { ref: '@e2', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
+    ],
+    noRef: true,
+    focusRefs: [],
+    systemInfo: { windowWidth: 375, windowHeight: 812 },
+    createImageAdapter: async () => image,
+    colorAdapter: {
+      create: async () => image,
+      rgbaToInt: (r, g, b, a) => (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | (a & 255)) >>> 0,
+      loadFont: async () => ({}),
+      FONT_SANS_16_WHITE: 'font',
+    },
+    textRenderer: async () => {},
+  })
+
+  assert.equal(printed.length, 0)
 })
 
 test('captureLayoutScreenshot uses deterministic different fills for top-level groups', async () => {

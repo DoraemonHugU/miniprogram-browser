@@ -201,7 +201,44 @@ function formatAutomationCliError(rawMessage) {
     }
   }
 
+  const startupIssue = detectAutomationStartupIssue(message)
+  if (startupIssue) {
+    return startupIssue
+  }
+
   return { message, raw: message }
+}
+
+function detectAutomationStartupIssue(rawMessage) {
+  const message = String(rawMessage || '').trim()
+  if (!message) {
+    return null
+  }
+
+  if (!/TypeError|Cannot read property|Cannot read properties/iu.test(message)) {
+    return null
+  }
+
+  if (!/MinTabbarCount|getPreCompileOptions|checkTabbar|miniprogram-builder|appJSON\.js|checkAppFields\.js/iu.test(message)) {
+    return null
+  }
+
+  return {
+    message: 'DevTools 已启动，但当前项目在编译阶段失败（builder/checkTabbar）；这不是普通的 session/port 冲突。请先在微信开发者工具里确认当前项目能编译通过，再重试 open/connect。若终端里出现 checkTabbar、MinTabbarCount、getPreCompileOptions，优先检查 tabBar/custom-tab-bar 相关改动。',
+    raw: message,
+  }
+}
+
+function wrapConnectErrorWithStartupIssue(error, startupIssue) {
+  if (!startupIssue || !startupIssue.message) {
+    return error
+  }
+
+  const detail = error && error.message ? String(error.message).trim() : String(error || '').trim()
+  const nextError = new Error(`${startupIssue.message}${detail ? `\n原始 connect 错误: ${detail}` : ''}`)
+  nextError.raw = startupIssue.raw || detail
+  nextError.cause = error
+  return nextError
 }
 
 function parseResolvedIdePort(rawMessage) {
@@ -300,7 +337,7 @@ async function captureScreenshotToPath(miniProgram, targetPath, timeoutMs = 1500
     )
   } catch (error) {
     if (error && /screenshot timeout/i.test(String(error.message || ''))) {
-      const nextError = new Error('screenshot timeout; 当前 session / DevTools 实例可能已失效，建议先 close 当前 session 后重新 open，再重试一次截图。如果不同 session / 项目也持续出现同样超时，说明当前 DevTools IDE 实例本身可能不健康，应完全关闭并重启 DevTools。')
+      const nextError = new Error('screenshot timeout; 当前真实截图通道暂时不可用。优先改用 `miniprogram-browser screenshot --mode layout ...` 或 `snapshot -i --layout` 查看页面结构；只有在不同 session / 项目都持续超时时，再把完全重启 DevTools 当成最后手段。')
       nextError.cause = error
       throw nextError
     }
@@ -411,6 +448,7 @@ function runAutomationCli(config) {
 
 function enableAutomation(config) {
   const result = runAutomationCli(config)
+  const startupIssue = detectAutomationStartupIssue(result.raw)
 
   if (result.status !== 0) {
     const formatted = formatAutomationCliError(result.raw)
@@ -430,7 +468,7 @@ function enableAutomation(config) {
     }
   }
 
-  return { resolvedDevtoolsPort }
+  return { resolvedDevtoolsPort, startupIssue }
 }
 
 async function connectWithRetry(config) {
@@ -465,7 +503,11 @@ async function connectOrEnable(config, options = {}, overrides = {}) {
     }
     await sleepFn(5000)
     onProgress && onProgress('connect')
-    return connect(config)
+    try {
+      return await connect(config)
+    } catch (error) {
+      throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue)
+    }
   }
 
   try {
@@ -479,7 +521,11 @@ async function connectOrEnable(config, options = {}, overrides = {}) {
     }
     await sleepFn(5000)
     onProgress && onProgress('connect')
-    return connect(config)
+    try {
+      return await connect(config)
+    } catch (error) {
+      throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue)
+    }
   }
 }
 

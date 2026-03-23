@@ -747,6 +747,18 @@ test('formatAutomationCliError explains IDE initialize timeout with existing IDE
   assert.match(error.message, /完全关闭微信开发者工具|重试 open/i)
 })
 
+test('formatAutomationCliError explains DevTools builder crash more clearly', () => {
+  const error = formatAutomationCliError([
+    'TypeError: Cannot read properties of undefined (reading \'MinTabbarCount\')',
+    'at checkTabbar (F:/Tools/wxwebtool/code/package.nw/js/common/miniprogram-builder/modules/corecompiler/original/json/app/checkAppFields.js:2:2477)',
+    'TypeError: Cannot read property \'getPreCompileOptions\' of undefined',
+  ].join('\n'))
+
+  assert.match(error.message, /DevTools.*编译阶段失败|builder/i)
+  assert.match(error.message, /tabBar|custom tabBar|checkTabbar/i)
+  assert.match(error.message, /不是普通.*session.*port|不是普通.*端口/i)
+})
+
 test('connectOrEnable prefers enable-first for open-like calls', async () => {
   const calls = []
   const result = await connectOrEnable({ autoPort: 9421 }, {
@@ -831,6 +843,28 @@ test('connectOrEnable reports fallback phases after initial connect failure', as
     'connect:2',
   ])
   assert.deepEqual(result, { ok: true })
+})
+
+test('connectOrEnable surfaces builder issue when ws connect still fails after enable', async () => {
+  await assert.rejects(
+    connectOrEnable({ autoPort: 9421 }, {
+      preferEnable: true,
+    }, {
+      async connect() {
+        throw new Error('Failed connecting to ws://127.0.0.1:9421')
+      },
+      enable() {
+        return {
+          startupIssue: {
+            message: 'DevTools 已启动，但当前项目在编译阶段失败（builder/checkTabbar）；这不是普通 session/port 冲突。',
+            raw: 'TypeError: Cannot read properties of undefined (reading \'MinTabbarCount\')',
+          },
+        }
+      },
+      async sleepFn() {},
+    }),
+    /编译阶段失败|checkTabbar|不是普通.*port/i,
+  )
 })
 
 test('buildAutomationArgs omits HTTP port when devtoolsPort is empty', () => {
@@ -992,8 +1026,11 @@ test('captureScreenshotToPath fails fast on timeout', async () => {
     await captureScreenshotToPath(miniProgram, '/tmp/shot.png', 20)
   }, (error) => {
     assert.match(error.message, /screenshot timeout/i)
-    assert.match(error.message, /close .* open/i)
-    assert.match(error.message, /重启 DevTools/i)
+    const screenshotLayoutIndex = error.message.indexOf('miniprogram-browser screenshot --mode layout')
+    const snapshotLayoutIndex = error.message.indexOf('snapshot -i --layout')
+    assert.notEqual(screenshotLayoutIndex, -1)
+    assert.notEqual(snapshotLayoutIndex, -1)
+    assert.ok(screenshotLayoutIndex < snapshotLayoutIndex)
     return true
   })
 })

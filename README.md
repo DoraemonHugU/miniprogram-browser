@@ -96,6 +96,7 @@ npx miniprogram-browser help
 - `eval / native / call wx / call page`
 - `screenshot --mode page|visual|annotate`
 - `screenshot --focus @e1,@e2`
+- `screenshot --no-ref`
 - `snapshot -i --layout`
 - `screenshot --mode layout`
 
@@ -191,6 +192,7 @@ miniprogram-browser snapshot -i --layout --session demo
 
 ```bash
 miniprogram-browser screenshot out.png --session demo --mode layout --focus @e20,@e21
+miniprogram-browser screenshot out.png --session demo --mode layout --no-ref
 ```
 
 如果想让布局图更接近当前语义快照，也可以切到紧凑模式：
@@ -207,6 +209,7 @@ miniprogram-browser screenshot out.png --session demo --mode layout -c
 - 容器使用确定性多色分组，增强区分度
 - 中文文本通过纯 JS 字体路径渲染叠加，不依赖浏览器截图
 - 可继续叠加 `--focus` 高亮
+- `--no-ref` 时隐藏图片里的 `@eN` 标签，但不影响 focus 框
 - 可选 `--capsule` 叠加右上角微信胶囊
 
 ## Skill 集成

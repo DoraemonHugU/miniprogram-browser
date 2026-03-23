@@ -678,6 +678,7 @@ async function captureLayoutScreenshot({
   focusRefs,
   focusRecords,
   badgeRecords,
+  noRef,
   systemInfo,
   menuButtonRect,
   capsule,
@@ -713,7 +714,9 @@ async function captureLayoutScreenshot({
     if (suppressedBadgeRefs.has(record.ref)) {
       continue
     }
-    drawSemanticBadge(image, Jimp, record, font, badgeState, 0)
+    if (!noRef) {
+      drawSemanticBadge(image, Jimp, record, font, badgeState, 0)
+    }
   }
 
   const textItems = computeTextSafeBoxes(buildLayoutTextItems(image, refs), badgeState.badges)
@@ -726,7 +729,7 @@ async function captureLayoutScreenshot({
 
   let focusLegend = []
   if (Array.isArray(focusRefs) && focusRefs.length) {
-    focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(focusRecords || semanticBadges || refs, focusRefs), font)
+    focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(focusRecords || semanticBadges || refs, focusRefs), font, { showLabel: !noRef })
   }
 
   await image.writeAsync(targetPath)
@@ -757,8 +760,9 @@ function resolveFocusTargets(refs, focusRefs) {
   }))
 }
 
-function renderFocusOverlay(image, Jimp, refs, font) {
+function renderFocusOverlay(image, Jimp, refs, font, options = {}) {
   const legend = []
+  const showLabel = options.showLabel !== false
 
   for (const item of refs || []) {
     if (!item.rectPct) {
@@ -791,9 +795,11 @@ function renderFocusOverlay(image, Jimp, refs, font) {
     blendHatchFill(image, box, fillColor)
     drawRectOutline(image, box, outerBorderColor, outerThickness)
     drawRectOutline(image, innerBox, borderColor, borderThickness)
-    drawRoundedRect(image, labelBox, labelFill, labelBorder)
-    if (font && typeof image.print === 'function') {
-      image.print(font, labelBox.x + 6, labelBox.y + 5, item.ref)
+    if (showLabel) {
+      drawRoundedRect(image, labelBox, labelFill, labelBorder)
+      if (font && typeof image.print === 'function') {
+        image.print(font, labelBox.x + 6, labelBox.y + 5, item.ref)
+      }
     }
     legend.push(`${item.ref} [${item.kind}] ${item.text || ''} color=${item.color.name}`.trim())
   }
@@ -806,6 +812,7 @@ async function overlayFocusScreenshot({
   config,
   refs,
   focusRefs,
+  noRef,
   createImageAdapter,
   colorAdapter,
 }) {
@@ -815,7 +822,7 @@ async function overlayFocusScreenshot({
   const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
     ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
     : null
-  const focusLegend = renderFocusOverlay(image, Jimp, targets, font)
+  const focusLegend = renderFocusOverlay(image, Jimp, targets, font, { showLabel: !noRef })
 
   await image.writeAsync(targetPath)
 
@@ -988,6 +995,7 @@ async function captureAnnotatedScreenshot({
   config,
   refs,
   focusRefs,
+  noRef,
   timeoutMs = 15000,
   pageCapture,
   createImageAdapter,
@@ -1012,29 +1020,31 @@ async function captureAnnotatedScreenshot({
     ? Jimp.rgbaToInt(148, 163, 184, 180)
     : 0
   const legend = []
-  const focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(refs, focusRefs), font)
+  const focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(refs, focusRefs), font, { showLabel: !noRef })
 
-  for (const item of refs || []) {
-    if (!item.rectPct) {
-      continue
-    }
+  if (!noRef) {
+    for (const item of refs || []) {
+      if (!item.rectPct) {
+        continue
+      }
 
-    const label = item.ref
-    const x = Math.max(0, Math.round(image.bitmap.width * (item.rectPct.x / 100)))
-    const y = Math.max(0, Math.round(image.bitmap.height * (item.rectPct.y / 100)) - 24)
-    const width = Math.max(42, label.length * 10 + 12)
-    const box = {
-      x,
-      y,
-      width: Math.min(width, image.bitmap.width - x),
-      height: 22,
-    }
+      const label = item.ref
+      const x = Math.max(0, Math.round(image.bitmap.width * (item.rectPct.x / 100)))
+      const y = Math.max(0, Math.round(image.bitmap.height * (item.rectPct.y / 100)) - 24)
+      const width = Math.max(42, label.length * 10 + 12)
+      const box = {
+        x,
+        y,
+        width: Math.min(width, image.bitmap.width - x),
+        height: 22,
+      }
 
-    drawRoundedRect(image, box, fillColor, borderColor)
-    if (font && typeof image.print === 'function') {
-      image.print(font, box.x + 6, box.y + 4, label)
+      drawRoundedRect(image, box, fillColor, borderColor)
+      if (font && typeof image.print === 'function') {
+        image.print(font, box.x + 6, box.y + 4, label)
+      }
+      legend.push(`${item.ref} [${item.kind}] ${item.text || ''}`.trim())
     }
-    legend.push(`${item.ref} [${item.kind}] ${item.text || ''}`.trim())
   }
 
   await image.writeAsync(targetPath)

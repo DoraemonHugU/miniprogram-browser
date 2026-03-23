@@ -5,6 +5,7 @@ const {
   buildHelpText,
   buildCommandHelpText,
   getVersionText,
+  parseArgs,
   parseFocusRefs,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
@@ -50,6 +51,7 @@ test('buildCommandHelpText returns screenshot mode details', () => {
 
   assert.match(help, /^screenshot/m)
   assert.match(help, /--mode <page\|visual\|annotate\|layout>/)
+  assert.match(help, /--no-ref/)
   assert.match(help, /--focus <refs>/)
   assert.match(help, /--capsule/)
   assert.match(help, /-c\|--compact/)
@@ -67,6 +69,30 @@ test('buildCommandHelpText returns snapshot layout option details', () => {
 test('parseFocusRefs normalizes comma separated focus refs', () => {
   assert.deepEqual(parseFocusRefs('@e1,@e2  @e3,@e1'), ['@e1', '@e2', '@e3'])
   assert.deepEqual(parseFocusRefs(undefined), [])
+})
+
+test('parseArgs keeps layout as boolean flag after session option', () => {
+  const parsed = parseArgs(['snapshot', '-i', '--session', 'demo', '--layout'])
+  assert.deepEqual(parsed.positional, ['snapshot'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.sessionProvided, true)
+  assert.equal(parsed.options.layout, true)
+})
+
+test('parseArgs keeps layout as boolean flag before session option', () => {
+  const parsed = parseArgs(['snapshot', '-i', '--layout', '--session', 'demo'])
+  assert.deepEqual(parsed.positional, ['snapshot'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.sessionProvided, true)
+  assert.equal(parsed.options.layout, true)
+})
+
+test('parseArgs keeps no-ref as boolean flag for screenshot', () => {
+  const parsed = parseArgs(['screenshot', '--session', 'demo', '--mode', 'layout', '--no-ref'])
+  assert.deepEqual(parsed.positional, ['screenshot'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.mode, 'layout')
+  assert.equal(parsed.options.noRef, true)
 })
 
 test('summarizeTimelinePayload keeps only high-value route fields by default', () => {

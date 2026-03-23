@@ -224,6 +224,8 @@ test('createDefaultConfig uses apps/miniprogram root projectPath', () => {
   assert.equal(config.projectPath, '')
   assert.equal(config.devtoolsPort, '')
   assert.equal(config.autoPort, '')
+   assert.equal(config.legacySessionDir, '')
+   assert.equal(config.sessionDir, '')
   assert.equal(typeof config.cliPath, 'string')
 })
 
@@ -540,9 +542,28 @@ test('sessionLockRoot uses project git metadata when projectPath is set', async 
       projectPath: projectDir,
     }
     const root = sessionLockRoot(config)
-    assert.equal(root, path.join(projectDir, '.git', 'miniprogram-browser', 'locks'))
+    assert.equal(root.startsWith(path.join(os.homedir(), '.miniprogram-browser', 'projects')), true)
+    assert.equal(root.startsWith(projectDir), false)
   } finally {
     await fs.promises.rm(projectDir, { recursive: true, force: true })
+  }
+})
+
+test('sessionLockRoot keeps nested miniprogram path state outside project tree', async () => {
+  const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-repo-'))
+  const projectDir = path.join(repoDir, 'apps', 'miniprogram')
+  try {
+    await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+    await fs.promises.mkdir(projectDir, { recursive: true })
+    const config = {
+      ...createDefaultConfig('/repo'),
+      projectPath: projectDir,
+    }
+    const root = sessionLockRoot(config)
+    assert.equal(root.startsWith(path.join(os.homedir(), '.miniprogram-browser', 'projects')), true)
+    assert.equal(root.startsWith(repoDir), false)
+  } finally {
+    await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
 })
 
@@ -575,10 +596,44 @@ test('saveSessionState stores session under project scope and loadSessionState r
     })
 
     assert.equal(loaded.config.projectPath, projectDir)
-    assert.equal(loaded.config.sessionDir, path.join(projectDir, '.git', 'miniprogram-browser', 'sessions'))
+    assert.equal(loaded.config.sessionDir.startsWith(path.join(os.homedir(), '.miniprogram-browser', 'projects')), true)
+    assert.equal(loaded.config.sessionDir.startsWith(projectDir), false)
     assert.equal(loaded.route, 'pages/dashboard/index')
 
     await clearSessionState('branch-a', loaded.config)
+  } finally {
+    await fs.promises.rm(projectDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
+})
+
+test('saveSessionState stores non-git project sessions outside project tree', async () => {
+  const projectDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-nongit-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-nongit.json`)
+
+  try {
+    const config = {
+      ...createDefaultConfig('/repo'),
+      projectPath: projectDir,
+      sessionRegistryFile: registryFile,
+    }
+    const state = createEmptySessionState({ sessionName: 'nongit-project', config })
+    state.route = 'pages/dashboard/index'
+    state.config.autoPort = '9430'
+
+    await saveSessionState(state)
+
+    assert.equal(state.config.sessionDir.startsWith(projectDir), false)
+    assert.equal(fs.existsSync(path.join(projectDir, '.miniprogram-browser')), false)
+
+    const loaded = await loadSessionState('nongit-project', {
+      ...createDefaultConfig('/repo'),
+      sessionRegistryFile: registryFile,
+    })
+    assert.equal(loaded.config.projectPath, projectDir)
+    assert.equal(loaded.config.sessionDir.startsWith(projectDir), false)
+
+    await clearSessionState('nongit-project', loaded.config)
   } finally {
     await fs.promises.rm(projectDir, { recursive: true, force: true })
     await fs.promises.rm(registryFile, { force: true })
