@@ -116,7 +116,7 @@ npx miniprogram-browser help
 ## 当前能力
 
 - 运行时语义快照与 `@eNN` refs
-- 多 session / 端口隔离
+- 多 session 并发；同一 session 串行；通常复用当前 live DevTools HTTP 端口，只隔离 autoPort
 - 应用结构摘要（`app inspect`）
 - 路由时间线、console、exception
 - 页面截图、视觉截图、标注截图
@@ -125,7 +125,7 @@ npx miniprogram-browser help
 ## 已知边界
 
 - fresh `open` 后，DevTools 模拟器首帧有时还没稳定；建议先 `path` / `app inspect`，必要时再 `goto` 当前页一次
-- 如果 `screenshot` 偶发超时，通常更像当前 session / DevTools 实例状态不稳定；优先先放慢操作节奏，确认 `path` / `snapshot` 已稳定；如果仍失败，再人工 `close` 当前 session 后重新 `open` 重试
+- 如果真实 `screenshot` 偶发超时，优先切到 `screenshot --mode layout`，其次再看 `snapshot -i --layout`；不要把 `close/open` 或重启 DevTools 当默认修复手段
 - 某些自定义组件在 automator 运行时里不透明，语义增强不能 100% 覆盖
 - 当前更适合定位为 **beta**，不建议直接宣称为稳定版 `1.0`
 

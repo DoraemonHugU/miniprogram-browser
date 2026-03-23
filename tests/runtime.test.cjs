@@ -5,6 +5,7 @@ const {
   captureScreenshotToPath,
   cleanupMiniProgram,
   readRuntimeTree,
+  subtreeForScope,
   shutdownMiniProgram,
   snapshotInteractive,
   queryRecords,
@@ -27,6 +28,7 @@ const {
   syncCurrentRoute,
   buildNativeDiagnostic,
   buildClickNotices,
+  confirmRouteAfterAction,
   formatAutomationCliError,
   parseResolvedIdePort,
   callWxMethod,
@@ -41,6 +43,51 @@ function createState() {
     nextRefIndex: 1,
     refs: {},
     config: {},
+  }
+}
+
+function createInteractivePage(labels) {
+  const rootWxml = `<view>${labels.map((label) => `<view hover-class="hover"><text>${label}</text></view>`).join('')}</view>`
+  return {
+    path: 'pages/tools/index',
+    async $$(selector) {
+      if (selector === 'view') {
+        return [
+          {
+            tagName: 'view',
+            async text() {
+              return labels.join(' ')
+            },
+            async outerWxml() {
+              return rootWxml
+            },
+          },
+          ...labels.map((label) => ({
+            tagName: 'view',
+            async text() {
+              return label
+            },
+            async outerWxml() {
+              return `<view hover-class="hover"><text>${label}</text></view>`
+            },
+          })),
+        ]
+      }
+
+      if (selector === 'text') {
+        return labels.map((label) => ({
+          tagName: 'text',
+          async text() {
+            return label
+          },
+          async outerWxml() {
+            return `<text>${label}</text>`
+          },
+        }))
+      }
+
+      return []
+    },
   }
 }
 
@@ -94,6 +141,96 @@ test('snapshotInteractive rebuilds semantic refs from runtime tree', async () =>
   assert.equal(result.records[0].kind, 'button')
   assert.equal(result.records[0].text, '保存')
   assert.equal(result.lines[0], '@e1 [button] 保存')
+})
+
+test('resolveTarget re-resolves reordered view refs by semantic identity', async () => {
+  const state = createState()
+  const initialPage = createInteractivePage(['Alpha', 'Beta'])
+  const snapshotResult = await snapshotInteractive(initialPage, state)
+  const betaRecord = snapshotResult.records[snapshotResult.records.length - 1]
+
+  const reorderedPage = createInteractivePage(['Beta', 'Alpha'])
+  const element = await resolveTarget(reorderedPage, snapshotResult.state, betaRecord.ref)
+
+  assert.equal(await element.text(), 'Beta')
+})
+
+test('subtreeForScope respects pageKey with query params', async () => {
+  const tree = [
+    {
+      businessKey: 'data-sid:filter',
+      canonicalPath: 'business:data-sid:filter',
+      children: [
+        {
+          businessKey: 'data-sid:trigger',
+          canonicalPath: 'business:data-sid:filter/business:data-sid:trigger',
+          children: [],
+        },
+      ],
+    },
+  ]
+  const scopeRecord = {
+    route: 'pages/tools/index',
+    stableKey: 'pages/tools/index?tab=focus|business:data-sid:filter',
+    businessKey: 'data-sid:filter',
+  }
+
+  const subtree = subtreeForScope(tree, scopeRecord, 'pages/tools/index?tab=focus')
+
+  assert.equal(subtree.length, 1)
+  assert.equal(subtree[0].businessKey, 'data-sid:trigger')
+})
+
+test('confirmRouteAfterAction waits for route change evidence', async () => {
+  let evaluateCalls = 0
+  let currentPageCalls = 0
+  const miniProgram = {
+    async evaluate() {
+      evaluateCalls += 1
+      if (evaluateCalls >= 2) {
+        return [{ seq: 1, ts: Date.now(), from: 'pages/settings/index', to: 'pages/preferences/index', openType: 'navigateTo' }]
+      }
+      return []
+    },
+    async currentPage() {
+      currentPageCalls += 1
+      if (currentPageCalls >= 2) {
+        return { path: 'pages/preferences/index' }
+      }
+      return { path: 'pages/settings/index' }
+    },
+  }
+  const state = { routeEvents: [], lastRouteEventSeq: 0, route: 'pages/settings/index' }
+
+  const result = await confirmRouteAfterAction(miniProgram, state, {
+    pathBefore: 'pages/settings/index',
+    timeoutMs: 50,
+    pollMs: 1,
+  })
+
+  assert.equal(result.path, 'pages/preferences/index')
+  assert.equal(result.routeEvents.length, 1)
+})
+
+test('confirmRouteAfterAction prefers route event target when currentPage lags', async () => {
+  const miniProgram = {
+    async evaluate() {
+      return [{ seq: 1, ts: Date.now(), from: 'pages/settings/index', to: 'pages/preferences/index', openType: 'navigateTo' }]
+    },
+    async currentPage() {
+      return { path: 'pages/settings/index' }
+    },
+  }
+  const state = { routeEvents: [], lastRouteEventSeq: 0, route: 'pages/settings/index' }
+
+  const result = await confirmRouteAfterAction(miniProgram, state, {
+    pathBefore: 'pages/settings/index',
+    timeoutMs: 20,
+    pollMs: 1,
+  })
+
+  assert.equal(result.path, 'pages/preferences/index')
+  assert.equal(state.route, 'pages/preferences/index')
 })
 
 test('readRuntimeTree rebuilds nested structure from runtime outerWxml', async () => {

@@ -6,6 +6,14 @@ function toSegment(label, value) {
   return `${label}:${String(value)}`
 }
 
+function normalizeIdentityText(value) {
+  return String(value || '').replace(/\s+/gu, ' ').trim().slice(0, 80)
+}
+
+function resolveStableText(node) {
+  return normalizeIdentityText(node && typeof node === 'object' ? (node.identityText || node.text) : '')
+}
+
 function buildNodeIdentity(node) {
   if (!node || typeof node !== 'object') {
     return null
@@ -27,11 +35,29 @@ function buildNodeIdentity(node) {
     return toSegment('scope', node.scopeKey)
   }
 
+  const normalizedText = resolveStableText(node)
+  if (normalizedText && node.selector) {
+    return `${toSegment(node.kind || 'custom', node.selector)}|${toSegment('text', normalizedText)}`
+  }
+
   if (node.selector) {
     return toSegment(node.kind || 'custom', node.selector)
   }
 
   return null
+}
+
+function buildNodeSignature(node) {
+  if (!node || typeof node !== 'object') {
+    return ''
+  }
+
+  return [
+    node.kind || '',
+    resolveStableText(node),
+    node.businessKey || '',
+    node.selector || '',
+  ].join('|')
 }
 
 function buildScopedPath(parentPath, node, siblingOccurrences) {
@@ -121,6 +147,7 @@ function createRefRecordFromNode(node, options = {}) {
     selector: node.selector || null,
     kind: node.kind || 'custom',
     text: node.text || '',
+    signature: buildNodeSignature(node),
   }
 }
 

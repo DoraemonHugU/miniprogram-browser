@@ -169,6 +169,14 @@ function formatRouteTimelineLine(event) {
   return String((event && event.message) || '').trim()
 }
 
+function normalizeRuntimeIdentityText(value) {
+  return String(value || '').replace(/\s+/gu, ' ').trim().slice(0, 80)
+}
+
+function resolveRuntimeStableText(node) {
+  return normalizeRuntimeIdentityText(node && typeof node === 'object' ? (node.identityText || node.text) : '')
+}
+
 function buildClickNotices({ pathBefore, pathAfter, routeEvents = [] }) {
   if ((routeEvents || []).length > 0) {
     return routeEvents.map(formatRouteTimelineLine)
@@ -574,6 +582,40 @@ async function withMiniProgram(state, task, options = {}) {
   }
 }
 
+async function confirmRouteAfterAction(miniProgram, state, options = {}) {
+  const pathBefore = String(options.pathBefore || '').trim()
+  const timeoutMs = Number(options.timeoutMs || 1500)
+  const pollMs = Number(options.pollMs || 100)
+  const startedAt = Date.now()
+  let routeEvents = []
+  let currentPath = pathBefore
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const timelineResult = await syncRouteTimelineEvents(miniProgram, state)
+    routeEvents = timelineResult.events
+    const currentPage = await getCurrentPage(miniProgram).catch(() => ({ path: pathBefore }))
+    currentPath = currentPage && currentPage.path ? String(currentPage.path) : pathBefore
+    if (routeEvents.length > 0 && currentPath === pathBefore) {
+      const latestRoute = routeEvents[routeEvents.length - 1]
+      if (latestRoute && latestRoute.to) {
+        currentPath = String(latestRoute.to)
+      }
+    }
+    state.route = currentPath
+
+    if (routeEvents.length > 0 || (pathBefore && currentPath && pathBefore !== currentPath)) {
+      break
+    }
+
+    await sleep(pollMs)
+  }
+
+  return {
+    path: currentPath,
+    routeEvents,
+  }
+}
+
 function getStoredRuntimeEvents(state, kind, options = {}) {
   const source = kind === 'exception'
     ? state.exceptionEvents
@@ -959,6 +1001,7 @@ function toSnapshotNode(node, children = []) {
     businessKey: node.businessKey || undefined,
     selector: node.selector,
     kind: toSemanticRuntimeKind(node, children.length),
+    identityText: normalizeRuntimeText(node.text),
     text: isInteractiveRuntimeNode(node) || isContentRuntimeNode(node)
       ? normalizeRuntimeText(node.text)
       : '',
@@ -972,6 +1015,7 @@ function toRawRuntimeNode(node, children = []) {
     selector: node.selector,
     kind: node.kind || node.tagName || 'view',
     tagName: node.tagName || 'view',
+    identityText: normalizeRuntimeText(node.text),
     text: normalizeRuntimeText(node.text),
     strategy: {
       kind: 'selector',
@@ -1134,6 +1178,10 @@ function buildCanonicalIdentity(node) {
   if (node.scopeKey) {
     return `scope:${String(node.scopeKey)}`
   }
+  const normalizedText = resolveRuntimeStableText(node)
+  if (normalizedText && node.selector) {
+    return `${node.kind || 'custom'}:${String(node.selector)}|text:${normalizedText}`
+  }
   if (node.selector) {
     return `${node.kind || 'custom'}:${String(node.selector)}`
   }
@@ -1162,6 +1210,43 @@ function assignCanonicalPaths(nodes, parentPath = '') {
       children: assignCanonicalPaths(node.children || [], canonicalPath),
     }
   })
+}
+
+function buildNodeStableKey(pageKey, route, node) {
+  if (!node || typeof node !== 'object') {
+    return ''
+  }
+
+  const stablePath = node.canonicalPath ? String(node.canonicalPath) : ''
+  return stablePath ? `${pageKey || route}|${stablePath}` : ''
+}
+
+function buildRuntimeRecordSignature(node) {
+  if (!node || typeof node !== 'object') {
+    return ''
+  }
+
+  return [
+    node.kind || '',
+    resolveRuntimeStableText(node),
+    node.businessKey || '',
+    node.selector || '',
+  ].join('|')
+}
+
+function findNodeByStableKey(nodes, pageKey, route, stableKey) {
+  if (!stableKey) {
+    return null
+  }
+  return findFirstNode(nodes, (node) => buildNodeStableKey(pageKey, route, node) === stableKey)
+}
+
+function selectorIndexInSubtree(nodes, targetNode) {
+  if (!targetNode || !targetNode.selector) {
+    return 0
+  }
+  const matches = collectMatchingNodes(nodes, (candidate) => candidate.selector === targetNode.selector)
+  return Math.max(matches.indexOf(targetNode), 0)
 }
 
 function applySnapshotOptions(nodes, options = {}) {
@@ -1397,9 +1482,16 @@ function collectMatchingNodes(nodes, predicate, collected = []) {
   return collected
 }
 
-function subtreeForScope(tree, scopeRecord) {
+function subtreeForScope(tree, scopeRecord, pageKey = '') {
   if (!scopeRecord) {
     return tree
+  }
+
+  if (scopeRecord.stableKey) {
+    const node = findNodeByStableKey(tree, pageKey, scopeRecord.route, scopeRecord.stableKey)
+    if (node) {
+      return node.children || []
+    }
   }
 
   const node = findFirstNode(tree, (candidate) => matchesRecord(candidate, scopeRecord))
@@ -1435,20 +1527,58 @@ async function resolveRecord(page, state, record, seen = new Set()) {
   }
 
   let selector = record.strategy.selector
-  if (!selector && ['registry', 'testid', 'business', 'scope'].includes(record.strategy.kind)) {
+  let index = Number(record.strategy.index || 0)
+  let matchedNode = null
+  const needsFreshTree = Boolean(record.stableKey)
+    || !selector
+    || ['registry', 'testid', 'business', 'scope'].includes(record.strategy.kind)
+
+  if (needsFreshTree) {
     const treeData = await readRuntimeTree(page)
-    const node = findFirstNode(treeData ? treeData.nodes : [], (candidate) => matchesRecord(candidate, record))
-    selector = node && node.selector ? node.selector : null
+    const canonicalTree = assignCanonicalPaths(treeData ? treeData.nodes : [])
+    const pageKey = treeData ? treeData.pageKey : ''
+    const scopeTree = record.scopeRef
+      ? subtreeForScope(canonicalTree, state.refs[record.scopeRef], pageKey)
+      : canonicalTree
+
+    matchedNode = findNodeByStableKey(scopeTree, pageKey, page.path, record.stableKey)
+    const matchedByStableKey = Boolean(matchedNode)
+    if (!matchedNode) {
+      matchedNode = findFirstNode(scopeTree, (candidate) => matchesRecord(candidate, record))
+    }
+
+    if (!matchedNode) {
+      throw new Error(`Ref is stale or no longer resolvable: ${record.ref}; page likely changed, run snapshot -i again.`)
+    }
+
+    const currentSignature = buildRuntimeRecordSignature(matchedNode)
+    if (!matchedByStableKey && record.signature && currentSignature && record.signature !== currentSignature) {
+      throw new Error(`Ref is stale: ${record.ref} no longer points to the same UI element; run snapshot -i again.`)
+    }
+
+    selector = matchedNode.selector || selector
+    index = selectorIndexInSubtree(scopeTree, matchedNode)
   }
 
   if (!selector) {
-    throw new Error(`Ref is not resolvable without selector: ${record.ref}`)
+    throw new Error(`Ref is not resolvable without selector: ${record.ref}; run snapshot -i again.`)
   }
 
   const elements = await scope.$$(selector)
-  const index = Number(record.strategy.index || 0)
+  if (matchedNode && elements.length > 1) {
+    const stableText = resolveRuntimeStableText(matchedNode)
+    if (stableText) {
+      for (let candidateIndex = 0; candidateIndex < elements.length; candidateIndex += 1) {
+        const candidateText = resolveRuntimeStableText({ text: await elements[candidateIndex].text().catch(() => '') })
+        if (candidateText === stableText) {
+          index = candidateIndex
+          break
+        }
+      }
+    }
+  }
   if (elements.length <= index) {
-    throw new Error(`Resolved selector not found: ${selector} at index ${index}`)
+    throw new Error(`Resolved selector not found: ${selector} at index ${index}; page likely changed, run snapshot -i again.`)
   }
 
   return elements[index]
@@ -1684,6 +1814,7 @@ module.exports = {
   getSystemInfo,
   getRuntimeAppConfig,
   getPageStack,
+  confirmRouteAfterAction,
   callWxMethod,
   callPageMethod,
   evaluateInMiniProgram,
@@ -1708,6 +1839,7 @@ module.exports = {
   formatExceptionEventLine,
   readRuntimeTree,
   applySnapshotOptions,
+  subtreeForScope,
   ensureNextRefIndex,
   resolveRecord,
   resolveTarget,

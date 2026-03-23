@@ -525,7 +525,7 @@ test('acquireSessionLock serializes same session name', async () => {
   const first = await acquireSessionLock('demo', config, { timeoutMs: 50, pollMs: 5 })
   await assert.rejects(
     acquireSessionLock('demo', config, { timeoutMs: 30, pollMs: 5 }),
-    /lock timeout/i,
+    /Session is busy: demo/i,
   )
 
   await releaseSessionLock(first)
@@ -564,6 +564,49 @@ test('sessionLockRoot keeps nested miniprogram path state outside project tree',
     assert.equal(root.startsWith(repoDir), false)
   } finally {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
+  }
+})
+
+test('same session blocks concurrent commands in same project with clearer message', async () => {
+  const projectDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-lock-project-'))
+  const config = {
+    ...createDefaultConfig('/repo'),
+    projectPath: projectDir,
+  }
+
+  const firstLock = await acquireSessionLock('shared-session', config, { command: 'snapshot' })
+  try {
+    await assert.rejects(
+      acquireSessionLock('shared-session', config, { command: 'click', timeoutMs: 20, pollMs: 5 }),
+      /Session is busy: shared-session.*同一 session 只允许串行执行/u,
+    )
+  } finally {
+    await releaseSessionLock(firstLock)
+    await fs.promises.rm(projectDir, { recursive: true, force: true })
+  }
+})
+
+test('same session name can lock concurrently across different projects', async () => {
+  const projectA = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-lock-a-'))
+  const projectB = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-lock-b-'))
+  const configA = {
+    ...createDefaultConfig('/repo'),
+    projectPath: projectA,
+  }
+  const configB = {
+    ...createDefaultConfig('/repo'),
+    projectPath: projectB,
+  }
+
+  const firstLock = await acquireSessionLock('shared-session', configA, { command: 'snapshot' })
+  const secondLock = await acquireSessionLock('shared-session', configB, { command: 'snapshot' })
+  try {
+    assert.notEqual(firstLock.path, secondLock.path)
+  } finally {
+    await releaseSessionLock(firstLock)
+    await releaseSessionLock(secondLock)
+    await fs.promises.rm(projectA, { recursive: true, force: true })
+    await fs.promises.rm(projectB, { recursive: true, force: true })
   }
 })
 
@@ -706,7 +749,7 @@ test('acquireSessionLock times out when active lock heartbeat is fresh', async (
 
   await assert.rejects(
     acquireSessionLock('busy-demo', config, { timeoutMs: 150, pollMs: 20 }),
-    /lock timeout/i,
+    /Session is busy: busy-demo/i,
   )
 
   await fs.promises.rm(lockPath, { recursive: true, force: true })

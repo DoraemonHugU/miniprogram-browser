@@ -32,6 +32,7 @@ const {
   saveSessionState,
   clearSessionState,
   releaseSessionLock,
+  resolveSessionConfig,
   validateSessionPortConflicts,
 } = require('./lib/session-store.cjs')
 
@@ -43,6 +44,7 @@ const {
   getCurrentPage,
   getSystemInfo,
   getRuntimeAppConfig,
+  confirmRouteAfterAction,
   readRuntimeTree,
   getPageStack,
   callWxMethod,
@@ -165,7 +167,8 @@ function buildCommandHelpText(command) {
 关键点:
   - 首次绑定必须显式传 --session 和 --project
   - fresh session 下 devtoolsPort/autoPort 可自动分配
-  - 已有 live DevTools 实例时，不会静默改 HTTP 端口
+  - 已有 live DevTools 实例时，通常应复用当前 HTTP 端口；不会静默改到别的端口
+  - 同一 session 串行执行；不同 session 可以并发
   - 非标准安装路径 / WSL 场景下，可通过 WECHAT_DEVTOOLS_CLI 指定 CLI 路径
 
 常用选项:
@@ -827,16 +830,17 @@ async function handleTap(state, target, options, scopeRef = null) {
     const element = await resolveTarget(page, state, target, scopeRef)
     await element.tap()
     await sleep(waitMs)
-    const timelineResult = await syncRouteTimelineEvents(miniProgram, state)
-    const currentPage = await getCurrentPage(miniProgram)
-    state.route = currentPage.path
+    const routeResult = await confirmRouteAfterAction(miniProgram, state, {
+      pathBefore,
+      timeoutMs: waitMs,
+    })
     return {
       message: `已点击 ${target}`,
-      path: currentPage.path,
+      path: routeResult.path,
       notices: buildClickNotices({
         pathBefore,
-        pathAfter: currentPage.path,
-        routeEvents: timelineResult.events,
+        pathAfter: routeResult.path,
+        routeEvents: routeResult.routeEvents,
       }),
     }
   })
@@ -971,13 +975,14 @@ async function handleNative(state, method, args, options) {
     if (waitMs > 0) {
       await sleep(waitMs)
     }
-    const timelineResult = await syncRouteTimelineEvents(miniProgram, state)
-    const currentPage = await getCurrentPage(miniProgram).catch(() => ({ path: pathBefore }))
-    state.route = currentPage.path || pathBefore
+    const routeResult = await confirmRouteAfterAction(miniProgram, state, {
+      pathBefore,
+      timeoutMs: waitMs,
+    })
     const diagnostic = buildNativeDiagnostic(method, result, {
       pathBefore,
-      pathAfter: state.route,
-      routeEvents: timelineResult.events,
+      pathAfter: routeResult.path || pathBefore,
+      routeEvents: routeResult.routeEvents,
     })
     if (!options.json && !diagnostic.error && !diagnostic.message) {
       diagnostic.message = JSON.stringify(result, null, 2)
@@ -1434,7 +1439,11 @@ async function main() {
   }
 
   const baseConfig = createDefaultConfig()
-  const lock = await acquireSessionLock(options.session, baseConfig, { command })
+  const lockConfig = await resolveSessionConfig(
+    options.session,
+    mergeConfigOverrides(baseConfig, buildExplicitOverrides(options)),
+  )
+  const lock = await acquireSessionLock(options.session, lockConfig, { command })
 
   try {
     const state = await resolveSession(options)

@@ -111,9 +111,9 @@ npx miniprogram-browser help
 
 - 首次 `open/connect` 必须显式传 `--session` 和 `--project`
 - fresh session 下，`devtoolsPort` 和 `autoPort` 都可以自动分配
-- 但如果 DevTools 已经作为一个 live 实例跑在某个 HTTP 端口上，工具不会静默把它改到另一个端口；这时应复用当前 session/端口，或先手动重启 DevTools 服务端口
-- 同一个 session 内部会串行化，不需要调用方自己做并发控制
-- 多 worktree 并行时，每个 worktree 用独立的 `session + devtoolsPort`
+- 但如果 DevTools 已经作为一个 live 实例跑在某个 HTTP 端口上，通常应复用这个 `devtoolsPort`；工具不会静默把它改到另一个端口
+- 同一个 `session` 内部会串行化；不同 `session` 可以并发
+- 多 worktree 并行时，每个 worktree 用独立的 `session + autoPort`；`devtoolsPort` 通常复用当前 live IDE 端口
 - 用完后执行 `close --session <name>`，关闭对应 DevTools 实例并解绑
 - `session list` 可以查看当前已绑定列表
 

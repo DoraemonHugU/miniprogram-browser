@@ -546,7 +546,7 @@ async function shouldReclaimStaleLock(lockPath, options = {}) {
 }
 
 async function acquireSessionLock(sessionName, config, options = {}) {
-  const timeoutMs = Number(options.timeoutMs || 15000)
+  const timeoutMs = Number(options.timeoutMs || 120000)
   const pollMs = Number(options.pollMs || 100)
   const heartbeatMs = Number(options.heartbeatMs || 2000)
   const lockPath = sessionLockPath(sessionName, config)
@@ -596,11 +596,11 @@ async function acquireSessionLock(sessionName, config, options = {}) {
       parts.push(`command=${meta.command}`)
     }
     if (parts.length) {
-      throw new Error(`Session lock timeout: ${sessionName} (${parts.join(' ')})`)
+      throw new Error(`Session is busy: ${sessionName} (${parts.join(' ')}). 同一 session 只允许串行执行；请等待当前命令完成，或改用不同的 --session。`)
     }
   }
 
-  throw new Error(`Session lock timeout: ${sessionName}`)
+  throw new Error(`Session is busy: ${sessionName}. 同一 session 只允许串行执行；请等待当前命令完成，或改用不同的 --session。`)
 }
 
 async function releaseSessionLock(lock) {
@@ -768,6 +768,7 @@ module.exports = {
   loadOtherSessionConfigs,
   sessionLockRoot,
   sessionLockPath,
+  resolveSessionConfig,
   loadSessionState,
   saveSessionState,
   clearSessionState,
