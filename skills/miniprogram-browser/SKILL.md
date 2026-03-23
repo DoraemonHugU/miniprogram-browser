@@ -35,11 +35,12 @@ npx miniprogram-browser ...
 1. `open` 绑定的是一个**小程序实例**，不是页面 URL
 2. 绑定后先 `path` 或 `app inspect` 确认当前状态
 3. 再 `goto` 到目标路由(默认首页)
-4. 优先用 `screenshot --mode layout` 理解页面结构
-5. 需要纯文字布局或比例 rect 时，再用 `snapshot -i --layout`
-6. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
-7. 只有在确实需要真实像素证据时，再退回 `page/visual/annotate`
-8. 页面明显变化后，重新 `snapshot -i`
+4. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
+5. 优先用 `screenshot --mode layout` 理解页面结构
+6. 需要纯文字布局或比例 rect 时，再用 `snapshot -i --layout`
+7. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
+8. 只有在确实需要真实像素证据时，再退回 `page/visual/annotate`
+9. 页面明显变化后，重新 `snapshot -i`
 
 如果你的目标是让模型稳定理解页面结构，优先使用：
 
@@ -76,6 +77,8 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 miniprogram-browser open --session feat-a --project /path/to/miniprogram-root
 miniprogram-browser app inspect --session feat-a
+miniprogram-browser logs --session feat-a --limit 20
+miniprogram-browser exceptions --session feat-a
 miniprogram-browser goto /pages/dashboard/index --session feat-a
 miniprogram-browser screenshot artifacts/layout.png --session feat-a --mode layout --no-ref
 miniprogram-browser snapshot -i --layout --session feat-a
@@ -123,17 +126,84 @@ npx miniprogram-browser help
 
 - `app inspect`：应用结构摘要
 - `timeline`：路由变化时间线
-- `logs` / `exceptions`：运行时输出与异常
+- `logs` / `exceptions`：运行时输出与异常；优先用它们理解当前页面的数据加载、报错、按钮点击后发生了什么
 - `system-info` / `page-stack`：设备与页面栈
 
 典型诊断流程：
 
 ```bash
 miniprogram-browser app inspect --session feat-a
-miniprogram-browser timeline --session feat-a
 miniprogram-browser logs --session feat-a --limit 20
 miniprogram-browser exceptions --session feat-a
+miniprogram-browser timeline --session feat-a
 ```
+
+使用建议：
+
+- 看到“页面没反应 / 不确定按钮是否生效”时，不要只盯截图；先看 `logs` / `exceptions`
+- 对数据加载页、表单页、工具页，console 往往比截图更早暴露真实状态
+- 如果 `logs` 已经明确报错，再去看 layout / snapshot 会更容易判断问题归因
+
+## Taro / H5 浏览器渲染（可选高保真视觉工作流）
+
+如果当前项目是跨端 Taro 项目，并且已经有可用的 H5 输出，这时可以把浏览器渲染作为**辅助视觉工作流**：
+
+- 用浏览器拿更高保真的视觉截图
+- 用 `miniprogram-browser` 拿真实小程序运行时结构、ref、logs、exceptions
+- 两条证据线结合，而不是只信其中一条
+
+适用场景：
+
+- 你需要更像真实页面的视觉留证
+- DevTools 真实截图通道不稳定，但 H5 端可正常运行
+- 你想核对复杂样式、间距、字体、阴影等视觉细节
+
+不适用场景：
+
+- 你要证明微信小程序专属能力或原生组件行为
+- 页面强依赖 `wx` 能力，H5 端并没有完整实现
+- 你想把浏览器截图当成“小程序真实截图”的替代证据
+
+推荐步骤：
+
+1. 先在小程序里读取当前视觉尺寸：
+
+```bash
+miniprogram-browser system-info --session feat-a
+```
+
+重点看：
+
+- `windowWidth`
+- `windowHeight`
+- `pixelRatio`
+
+2. 再把浏览器/H5 的 viewport 固定成同样尺寸，尽量对齐视觉基线
+
+推荐移动基线：
+
+- 主基线：`375 x 812`
+- 大屏补充：`414 x 896`
+- DPR 建议 `2` 或 `3`
+
+3. 浏览器端只负责**视觉截图**，小程序端继续负责：
+
+- `logs` / `exceptions`
+- `snapshot -i`
+- `snapshot -i --layout`
+- `screenshot --mode layout`
+
+4. 最终判断时遵循：
+
+- 浏览器图更偏视觉
+- 小程序图更偏真实运行时
+- 结论冲突时，优先继续看小程序运行时证据
+
+重要边界：
+
+- 浏览器渲染不是小程序运行时等价物
+- 它可以帮助看“样子”，但不能替代小程序里的行为证据
+- 如果只是做结构分析，优先 `screenshot --mode layout`；不要因为有浏览器就跳过小程序取证
 
 ### 逃逸点
 

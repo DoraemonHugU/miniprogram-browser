@@ -692,6 +692,7 @@ async function handleOpen(state, options) {
     throw new Error('首次 open/connect 必须显式传 --session <name>。')
   }
   assertProjectPath(state.config)
+  await saveSessionState(state)
   const result = await withMiniProgram(state, async (miniProgram) => {
     const page = await getCurrentPage(miniProgram).catch(() => null)
     return {

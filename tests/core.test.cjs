@@ -26,6 +26,7 @@ const {
   assignPorts,
   ensureSessionPorts,
   saveSessionState,
+  resolveSessionConfig,
   sessionLockPath,
   sessionLockRoot,
   validateSessionPortConflicts,
@@ -677,6 +678,35 @@ test('saveSessionState stores non-git project sessions outside project tree', as
     assert.equal(loaded.config.sessionDir.startsWith(projectDir), false)
 
     await clearSessionState('nongit-project', loaded.config)
+  } finally {
+    await fs.promises.rm(projectDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
+})
+
+test('saveSessionState makes a fresh bound session resolvable before runtime work starts', async () => {
+  const projectDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-prebind-project-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-prebind.json`)
+
+  try {
+    const config = {
+      ...createDefaultConfig('/repo'),
+      projectPath: projectDir,
+      sessionRegistryFile: registryFile,
+      devtoolsPort: '41080',
+      autoPort: '9470',
+    }
+    const state = createEmptySessionState({ sessionName: 'prebound-session', config })
+
+    await saveSessionState(state)
+
+    const resolved = await resolveSessionConfig('prebound-session', {
+      ...createDefaultConfig('/repo'),
+      sessionRegistryFile: registryFile,
+    })
+
+    assert.equal(resolved.projectPath, projectDir)
+    assert.equal(fs.existsSync(path.join(resolved.sessionDir, 'prebound-session.json')), true)
   } finally {
     await fs.promises.rm(projectDir, { recursive: true, force: true })
     await fs.promises.rm(registryFile, { force: true })
