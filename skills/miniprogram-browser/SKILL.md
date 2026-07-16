@@ -405,6 +405,12 @@ miniprogram-browser system-info --session feat-a
 2. 标准层不够时，再用逃逸点
 3. 用完后尽量回到 ref/语义命令
 
+### 辅助命令（query / within / relaunch）
+
+- `query <mode> <value>`：按 `selector | text | business` 查询节点；先用它快速定位，再切到 ref 语义命令
+- `within <ref> <command> ...`：在 ref 作用域内继续执行子命令，例如只在某个列表项内 `click`；子命令仍走同一 session
+- `relaunch <route>`：重启到指定路由，等价于冷启动后 `goto`
+
 ## app inspect
 
 `app inspect` 默认只给摘要，不直接吐完整应用图。
