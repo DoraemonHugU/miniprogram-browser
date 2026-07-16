@@ -5,11 +5,14 @@ const net = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
 
+type AnyRecord = Record<string, any>
+
 const DEVTOOLS_PORT_RANGE = { start: 39085, end: 39185 }
-const AUTO_PORT_RANGE = { start: 9421, end: 9521 }
+const AUTO_PORT_RANGE = { start: 9515, end: 9615 }
 const DEFAULT_MAX_INACTIVE_REFS = 200
 const DEFAULT_MAX_RUNTIME_EVENTS = 200
 const DEFAULT_MAX_ROUTE_EVENTS = 200
+const DEFAULT_MAX_RUNTIME_LAUNCH_RECORDS = 100
 
 function detectRepoRoot() {
   return path.resolve(__dirname, '../..')
@@ -28,6 +31,9 @@ function createDefaultConfig(repoRoot = detectRepoRoot()) {
   return {
     repoRoot,
     cliPath: merged.WECHAT_DEVTOOLS_CLI || defaultCliPath,
+    devtoolsProjectPath: merged.WECHAT_DEVTOOLS_PROJECT || '',
+    devtoolsProjectMap: merged.WECHAT_DEVTOOLS_PROJECT_MAP || '',
+    trustProject: String(merged.WECHAT_DEVTOOLS_TRUST_PROJECT || '').trim() !== '0',
     devtoolsPort: merged.WECHAT_DEVTOOLS_PORT ? String(merged.WECHAT_DEVTOOLS_PORT) : '',
     autoPort: merged.WECHAT_AUTO_PORT ? String(merged.WECHAT_AUTO_PORT) : '',
     projectPath: '',
@@ -45,6 +51,113 @@ function normalizeProjectPath(projectPath) {
   }
 
   return path.resolve(String(projectPath).trim())
+}
+
+function resolveMiniProgramProjectInfo(projectPath) {
+  const normalizedProjectPath = normalizeProjectPath(projectPath)
+  if (!normalizedProjectPath) {
+    throw new Error('Missing project path. Pass --project <miniprogram-root> on first open/session binding.')
+  }
+
+  if (!existsSync(normalizedProjectPath) || !statSync(normalizedProjectPath).isDirectory()) {
+    throw new Error(`Invalid mini program project path: ${normalizedProjectPath} does not exist or is not a directory.`)
+  }
+
+  const projectConfigPath = path.join(normalizedProjectPath, 'project.config.json')
+  if (!existsSync(projectConfigPath)) {
+    throw new Error(`Invalid mini program project: missing project.config.json under ${normalizedProjectPath}.`)
+  }
+
+  let projectConfig
+  try {
+    projectConfig = JSON.parse(readFileSync(projectConfigPath, 'utf8'))
+  } catch (error) {
+    throw new Error(`Invalid mini program project: project.config.json is not valid JSON. ${error && error.message ? error.message : error}`)
+  }
+
+  const miniprogramRoot = path.resolve(normalizedProjectPath, String(projectConfig.miniprogramRoot || '').trim() || '.')
+  if (!existsSync(miniprogramRoot) || !statSync(miniprogramRoot).isDirectory()) {
+    throw new Error(`Invalid mini program project: miniprogramRoot does not exist: ${miniprogramRoot}.`)
+  }
+
+  const appJsonPath = path.join(miniprogramRoot, 'app.json')
+  if (!existsSync(appJsonPath)) {
+    throw new Error(`Invalid mini program project: missing app.json under miniprogramRoot ${miniprogramRoot}.`)
+  }
+
+  return {
+    projectPath: normalizedProjectPath,
+    projectConfigPath,
+    miniprogramRoot,
+    appJsonPath,
+  }
+}
+
+function tryResolveMiniProgramProjectInfo(projectPath) {
+  try {
+    return resolveMiniProgramProjectInfo(projectPath)
+  } catch (_) {
+    return null
+  }
+}
+
+function findGitWorkTreeRoot(cwd) {
+  let currentPath = normalizeProjectPath(cwd)
+  while (currentPath) {
+    if (existsSync(path.join(currentPath, '.git'))) {
+      return currentPath
+    }
+
+    const parentPath = path.dirname(currentPath)
+    if (!parentPath || parentPath === currentPath) {
+      break
+    }
+    currentPath = parentPath
+  }
+
+  return ''
+}
+
+function discoverMiniProgramProjectFromCwd(cwd = process.cwd()) {
+  let currentPath = normalizeProjectPath(cwd)
+  const gitWorkTreeRoot = findGitWorkTreeRoot(currentPath)
+  const seen = new Set()
+  const childCandidates = ['apps/miniprogram', 'miniprogram']
+
+  while (currentPath) {
+    const direct = tryResolveMiniProgramProjectInfo(currentPath)
+    if (direct) {
+      return direct
+    }
+
+    const matches = []
+    for (const candidate of childCandidates) {
+      const candidatePath = path.join(currentPath, candidate)
+      if (seen.has(candidatePath)) {
+        continue
+      }
+      seen.add(candidatePath)
+      const info = tryResolveMiniProgramProjectInfo(candidatePath)
+      if (info) {
+        matches.push(info)
+      }
+    }
+    if (matches.length === 1) {
+      return matches[0]
+    }
+
+    if (gitWorkTreeRoot && currentPath === gitWorkTreeRoot) {
+      break
+    }
+
+    const parentPath = path.dirname(currentPath)
+    if (!parentPath || parentPath === currentPath) {
+      break
+    }
+    currentPath = parentPath
+  }
+
+  return null
 }
 
 function resolveGitDir(projectPath) {
@@ -170,6 +283,142 @@ async function unregisterSessionProject(sessionName, config) {
   await writeSessionRegistry(config, registry)
 }
 
+function runtimeLaunchRegistryFilePath(config) {
+  return path.join(projectStateRoot(config), 'runtime-launches.json')
+}
+
+function normalizeRuntimeLaunchId(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^\w.-]+/gu, '-')
+    .slice(0, 120)
+}
+
+function normalizeRuntimeLaunchRecord(record) {
+  const normalized = {
+    ...(record || {}),
+    id: normalizeRuntimeLaunchId(record && record.id),
+    sessionName: String((record && record.sessionName) || '').trim(),
+    projectPath: normalizeProjectPath(record && record.projectPath),
+    cliPath: String((record && record.cliPath) || '').trim(),
+    devtoolsProjectPath: String((record && record.devtoolsProjectPath) || '').trim(),
+    devtoolsProjectMirror: String((record && record.devtoolsProjectMirror) || '').trim(),
+    devtoolsProjectAutoLink: String((record && record.devtoolsProjectAutoLink) || '').trim(),
+    devtoolsPort: normalizePort(record && record.devtoolsPort),
+    autoPort: normalizePort(record && record.autoPort),
+    projectStrategy: String((record && record.projectStrategy) || '').trim(),
+    status: String((record && record.status) || 'starting').trim(),
+    createdAt: String((record && record.createdAt) || '').trim(),
+    updatedAt: String((record && record.updatedAt) || '').trim(),
+  }
+  return normalized
+}
+
+async function readRuntimeLaunchRegistry(config) {
+  const filePath = runtimeLaunchRegistryFilePath(config)
+
+  try {
+    const raw = await readFile(filePath, 'utf8')
+    const parsed = JSON.parse(raw)
+    const launches = Array.isArray(parsed && parsed.launches) ? parsed.launches : []
+    return {
+      launches: launches
+        .map((item) => normalizeRuntimeLaunchRecord(item))
+        .filter((item) => item.id && item.projectPath),
+    }
+  } catch (_) {
+    return { launches: [] }
+  }
+}
+
+async function writeRuntimeLaunchRegistry(config, registry) {
+  const filePath = runtimeLaunchRegistryFilePath(config)
+  const launches = (Array.isArray(registry && registry.launches) ? registry.launches : [])
+    .map((item) => normalizeRuntimeLaunchRecord(item))
+    .filter((item) => item.id && item.projectPath)
+    .sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)))
+    .slice(0, DEFAULT_MAX_RUNTIME_LAUNCH_RECORDS)
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, JSON.stringify({ launches }, null, 2))
+}
+
+async function recordRuntimeLaunch(sessionName, config, metadata: AnyRecord = {}) {
+  const projectPath = normalizeProjectPath(config && config.projectPath)
+  if (!projectPath) {
+    return null
+  }
+
+  const now = new Date().toISOString()
+  const id = normalizeRuntimeLaunchId(metadata.id || `${sessionName || 'runtime'}-${Date.now()}-${process.pid}`)
+  const registry = await readRuntimeLaunchRegistry(config)
+  const record = normalizeRuntimeLaunchRecord({
+    ...metadata,
+    id,
+    sessionName,
+    projectPath,
+    cliPath: config.cliPath || '',
+    devtoolsProjectPath: metadata.devtoolsProjectPath || config.devtoolsProjectPath || '',
+    devtoolsProjectMirror: metadata.devtoolsProjectMirror || config.devtoolsProjectMirror || '',
+    devtoolsProjectAutoLink: metadata.devtoolsProjectAutoLink || config.devtoolsProjectAutoLink || '',
+    devtoolsPort: metadata.devtoolsPort || config.devtoolsPort || '',
+    autoPort: metadata.autoPort || config.autoPort || '',
+    projectStrategy: metadata.projectStrategy || '',
+    status: metadata.status || 'starting',
+    createdAt: metadata.createdAt || now,
+    updatedAt: now,
+    pid: process.pid,
+  })
+  registry.launches = [
+    record,
+    ...registry.launches.filter((item) => item.id !== id),
+  ]
+  await writeRuntimeLaunchRegistry(config, registry)
+  return record
+}
+
+async function updateRuntimeLaunch(id, config, patch: AnyRecord = {}) {
+  const launchId = normalizeRuntimeLaunchId(id)
+  if (!launchId) {
+    return null
+  }
+
+  const registry = await readRuntimeLaunchRegistry(config)
+  let updatedRecord = null
+  registry.launches = registry.launches.map((item) => {
+    if (item.id !== launchId) {
+      return item
+    }
+    updatedRecord = normalizeRuntimeLaunchRecord({
+      ...item,
+      ...patch,
+      id: launchId,
+      projectPath: item.projectPath,
+      updatedAt: new Date().toISOString(),
+    })
+    return updatedRecord
+  })
+  await writeRuntimeLaunchRegistry(config, registry)
+  return updatedRecord
+}
+
+async function removeRuntimeLaunch(id, config) {
+  const launchId = normalizeRuntimeLaunchId(id)
+  if (!launchId) {
+    return false
+  }
+
+  const registry = await readRuntimeLaunchRegistry(config)
+  const before = registry.launches.length
+  registry.launches = registry.launches.filter((item) => item.id !== launchId)
+  await writeRuntimeLaunchRegistry(config, registry)
+  return registry.launches.length !== before
+}
+
+async function listRuntimeLaunches(config) {
+  const registry = await readRuntimeLaunchRegistry(config)
+  return registry.launches
+}
+
 async function resolveSessionConfig(sessionName, config) {
   const explicitProjectPath = normalizeProjectPath(config && config.projectPath)
   if (explicitProjectPath) {
@@ -207,12 +456,10 @@ async function resolveSessionConfig(sessionName, config) {
 }
 
 function assertProjectPath(config) {
-  if (!config || !String(config.projectPath || '').trim()) {
-    throw new Error('Missing project path. Pass --project <miniprogram-root> on first open/session binding.')
-  }
+  return resolveMiniProgramProjectInfo(config && config.projectPath)
 }
 
-function mergeConfigOverrides(baseConfig, overrides = {}) {
+function mergeConfigOverrides(baseConfig, overrides: AnyRecord = {}) {
   const merged = { ...(baseConfig || {}) }
 
   for (const [key, value] of Object.entries(overrides)) {
@@ -225,7 +472,7 @@ function mergeConfigOverrides(baseConfig, overrides = {}) {
   return merged
 }
 
-function assertBindingConsistency(existingConfig, overrides = {}) {
+function assertBindingConsistency(existingConfig, overrides: AnyRecord = {}) {
   const keys = ['projectPath', 'autoPort']
 
   for (const key of keys) {
@@ -279,7 +526,7 @@ function normalizePort(value) {
 }
 
 async function isPortAvailable(port) {
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const server = net.createServer()
     server.once('error', reject)
     server.listen(port, '127.0.0.1', () => {
@@ -364,6 +611,11 @@ async function loadOtherSessionConfigs(sessionDir, sessionName) {
         const raw = await readFile(path.join(legacySessionDir, entry.name), 'utf8')
         const parsed = JSON.parse(raw)
         if (parsed && parsed.config) {
+          const parsedProjectPath = normalizeProjectPath(parsed.config.projectPath)
+          const currentProjectPath = normalizeProjectPath(currentConfig.projectPath)
+          if (name === sessionName && (!parsedProjectPath || parsedProjectPath === currentProjectPath)) {
+            continue
+          }
           configs.push({
             name,
             route: parsed.route || '',
@@ -409,9 +661,14 @@ async function assignPorts(config, otherConfigs = [], availabilityChecker = isPo
 
   const reservedAutoPorts = new Set()
   for (const item of otherConfigs) {
-    const autoPort = Number(item && item.config ? item.config.autoPort : item && item.autoPort)
+    const otherConfig = item && item.config ? item.config : item
+    const autoPort = Number(otherConfig && otherConfig.autoPort)
     if (autoPort) {
       reservedAutoPorts.add(autoPort)
+    }
+    const devtoolsPort = Number(otherConfig && otherConfig.devtoolsPort)
+    if (devtoolsPort) {
+      reservedAutoPorts.add(devtoolsPort)
     }
   }
 
@@ -446,6 +703,7 @@ async function ensureSessionPorts(state, availabilityChecker = isPortAvailable) 
 
   const otherConfigs = await loadOtherSessionConfigs(state.config, state.name)
   state.config = await assignPorts(state.config, otherConfigs, availabilityChecker)
+  state.portResolution.devtoolsPortAssigned = false
   state.portResolution.autoPortAssigned = needsAutoPort
   return state
 }
@@ -453,6 +711,7 @@ async function ensureSessionPorts(state, availabilityChecker = isPortAvailable) 
 function createEmptySessionState({ sessionName, config }) {
   return {
     name: sessionName,
+    bound: false,
     config,
     route: '',
     epoch: 0,
@@ -488,6 +747,41 @@ function sessionLockPath(name, config) {
   return path.join(sessionLockRoot(config), `${name}.lock`)
 }
 
+function runtimeLockName(config) {
+  const autoPort = normalizePort(config && config.autoPort)
+  if (!autoPort) {
+    return ''
+  }
+  return `__runtime_auto_${autoPort}`
+}
+
+function selectAttachableRuntimeSession(sessions = []) {
+  const liveSessions = (sessions || []).filter((item) => item && item.status === 'live' && item.autoPort)
+  if (liveSessions.length === 1) {
+    return {
+      mode: 'attach',
+      session: liveSessions[0],
+    }
+  }
+  if (liveSessions.length > 1) {
+    return {
+      mode: 'ambiguous',
+      sessions: liveSessions,
+    }
+  }
+  return {
+    mode: 'none',
+    sessions: [],
+  }
+}
+
+function shouldShutdownRuntimeOnClose(state, options: AnyRecord = {}) {
+  if (options.runtime) {
+    return true
+  }
+  return !Boolean(state && state.runtimeAttached)
+}
+
 function sessionLockMetaPath(lockPath) {
   return path.join(lockPath, 'meta.json')
 }
@@ -521,8 +815,8 @@ async function writeLockMeta(lockPath, meta) {
   await writeFile(sessionLockMetaPath(lockPath), JSON.stringify(meta))
 }
 
-async function shouldReclaimStaleLock(lockPath, options = {}) {
-  const staleHeartbeatMs = Number(options.staleHeartbeatMs || 15000)
+async function shouldReclaimStaleLock(lockPath, options: AnyRecord = {}) {
+  const staleHeartbeatMs = Number(options.staleHeartbeatMs || process.env.MINIPROGRAM_BROWSER_LOCK_STALE_MS || 15000)
   const meta = await readLockMeta(lockPath)
   const now = Date.now()
 
@@ -545,8 +839,8 @@ async function shouldReclaimStaleLock(lockPath, options = {}) {
   }
 }
 
-async function acquireSessionLock(sessionName, config, options = {}) {
-  const timeoutMs = Number(options.timeoutMs || 120000)
+async function acquireSessionLock(sessionName, config, options: AnyRecord = {}) {
+  const timeoutMs = Number(options.timeoutMs || process.env.MINIPROGRAM_BROWSER_LOCK_TIMEOUT_MS || 120000)
   const pollMs = Number(options.pollMs || 100)
   const heartbeatMs = Number(options.heartbeatMs || 2000)
   const lockPath = sessionLockPath(sessionName, config)
@@ -633,6 +927,7 @@ async function loadSessionState(sessionName, config) {
     ...createEmptySessionState({ sessionName, config: resolvedConfig }),
     ...parsed,
     name: sessionName,
+    bound: true,
     config: mergedConfig,
     refs: parsed.refs || {},
     stableKeyToRef: parsed.stableKeyToRef || {},
@@ -655,12 +950,12 @@ async function saveSessionState(state) {
   await registerSessionProject(state.name, state.config)
 }
 
-function prepareSessionStateForSave(state, options = {}) {
+function prepareSessionStateForSave(state, options: AnyRecord = {}) {
   const maxInactiveRefs = Number(options.maxInactiveRefs || DEFAULT_MAX_INACTIVE_REFS)
   const maxRuntimeEvents = Number(options.maxRuntimeEvents || DEFAULT_MAX_RUNTIME_EVENTS)
   const maxRouteEvents = Number(options.maxRouteEvents || DEFAULT_MAX_ROUTE_EVENTS)
-  const refs = { ...(state.refs || {}) }
-  const stableKeyToRef = { ...(state.stableKeyToRef || {}) }
+  const refs: AnyRecord = { ...(state.refs || {}) }
+  const stableKeyToRef: AnyRecord = { ...(state.stableKeyToRef || {}) }
 
   const inactiveEntries = Object.entries(refs)
     .filter(([, record]) => record && record.active === false)
@@ -703,8 +998,11 @@ async function listSessionStates(sessionDir) {
       .map((item) => ({
         name: item.name,
         projectPath: item.config && item.config.projectPath ? item.config.projectPath : '',
+        devtoolsProjectPath: item.config && item.config.devtoolsProjectPath ? item.config.devtoolsProjectPath : '',
         devtoolsPort: item.config && item.config.devtoolsPort ? item.config.devtoolsPort : '',
         autoPort: item.config && item.config.autoPort ? item.config.autoPort : '',
+        runtimeAttached: Boolean(item.runtimeAttached),
+        runtimeOwnerSession: item.runtimeOwnerSession || '',
         route: item.route || '',
         epoch: Number(item.epoch || 0),
       }))
@@ -730,8 +1028,11 @@ async function listSessionStates(sessionDir) {
       states.push({
         name,
         projectPath: parsed.config && parsed.config.projectPath ? parsed.config.projectPath : '',
+        devtoolsProjectPath: parsed.config && parsed.config.devtoolsProjectPath ? parsed.config.devtoolsProjectPath : '',
         devtoolsPort: parsed.config && parsed.config.devtoolsPort ? parsed.config.devtoolsPort : '',
         autoPort: parsed.config && parsed.config.autoPort ? parsed.config.autoPort : '',
+        runtimeAttached: Boolean(parsed.runtimeAttached),
+        runtimeOwnerSession: parsed.runtimeOwnerSession || '',
         route: parsed.route || '',
         epoch: Number(parsed.epoch || 0),
       })
@@ -755,6 +1056,8 @@ module.exports = {
   assertNoDevtoolsConflict,
   validateSessionPortConflicts,
   assertProjectPath,
+  resolveMiniProgramProjectInfo,
+  discoverMiniProgramProjectFromCwd,
   mergeConfigOverrides,
   detectRepoRoot,
   createDefaultConfig,
@@ -766,6 +1069,13 @@ module.exports = {
   prepareSessionStateForSave,
   listSessionStates,
   loadOtherSessionConfigs,
+  listRuntimeLaunches,
+  runtimeLockName,
+  recordRuntimeLaunch,
+  updateRuntimeLaunch,
+  removeRuntimeLaunch,
+  selectAttachableRuntimeSession,
+  shouldShutdownRuntimeOnClose,
   sessionLockRoot,
   sessionLockPath,
   resolveSessionConfig,

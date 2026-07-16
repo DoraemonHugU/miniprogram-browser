@@ -12,8 +12,9 @@ const {
   dedupeStaticEdges,
   normalizeInspectSections,
   inspectProjectStructure,
+  formatInspectLines,
   resolveStaticRoots,
-} = require('../scripts/lib/app-inspect.cjs')
+} = require('../dist/lib/app-inspect.js')
 
 test('parseRouteConstantsFromSource extracts route constants object literals', () => {
   const constants = parseRouteConstantsFromSource(`
@@ -185,6 +186,39 @@ test('inspectProjectStructure reads runtime config and source graph summary', as
     assert.equal(result.staticSummary.staticEdgeCount, 1)
     assert.equal(result.staticSummary.routeConstantsCount, 1)
     assert.equal(result.sections.includes('staticEdges'), false)
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('inspectProjectStructure derives current page from pageStack when current is missing', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-inspect-stack-'))
+  try {
+    await fs.promises.mkdir(path.join(tempDir, 'src/pages/index'), { recursive: true })
+    await fs.promises.mkdir(path.join(tempDir, 'src/pages/message'), { recursive: true })
+    await fs.promises.writeFile(path.join(tempDir, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'src/' }))
+    await fs.promises.writeFile(path.join(tempDir, 'src/app.json'), JSON.stringify({ pages: ['pages/index/index', 'pages/message/index'] }))
+    await fs.promises.writeFile(path.join(tempDir, 'src/pages/message/index.js'), 'wx.navigateTo({ url: "/pages/index/index" })')
+
+    const result = await inspectProjectStructure({
+      projectPath: tempDir,
+      runtimeConfig: {
+        pages: ['pages/index/index', 'pages/message/index'],
+        tabBar: { list: [] },
+        entryPagePath: 'pages/index/index',
+      },
+      current: null,
+      pageStack: [{ path: 'pages/index/index' }, { path: 'pages/message/index' }],
+      recentRoutes: [],
+      observedEdges: [],
+      sections: normalizeInspectSections({}),
+    })
+
+    assert.equal(result.current, 'pages/message/index')
+    assert.deepEqual(result.currentOutgoingEdges, [
+      { to: 'pages/index/index', methods: ['navigateTo'], observed: false },
+    ])
+    assert.match(formatInspectLines(result).join('\n'), /current=pages\/message\/index/)
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
   }

@@ -4,6 +4,9 @@ const os = require('node:os')
 const PImage = require('pureimage')
 const fontkit = require('fontkit')
 
+type AnyRecord = Record<string, any>
+type RgbTuple = [number, number, number]
+
 function resolveNavigationMetrics(windowInfo, menuButtonRect) {
   const screenWidth = windowInfo.screenWidth ?? windowInfo.windowWidth ?? 375
   const statusBarHeight = windowInfo.statusBarHeight ?? 20
@@ -90,7 +93,7 @@ async function createBlankImage(Jimp, width, height, color) {
   throw new Error('Jimp blank image creation is not available')
 }
 
-const FOCUS_PALETTE = [
+const FOCUS_PALETTE: Array<{ name: string, rgb: RgbTuple }> = [
   { name: 'blue', rgb: [0, 102, 255] },
   { name: 'green', rgb: [0, 214, 143] },
   { name: 'amber', rgb: [255, 176, 0] },
@@ -111,7 +114,7 @@ function hashString(value) {
   return hash >>> 0
 }
 
-function hslToRgb(h, s, l) {
+function hslToRgb(h, s, l): RgbTuple {
   const hue = ((h % 360) + 360) % 360 / 360
   const saturation = clampNumber(s, 0, 100) / 100
   const lightness = clampNumber(l, 0, 100) / 100
@@ -234,7 +237,7 @@ function blendPixel(buffer, idx, r, g, b, alpha) {
   buffer[idx + 3] = 255
 }
 
-function blendHatchFill(image, box, color, options = {}) {
+function blendHatchFill(image, box, color, options: AnyRecord = {}) {
   const { r, g, b } = unpackRgba(color)
   const minDimension = Math.max(1, Math.min(box.width, box.height))
   const spacing = clampNumber(options.spacing || Math.round(minDimension * 0.5), 6, 12)
@@ -290,7 +293,7 @@ function kindVisualStyle(Jimp, kind) {
   return styles[kind] || styles.default
 }
 
-function resolveLayoutFontPath(config) {
+function resolveLayoutFontPath(config: AnyRecord = {}) {
   const candidates = [
     process.env.MINIPROGRAM_BROWSER_LAYOUT_FONT,
     process.env.MPB_LAYOUT_FONT,
@@ -565,8 +568,8 @@ async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }) {
 }
 
 function buildLayoutMetrics(refs) {
-  const byRef = new Map((refs || []).map((record) => [layoutIdentity(record), record]))
-  const cache = new Map()
+  const byRef = new Map<string, any>((refs || []).map((record) => [layoutIdentity(record), record]))
+  const cache = new Map<string, any>()
   let rootIndex = 0
 
   function resolve(record) {
@@ -616,7 +619,7 @@ function textForLayout(record) {
   return record.ref
 }
 
-function drawLayoutNode(image, Jimp, record, font, metrics, badgeState, options = {}) {
+function drawLayoutNode(image, Jimp, record, font, metrics, badgeState, options: AnyRecord = {}) {
   if (!record || !record.rectPct) {
     return
   }
@@ -748,19 +751,19 @@ function resolveFocusTargets(refs, focusRefs) {
     return []
   }
 
-  const byRef = new Map((refs || []).map((item) => [item.ref, item]))
+  const byRef = new Map<string, any>((refs || []).map((item) => [item.ref, item]))
   const missing = requested.filter((ref) => !byRef.has(ref))
   if (missing.length) {
     throw new Error(`Unknown focus refs: ${missing.join(', ')}`)
   }
 
   return requested.map((ref, index) => ({
-    ...byRef.get(ref),
+    ...(byRef.get(ref) || {}),
     color: FOCUS_PALETTE[index % FOCUS_PALETTE.length],
   }))
 }
 
-function renderFocusOverlay(image, Jimp, refs, font, options = {}) {
+function renderFocusOverlay(image, Jimp, refs, font, options: AnyRecord = {}) {
   const legend = []
   const showLabel = options.showLabel !== false
 
@@ -779,10 +782,11 @@ function renderFocusOverlay(image, Jimp, refs, font, options = {}) {
     const borderThickness = clampNumber(Math.round(minDimension * 0.08), 2, 8)
     const outerThickness = clampNumber(borderThickness + 2, 3, 10)
     const innerBox = insetBox(box, 1)
-    const borderColor = rgba(Jimp, ...item.color.rgb, 255)
+    const rgb = item.color.rgb as RgbTuple
+    const borderColor = rgba(Jimp, ...rgb, 255)
     const outerBorderColor = rgba(Jimp, 15, 23, 42, 255)
-    const fillColor = rgba(Jimp, ...item.color.rgb, 255)
-    const labelFill = rgba(Jimp, ...item.color.rgb, 228)
+    const fillColor = rgba(Jimp, ...rgb, 255)
+    const labelFill = rgba(Jimp, ...rgb, 228)
     const labelBorder = rgba(Jimp, 15, 23, 42, 216)
     const labelWidth = Math.max(52, item.ref.length * 10 + 18)
     const labelBox = clampBox({

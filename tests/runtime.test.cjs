@@ -1,5 +1,8 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 
 const {
   captureScreenshotToPath,
@@ -30,12 +33,32 @@ const {
   buildClickNotices,
   confirmRouteAfterAction,
   formatAutomationCliError,
+  parseAutomationCliFailure,
+  detectAutomationCliProgressTimeout,
+  validateAutomationCliConfig,
   parseResolvedIdePort,
+  enableAutomation,
+  closeDevtoolsProject,
   callWxMethod,
   callPageMethod,
   buildAutomationArgs,
+  cleanupWindowsProjectAutoLink,
+  cleanupWindowsProjectMirror,
+  isWindowsProjectMirrorDrained,
+  findManagedWindowsProjectMirrors,
+  connectWithRetry,
+  buildConnectRetryOptions,
   connectOrEnable,
-} = require('../scripts/lib/runtime.cjs')
+  withMiniProgram,
+  probeAutomationRuntime,
+  sendAutomationProtocol,
+  collectDevtoolsLogs,
+  normalizeAwaitCondition,
+  resolveAwaitTimeoutMs,
+  waitForMiniProgramCondition,
+  waitForMiniProgramStable,
+  extractLogSummary,
+} = require('../dist/lib/runtime.js')
 
 function createState() {
   return {
@@ -231,6 +254,58 @@ test('confirmRouteAfterAction prefers route event target when currentPage lags',
 
   assert.equal(result.path, 'pages/preferences/index')
   assert.equal(state.route, 'pages/preferences/index')
+})
+
+test('confirmRouteAfterAction does not trust route events for an explicit expected route', async () => {
+  const miniProgram = {
+    async evaluate() {
+      return [{ seq: 1, ts: Date.now(), from: 'pages/settings/index', to: 'pages/preferences/index', openType: 'reLaunch' }]
+    },
+    async currentPage() {
+      return { path: 'pages/settings/index' }
+    },
+  }
+  const state = { routeEvents: [], lastRouteEventSeq: 0, route: 'pages/settings/index' }
+
+  const result = await confirmRouteAfterAction(miniProgram, state, {
+    pathBefore: 'pages/settings/index',
+    expectedPath: 'pages/preferences/index',
+    timeoutMs: 20,
+    pollMs: 1,
+  })
+
+  assert.equal(result.path, 'pages/settings/index')
+  assert.equal(result.expectedMatched, false)
+  assert.equal(state.route, 'pages/settings/index')
+})
+
+test('confirmRouteAfterAction requires stable expected route matches when requested', async () => {
+  const pages = [
+    'pages/settings/index',
+    'pages/preferences/index',
+    'pages/settings/index',
+    'pages/settings/index',
+  ]
+  const miniProgram = {
+    async evaluate() {
+      return []
+    },
+    async currentPage() {
+      return { path: pages.shift() || 'pages/settings/index' }
+    },
+  }
+  const state = { routeEvents: [], lastRouteEventSeq: 0, route: 'pages/settings/index' }
+
+  const result = await confirmRouteAfterAction(miniProgram, state, {
+    pathBefore: 'pages/settings/index',
+    expectedPath: 'pages/preferences/index',
+    expectedStableMatches: 2,
+    timeoutMs: 20,
+    pollMs: 1,
+  })
+
+  assert.equal(result.path, 'pages/settings/index')
+  assert.equal(result.expectedMatched, false)
 })
 
 test('readRuntimeTree rebuilds nested structure from runtime outerWxml', async () => {
@@ -896,6 +971,157 @@ test('formatAutomationCliError explains DevTools builder crash more clearly', ()
   assert.match(error.message, /不是普通.*session.*port|不是普通.*端口/i)
 })
 
+test('parseAutomationCliFailure treats DevTools code 17 output as fatal even with zero exit', () => {
+  const failure = parseAutomationCliFailure({
+    status: 0,
+    raw: [
+      '× preparing',
+      '[error] code: 17',
+      '二维码输出路径无效或不存在',
+      'QR_PATH_NOT_VALID_OR_NOT_EXIST',
+    ].join('\n'),
+  }, {
+    projectPath: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram',
+  })
+
+  assert.ok(failure)
+  assert.match(failure.message, /code 17|二维码输出路径|WSL UNC|--devtools-project/i)
+  assert.match(failure.raw, /QR_PATH_NOT_VALID_OR_NOT_EXIST/)
+})
+
+test('validateAutomationCliConfig rejects missing and invalid CLI paths clearly', () => {
+  assert.throws(
+    () => validateAutomationCliConfig({ cliPath: '' }),
+    /WECHAT_DEVTOOLS_CLI|--cli-path|DevTools CLI/i,
+  )
+
+  assert.throws(
+    () => validateAutomationCliConfig({ cliPath: '/tmp/not-a-devtools-cli' }),
+    /not found|不存在|DevTools CLI/i,
+  )
+})
+
+test('enableAutomation pre-opens the project and reuses the resolved DevTools port for auto', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-cli-'))
+  const callsPath = path.join(tempDir, 'calls.log')
+  const fakeCliPath = path.join(tempDir, 'cli')
+  fs.writeFileSync(fakeCliPath, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
+    'if [ "$1" = "open" ]; then',
+    '  echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
+    '  exit 0',
+    'fi',
+    'echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
+    'echo "[info] ws connect 38539 abc def"',
+  ].join('\n'))
+  fs.chmodSync(fakeCliPath, 0o755)
+
+  const config = {
+    cliPath: fakeCliPath,
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = enableAutomation(config)
+  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+
+  assert.equal(result.projectOpened, true)
+  assert.equal(result.cliTimedOut, false)
+  assert.equal(result.resolvedDevtoolsPort, '38596')
+  assert.ok(!Object.prototype.hasOwnProperty.call(result, 'resolvedAutoPort'))
+  assert.ok(!Object.prototype.hasOwnProperty.call(result, 'requestedAutoPort'))
+  assert.ok(!Object.prototype.hasOwnProperty.call(result, 'autoPortOverrodeRequest'))
+  assert.equal(config.devtoolsPort, '38596')
+  assert.equal(config.autoPort, '9421')
+  assert.ok(!Object.prototype.hasOwnProperty.call(config, 'autoPortSource'))
+  assert.equal(calls.length, 2)
+  assert.match(calls[0], /^open --project /u)
+  assert.doesNotMatch(calls[0], /--debug/u)
+  assert.doesNotMatch(calls[0], /--port/u)
+  assert.match(calls[1], /^auto --project /u)
+  assert.match(calls[1], /\s--port 38596(?:\s|$)/u)
+  assert.match(calls[1], /\s--debug(?:\s|$)/u)
+})
+
+test('enableAutomation runs Windows DevTools bundle from the bundle directory', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-bundle-'))
+  const cwdPath = path.join(tempDir, 'cwd.log')
+  const cliBatPath = path.join(tempDir, 'cli.bat')
+  const cliJsPath = path.join(tempDir, 'cli.js')
+  const nodeExePath = path.join(tempDir, 'node.exe')
+  fs.writeFileSync(cliBatPath, '')
+  fs.writeFileSync(cliJsPath, '')
+  fs.writeFileSync(nodeExePath, [
+    '#!/bin/sh',
+    `pwd > ${JSON.stringify(cwdPath)}`,
+    'if [ "$2" = "open" ]; then',
+    '  echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
+    '  exit 0',
+    'fi',
+    'echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
+    'echo "[info] ws connect 38539 abc def"',
+  ].join('\n'))
+  fs.chmodSync(nodeExePath, 0o755)
+
+  enableAutomation({
+    cliPath: cliBatPath,
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  })
+
+  assert.equal(fs.readFileSync(cwdPath, 'utf8').trim(), tempDir)
+})
+
+test('detectAutomationCliProgressTimeout recognizes timed out auto startup after visible progress', () => {
+  const result = detectAutomationCliProgressTimeout({
+    error: new Error('spawnSync /fake/cli ETIMEDOUT'),
+    raw: [
+      '✔ IDE server has started, listening on http://127.0.0.1:38596',
+      '[info] long connection established',
+      '√ Using AppID: wx123',
+    ].join('\n'),
+  })
+
+  assert.deepEqual(result, {
+    message: 'spawnSync /fake/cli ETIMEDOUT',
+    raw: [
+      '✔ IDE server has started, listening on http://127.0.0.1:38596',
+      '[info] long connection established',
+      '√ Using AppID: wx123',
+    ].join('\n'),
+  })
+})
+
+test('closeDevtoolsProject closes the recorded DevTools project path', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-close-cli-'))
+  const callsPath = path.join(tempDir, 'calls.log')
+  const fakeCliPath = path.join(tempDir, 'cli')
+  fs.writeFileSync(fakeCliPath, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
+    'echo "✔ close"',
+  ].join('\n'))
+  fs.chmodSync(fakeCliPath, 0o755)
+
+  const result = closeDevtoolsProject({
+    cliPath: fakeCliPath,
+    projectPath: '/tmp/source-project',
+    devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-abc123def456',
+    devtoolsPort: '24880',
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.attempted, true)
+  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /^close --project /u)
+  assert.match(calls[0], /project-abc123def456/u)
+  assert.match(calls[0], /--port 24880/u)
+})
+
 test('connectOrEnable prefers enable-first for open-like calls', async () => {
   const calls = []
   const result = await connectOrEnable({ autoPort: 9421 }, {
@@ -946,10 +1172,99 @@ test('connectOrEnable adopts resolved devtools port from enable metadata', async
   assert.equal(observedPort, '38596')
 })
 
-test('connectOrEnable reports fallback phases after initial connect failure', async () => {
+test('buildConnectRetryOptions derives retry budget from timeout', () => {
+  assert.deepEqual(buildConnectRetryOptions({ connectTimeoutMs: 180000 }), {
+    timeoutMs: 180000,
+    maxAttempts: 180,
+    runtimeNotReadyMaxAttempts: 180,
+    connectAttemptTimeoutMs: 1000,
+  })
+  assert.deepEqual(buildConnectRetryOptions({}), {})
+})
+
+test('connectOrEnable passes timeout retry budget to automation connect', async () => {
+  let observedOptions = null
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    preferEnable: true,
+    connectTimeoutMs: 120000,
+  }, {
+    async connect(_config, connectOptions) {
+      observedOptions = connectOptions
+      return { ok: true }
+    },
+    enable() {
+      return {}
+    },
+    async sleepFn() {},
+  })
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(observedOptions, {
+    timeoutMs: 120000,
+    maxAttempts: 120,
+    runtimeNotReadyMaxAttempts: 120,
+    connectAttemptTimeoutMs: 1000,
+  })
+})
+
+test('connectWithRetry bounds a hanging automation connect attempt', async () => {
+  const pending = connectWithRetry({ autoPort: 9421 }, {
+    maxAttempts: 1,
+    connectAttemptTimeoutMs: 50,
+    sleepFn: async () => {},
+    automator: {
+      connect() {
+        return new Promise(() => {})
+      },
+    },
+  }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error }),
+  )
+
+  const result = await Promise.race([
+    pending,
+    new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 250)),
+  ])
+
+  assert.notEqual(result.pending, true)
+  assert.equal(result.ok, false)
+  assert.match(result.error.message, /connectTool timeout/i)
+})
+
+test('connectOrEnable does not enable automation after a normal command connect failure by default', async () => {
+  const calls = []
+  await assert.rejects(
+    connectOrEnable({ autoPort: 9421 }, {
+      onProgress(phase) {
+        calls.push(`progress:${phase}`)
+      },
+    }, {
+      async connect() {
+        calls.push('connect')
+        throw new Error('Failed connecting to ws://127.0.0.1:9421')
+      },
+      enable() {
+        calls.push('enable')
+      },
+      async sleepFn(ms) {
+        calls.push(`sleep:${ms}`)
+      },
+    }),
+    /Failed connecting/,
+  )
+
+  assert.deepEqual(calls, [
+    'progress:connect',
+    'connect',
+  ])
+})
+
+test('connectOrEnable reports fallback phases when enable fallback is explicitly allowed', async () => {
   const calls = []
   let attempts = 0
   const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnableFallback: true,
     onProgress(phase) {
       calls.push(`progress:${phase}`)
     },
@@ -1007,25 +1322,616 @@ test('connectOrEnable surfaces builder issue when ws connect still fails after e
 test('buildAutomationArgs omits HTTP port when devtoolsPort is empty', () => {
   const result = buildAutomationArgs({
     cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
-    projectPath: '/home/wang/demo/apps/miniprogram',
+    projectPath: '/mnt/f/demo/apps/miniprogram',
     autoPort: '9421',
     devtoolsPort: '',
   })
 
   assert.deepEqual(result.args.slice(0, 2), ['auto', '--project'])
+  assert.equal(result.args[2], 'F:\\demo\\apps\\miniprogram')
   assert.equal(result.args.includes('--port'), false)
-  assert.deepEqual(result.args.slice(-2), ['--auto-port', '9421'])
+  assert.equal(result.args.includes('--debug'), true)
+  assert.deepEqual(result.args.slice(3, 5), ['--auto-port', '9421'])
 })
 
 test('buildAutomationArgs includes explicit HTTP port when provided', () => {
   const result = buildAutomationArgs({
     cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
-    projectPath: '/home/wang/demo/apps/miniprogram',
+    projectPath: '/mnt/f/demo/apps/miniprogram',
     autoPort: '9421',
     devtoolsPort: '39085',
   })
 
-  assert.deepEqual(result.args.slice(-4), ['--auto-port', '9421', '--port', '39085'])
+  assert.deepEqual(result.args.slice(3), ['--auto-port', '9421', '--port', '39085', '--debug'])
+})
+
+test('buildAutomationArgs includes trust-project when enabled', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+    trustProject: true,
+  })
+
+  assert.equal(result.args.includes('--trust-project'), true)
+})
+
+test('buildAutomationArgs prefers explicit devtoolsProjectPath for Windows CLI bundles', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    devtoolsProjectPath: 'P:\\demo\\apps\\miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    toWindowsPath() {
+      throw new Error('local project path should not be converted when devtoolsProjectPath is set')
+    },
+  })
+
+  assert.equal(result.args[2], 'P:\\demo\\apps\\miniprogram')
+})
+
+test('buildAutomationArgs applies explicit project prefix map before WSL conversion', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/xuexi/projects/dali/xcx/apps/miniprogram',
+    devtoolsProjectMap: '/home/wang/xuexi/projects=P:\\projects',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    toWindowsPath() {
+      throw new Error('mapped project path should not fall back to wslpath conversion')
+    },
+  })
+
+  assert.equal(result.args[2], 'P:\\projects\\dali\\xcx\\apps\\miniprogram')
+})
+
+test('buildAutomationArgs uses the longest matching project prefix map', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/xuexi/projects/dali/xcx/apps/miniprogram',
+    devtoolsProjectMap: '/home/wang/xuexi=P:\\broad;/home/wang/xuexi/projects/dali=Q:\\dali',
+    autoPort: '9421',
+    devtoolsPort: '',
+  })
+
+  assert.equal(result.args[2], 'Q:\\dali\\xcx\\apps\\miniprogram')
+})
+
+test('buildAutomationArgs mirrors WSL UNC project paths into a managed Windows temp directory', () => {
+  const config = {
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/xuexi/projects/dali/xcx/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = buildAutomationArgs(config, {
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, config.projectPath)
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram'
+    },
+    createWindowsProjectMirror(uncPath) {
+      assert.equal(uncPath, '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram')
+      return {
+        projectPath: 'C:\\Temp\\miniprogram-browser\\project-abc123',
+        mirror: {
+          path: 'C:\\Temp\\miniprogram-browser\\project-abc123',
+          target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram',
+          created: true,
+          strategy: 'managed-mirror',
+          excludes: ['node_modules', '.git'],
+        },
+      }
+    },
+  })
+
+  assert.equal(result.args[2], 'C:\\Temp\\miniprogram-browser\\project-abc123')
+  assert.equal(result.devtoolsProjectPath, 'C:\\Temp\\miniprogram-browser\\project-abc123')
+  assert.equal(result.projectStrategy, 'managed-mirror')
+  assert.equal(config.devtoolsProjectPath, 'C:\\Temp\\miniprogram-browser\\project-abc123')
+  assert.deepEqual(config.devtoolsProjectMirror, {
+    path: 'C:\\Temp\\miniprogram-browser\\project-abc123',
+    target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram',
+    created: true,
+    strategy: 'managed-mirror',
+    excludes: ['node_modules', '.git'],
+  })
+})
+
+test('buildAutomationArgs rejects malformed project prefix maps clearly', () => {
+  assert.throws(
+    () => buildAutomationArgs({
+      cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+      projectPath: '/home/wang/demo/apps/miniprogram',
+      devtoolsProjectMap: '/home/wang/demo',
+      autoPort: '9421',
+      devtoolsPort: '',
+    }),
+    /project map|linux=windows|WECHAT_DEVTOOLS_PROJECT_MAP/i,
+  )
+})
+
+test('buildAutomationArgs allows deterministic WSL mount conversion injection', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/mnt/z/work/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/mnt/z/work/apps/miniprogram')
+      return 'Z:\\work\\apps\\miniprogram'
+    },
+  })
+
+  assert.equal(result.args[2], 'Z:\\work\\apps\\miniprogram')
+})
+
+test('buildAutomationArgs rejects WSL UNC project paths when managed Windows mirror sync fails', () => {
+  assert.throws(
+    () => buildAutomationArgs({
+      cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+      projectPath: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram',
+      autoPort: '9421',
+      devtoolsPort: '',
+    }, {
+      createWindowsProjectMirror() {
+        return null
+      },
+    }),
+    /WSL UNC project path|managed Windows temp mirror/i,
+  )
+})
+
+test('buildAutomationArgs skips an existing unmarked temp project path instead of removing it', () => {
+  const commands = []
+  const config = {
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = buildAutomationArgs(config, {
+    windowsTempDir: 'C:\\Temp',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo/apps/miniprogram')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram'
+    },
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/^if exist .*\\\.miniprogram-browser-managed/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/project\.config\.json/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12} \(exit \/b 0\)/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}-1 \(exit \/b 0\)/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^for %I in \(C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}\)/u.test(script)) {
+        return { status: 0, stdout: 'd--------\n', stderr: '' }
+      }
+      if (/^dir \/A \/B C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}$/u.test(script)) {
+        return { status: 0, stdout: 'project.config.json\n', stderr: '' }
+      }
+      if (/^robocopy /u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  assert.equal(commands.some((script) => /\brmdir\b/iu.test(script)), false)
+  assert.equal(commands.some((script) => /\bmklink\b/iu.test(script)), false)
+  assert.match(result.args[2], /^C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}-1$/u)
+  assert.equal(result.projectStrategy, 'managed-mirror')
+  assert.equal(config.devtoolsProjectMirror.path, result.args[2])
+})
+
+test('buildAutomationArgs reclaims empty unmarked managed mirror directories', () => {
+  const commands = []
+  const config = {
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = buildAutomationArgs(config, {
+    windowsTempDir: 'C:\\Temp',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo/apps/miniprogram')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram'
+    },
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/^if exist .*\\\.miniprogram-browser-managed/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12} \(exit \/b 0\)/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/^for %I in \(C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}\)/u.test(script)) {
+        return { status: 0, stdout: 'd--------\n', stderr: '' }
+      }
+      if (/^dir \/A \/B C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}$/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/project\.config\.json/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  assert.match(result.args[2], /^C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}$/u)
+  assert.equal(commands.some((script) => /^dir \/A \/B /u.test(script)), true)
+  assert.equal(commands.some((script) => /rmdir \/S \/Q C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}$/u.test(script)), true)
+  assert.equal(result.projectStrategy, 'managed-mirror')
+})
+
+test('buildAutomationArgs mirrors WSL UNC projects with robocopy only inside managed temp paths', () => {
+  const commands = []
+  const config = {
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = buildAutomationArgs(config, {
+    windowsTempDir: 'C:\\Temp',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo/apps/miniprogram')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram'
+    },
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}\\\.miniprogram-browser-managed/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12} \(exit \/b 0\)/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^robocopy /u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/project\.config\.json/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  assert.match(result.args[2], /^C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}$/u)
+  assert.equal(result.projectStrategy, 'managed-mirror')
+  assert.equal(commands.some((script) => /^mklink /u.test(script)), false)
+  assert.equal(commands.some((script) => /^robocopy .* \/MIR \/XD node_modules \.git \/XF \.DS_Store$/u.test(script)), true)
+  assert.equal(commands.some((script) => /\\\.miniprogram-browser-managed/u.test(script)), true)
+})
+
+test('buildAutomationArgs keeps the primary managed mirror path stable across autoPort changes', () => {
+  const createConfig = (autoPort) => ({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+    projectPath: '/home/wang/demo/apps/miniprogram',
+    autoPort,
+    devtoolsPort: '',
+  })
+
+  const first = buildAutomationArgs(createConfig('9515'), {
+    windowsTempDir: 'C:\\Temp',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo/apps/miniprogram')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram'
+    },
+    runWindowsCommand(script) {
+      if (/project\.config\.json/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}(?:-[0-9]+)? \(exit \/b 0\)/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+  })
+  const second = buildAutomationArgs(createConfig('9516'), {
+    windowsTempDir: 'C:\\Temp',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo/apps/miniprogram')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram'
+    },
+    runWindowsCommand(script) {
+      if (/project\.config\.json/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/^if exist C:\\Temp\\miniprogram-browser\\project-[a-f0-9]{12}(?:-[0-9]+)? \(exit \/b 0\)/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  assert.equal(first.args[2], second.args[2])
+})
+
+test('cleanupWindowsProjectAutoLink only removes legacy managed temp project links', () => {
+  const commands = []
+  const removed = cleanupWindowsProjectAutoLink({
+    devtoolsProjectAutoLink: {
+      path: 'C:\\Users\\TEMP\\not-owned',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      return { status: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  assert.equal(removed, false)
+  assert.deepEqual(commands, [])
+})
+
+test('cleanupWindowsProjectAutoLink refuses managed temp paths that are not directory links', () => {
+  const commands = []
+  const removed = cleanupWindowsProjectAutoLink({
+    projectPath: '/home/wang/demo',
+    devtoolsProjectAutoLink: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/^for %I in/u.test(script)) {
+        return { status: 0, stdout: 'd--------\n', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(removed, false)
+  assert.equal(commands.some((script) => /\brmdir\b/iu.test(script)), false)
+})
+
+test('cleanupWindowsProjectAutoLink removes legacy managed temp project links', () => {
+  const config = {
+    projectPath: '/home/wang/demo',
+    devtoolsProjectAutoLink: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }
+  const commands = []
+  const removed = cleanupWindowsProjectAutoLink(config, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/^for %I in/u.test(script)) {
+        return { status: 0, stdout: 'd-----l---\n', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(removed, true)
+  assert.deepEqual(commands, [
+    'for %I in (C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456) do @echo %~aI',
+    'if exist C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456 rmdir C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+  ])
+  assert.equal(config.devtoolsProjectAutoLink, undefined)
+})
+
+test('cleanupWindowsProjectAutoLink refuses managed links whose target does not match the project', () => {
+  const commands = []
+  const removed = cleanupWindowsProjectAutoLink({
+    projectPath: '/home/wang/demo',
+    devtoolsProjectAutoLink: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\other',
+      created: true,
+    },
+  }, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(removed, false)
+  assert.deepEqual(commands, [])
+})
+
+test('cleanupWindowsProjectMirror refuses unmarked managed mirrors that are not empty', () => {
+  const commands = []
+  const removed = cleanupWindowsProjectMirror({
+    projectPath: '/home/wang/demo',
+    devtoolsProjectMirror: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/\\\.miniprogram-browser-managed/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^dir \/A \/B /u.test(script)) {
+        return { status: 0, stdout: 'project.config.json\n', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(removed, false)
+  assert.equal(commands.some((script) => /rmdir \/S \/Q/iu.test(script)), false)
+})
+
+test('cleanupWindowsProjectMirror removes empty managed mirrors when the marker is already gone', () => {
+  const config = {
+    projectPath: '/home/wang/demo',
+    devtoolsProjectMirror: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }
+  const commands = []
+  const removed = cleanupWindowsProjectMirror(config, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (/\\\.miniprogram-browser-managed/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^dir \/A \/B /u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(removed, true)
+  assert.equal(commands.some((script) => /^dir \/A \/B /u.test(script)), true)
+  assert.equal(commands.some((script) => /rmdir \/S \/Q/iu.test(script)), true)
+  assert.equal(config.devtoolsProjectMirror, undefined)
+})
+
+test('isWindowsProjectMirrorDrained treats an empty unmarked managed mirror as drained even if it still exists', () => {
+  const drained = isWindowsProjectMirrorDrained({
+    projectPath: '/home/wang/demo',
+    devtoolsProjectMirror: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }, {
+    runWindowsCommand(script) {
+      if (/^if exist C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456 \(exit \/b 0\)/u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (/\\\.miniprogram-browser-managed/u.test(script)) {
+        return { status: 1, stdout: '', stderr: '' }
+      }
+      if (/^dir \/A \/B /u.test(script)) {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(drained, true)
+})
+
+test('cleanupWindowsProjectMirror removes only matching managed mirrors', () => {
+  const config = {
+    projectPath: '/home/wang/demo',
+    devtoolsProjectMirror: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }
+  const commands = []
+  const removed = cleanupWindowsProjectMirror(config, {
+    runWindowsCommand(script) {
+      commands.push(script)
+      return { status: 0, stdout: '', stderr: '' }
+    },
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/home/wang/demo')
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo'
+    },
+  })
+
+  assert.equal(removed, true)
+  assert.deepEqual(commands, [
+    'if exist C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456\\.miniprogram-browser-managed (exit /b 0) else (exit /b 1)',
+    'if exist C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456 rmdir /S /Q C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+  ])
+  assert.equal(config.devtoolsProjectMirror, undefined)
+})
+
+test('findManagedWindowsProjectMirrors returns only marker-matched current project mirrors', () => {
+  const commands = []
+  const found = findManagedWindowsProjectMirrors({
+    projectPath: '/home/wang/xuexi/projects/dali/xcx/apps/miniprogram',
+  }, {
+    windowsTempDir: 'C:\\Users\\TEMP',
+    toWindowsPath() {
+      return '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram'
+    },
+    runWindowsCommand(script) {
+      commands.push(script)
+      if (script === 'dir /A:D /B C:\\Users\\TEMP\\miniprogram-browser\\project-*') {
+        return {
+          status: 0,
+          stdout: [
+            'project-abcdef123456',
+            'project-fedcba654321',
+            'not-a-project',
+          ].join('\n'),
+        }
+      }
+      if (/project-abcdef123456\\\.miniprogram-browser-managed/u.test(script)) {
+        return {
+          status: 0,
+          stdout: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram',
+        }
+      }
+      if (/project-fedcba654321\\\.miniprogram-browser-managed/u.test(script)) {
+        return {
+          status: 0,
+          stdout: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\other',
+        }
+      }
+      return { status: 1, stdout: '' }
+    },
+  })
+
+  assert.deepEqual(found, [
+    {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\xuexi\\projects\\dali\\xcx\\apps\\miniprogram',
+      created: true,
+      strategy: 'managed-mirror',
+    },
+  ])
+  assert.ok(commands.some((script) => /dir \/A:D \/B/u.test(script)))
 })
 
 test('parseResolvedIdePort extracts listening IDE port from CLI output', () => {
@@ -1200,4 +2106,459 @@ test('shutdownMiniProgram prefers close for session shutdown', async () => {
 
   await shutdownMiniProgram(miniProgram)
   assert.deepEqual(calls, ['close'])
+})
+
+test('probeAutomationRuntime reports Tool layer separately from App runtime timeouts', async () => {
+  const calls = []
+  const miniProgram = {
+    async send(method) {
+      calls.push(method)
+      if (method === 'Tool.getInfo') {
+        return { version: '2.01.2510290' }
+      }
+      return new Promise(() => {})
+    },
+    disconnect() {
+      calls.push('disconnect')
+    },
+  }
+
+  const result = await probeAutomationRuntime({ autoPort: '9488' }, {
+    timeoutMs: 20,
+    automator: {
+      launcher: {
+        async connectTool({ wsEndpoint }) {
+          assert.equal(wsEndpoint, 'ws://127.0.0.1:9488')
+          return miniProgram
+        },
+      },
+    },
+  })
+
+  assert.equal(result.connected, true)
+  assert.deepEqual(result.toolInfo, { version: '2.01.2510290' })
+  assert.equal(result.appReady, false)
+  assert.match(result.diagnosis, /Tool layer.*App runtime/i)
+  assert.equal(result.probes.filter((item) => item.timeout).length, 3)
+  assert.ok(calls.includes('disconnect'))
+})
+
+test('normalizeAwaitCondition supports built-in and prefixed await conditions', () => {
+  assert.deepEqual(normalizeAwaitCondition('stable'), {
+    kind: 'stable',
+    value: '',
+    raw: 'stable',
+  })
+  assert.deepEqual(normalizeAwaitCondition('app-ready'), {
+    kind: 'app-ready',
+    value: '',
+    raw: 'app-ready',
+  })
+  assert.deepEqual(normalizeAwaitCondition('route:/pages/profile/index'), {
+    kind: 'route',
+    value: 'pages/profile/index',
+    raw: 'route:/pages/profile/index',
+  })
+  assert.deepEqual(normalizeAwaitCondition('selector:.submit-btn'), {
+    kind: 'selector',
+    value: '.submit-btn',
+    raw: 'selector:.submit-btn',
+  })
+})
+
+test('resolveAwaitTimeoutMs keeps long app-ready defaults and shorter route defaults', () => {
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('app-ready')), 90000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('stable')), 15000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('route:/pages/index/index')), 8000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('selector:.submit-btn')), 12000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('selector:.submit-btn'), 3456), 3456)
+})
+
+test('waitForMiniProgramStable resolves after route and page stack stay quiet', async () => {
+  const page = createInteractivePage(['Ready'])
+  page.path = 'pages/index/index'
+  let currentPageCalls = 0
+  const miniProgram = {
+    async currentPage() {
+      currentPageCalls += 1
+      return page
+    },
+    async pageStack() {
+      return [{ path: 'pages/index/index', query: {} }]
+    },
+  }
+
+  const result = await waitForMiniProgramStable(miniProgram, {
+    quietMs: 0,
+    timeoutMs: 200,
+    pollMs: 1,
+    sleepFn: async () => {},
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.path, 'pages/index/index')
+  assert.equal(result.pageStackDepth, 1)
+  assert.equal(result.viewReady, true)
+  assert.ok(result.viewNodeCount > 0)
+  assert.ok(currentPageCalls >= 1)
+})
+
+test('waitForMiniProgramStable marks timeout as non-atomic when runtime keeps changing', async () => {
+  const paths = ['pages/loading/index', 'pages/bootstrap/index', 'pages/loading/index', 'pages/bootstrap/index']
+  const miniProgram = {
+    async currentPage() {
+      return {
+        path: paths.shift() || 'pages/bootstrap/index',
+        async $$() {
+          return []
+        },
+      }
+    },
+    async pageStack() {
+      return [{ path: paths[0] || 'pages/bootstrap/index', query: {} }]
+    },
+  }
+
+  await assert.rejects(
+    () => waitForMiniProgramStable(miniProgram, {
+      quietMs: 50,
+      timeoutMs: 20,
+      pollMs: 1,
+    }),
+    (error) => {
+      assert.equal(error.code, 'RUNTIME_UNSTABLE')
+      assert.equal(error.runtimeMayContinue, true)
+      assert.match(error.hint, /phase=stable/i)
+      return true
+    },
+  )
+})
+
+test('waitForMiniProgramCondition resolves route targets after polling', async () => {
+  const seenPaths = ['pages/index/index', 'pages/profile/loading', 'pages/profile/index', 'pages/profile/index']
+  const miniProgram = {
+    async currentPage() {
+      const pathValue = seenPaths.shift() || 'pages/profile/index'
+      return {
+        path: pathValue,
+        async $$() {
+          return []
+        },
+      }
+    },
+  }
+
+  const result = await waitForMiniProgramCondition(miniProgram, createState(), normalizeAwaitCondition('route:/pages/profile/index'), {
+    timeoutMs: 200,
+    pollMs: 1,
+    sleepFn: async () => {},
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.condition.kind, 'route')
+  assert.equal(result.path, 'pages/profile/index')
+})
+
+test('waitForMiniProgramCondition times out hidden checks with a short fact-style summary', async () => {
+  const miniProgram = {
+    async currentPage() {
+      return {
+        path: 'pages/index/index',
+        async $$(selector) {
+          if (selector === '.still-visible') {
+            return [{
+              async size() {
+                return { width: 20, height: 10 }
+              },
+            }]
+          }
+          return []
+        },
+      }
+    },
+  }
+
+  await assert.rejects(
+    waitForMiniProgramCondition(miniProgram, createState(), normalizeAwaitCondition('hidden:.still-visible'), {
+      timeoutMs: 5,
+      pollMs: 1,
+      sleepFn: async () => {},
+    }),
+    (error) => {
+      assert.equal(error.code, 'AWAIT_TIMEOUT')
+      assert.match(error.message, /hidden:\.still-visible/)
+      assert.match(error.hint, /kind=hidden|matches=1/i)
+      return true
+    },
+  )
+})
+
+test('extractLogSummary returns one compact log line without hardcoded diagnosis text', () => {
+  const summary = extractLogSummary({
+    files: [
+      {
+        lines: [
+          '',
+          '[2026-05-02 19:44:23.107][ERROR][unknow] routeTo appLaunch timeout',
+          '[2026-05-02 19:44:26.700][ERROR][unknow] !!! triggerAppRouteDone timeout {',
+        ],
+      },
+    ],
+  })
+
+  assert.equal(summary, '[2026-05-02 19:44:23.107][ERROR][unknow] routeTo appLaunch timeout')
+})
+
+test('extractLogSummary prefers automation startup facts over earlier generic errors', () => {
+  const summary = extractLogSummary({
+    files: [
+      {
+        lines: [
+          '[2026-05-02 19:44:20.100][ERROR][unknow] errcode=41002 appid missing',
+          '[2026-05-02 19:44:23.107][ERROR][unknow] routeTo appLaunch timeout',
+          '[2026-05-02 19:44:24.200][ERROR][unknow] start cli server error: [object Object]',
+        ],
+      },
+    ],
+  })
+
+  assert.equal(summary, '[2026-05-02 19:44:24.200][ERROR][unknow] start cli server error: [object Object]')
+})
+
+test('extractLogSummary prefers simulator compile crashes over secondary cli server errors', () => {
+  const summary = extractLogSummary({
+    files: [
+      {
+        lines: [
+          '[2026-05-02 22:19:47.675][ERROR][unknow] fetchDevelopLibInfo Error: appid missing',
+          "[2026-05-02 22:19:47.722][ERROR][unknow] simulator launch catch error TypeError: Cannot read properties of undefined (reading 'MinTabbarCount')",
+          '[2026-05-02 22:19:47.887][ERROR][unknow] start cli server error: [object Object]',
+        ],
+      },
+    ],
+  })
+
+  assert.match(summary, /simulator launch catch error.*MinTabbarCount/)
+})
+
+test('extractLogSummary does not prefer stale high-priority facts over the latest log file', () => {
+  const summary = extractLogSummary({
+    files: [
+      {
+        path: 'latest.log',
+        lines: [
+          '[2026-05-02 22:15:08.601][ERROR][unknow] appid missing',
+          '[2026-05-02 22:15:19.257][ERROR][unknow] routeTo appLaunch timeout',
+        ],
+      },
+      {
+        path: 'older.log',
+        lines: [
+          '[2026-05-02 22:12:48.033][ERROR][unknow] start cli server error: [object Object]',
+        ],
+      },
+    ],
+  })
+
+  assert.equal(summary, '[2026-05-02 22:15:19.257][ERROR][unknow] routeTo appLaunch timeout')
+})
+
+test('sendAutomationProtocol exposes raw automation protocol results', async () => {
+  const result = await sendAutomationProtocol({ autoPort: '9489' }, 'Tool.getInfo', {}, {
+    timeoutMs: 20,
+    automator: {
+      launcher: {
+        async connectTool() {
+          return {
+            async send(method) {
+              assert.equal(method, 'Tool.getInfo')
+              return { version: '2.01.2510290' }
+            },
+            disconnect() {},
+          }
+        },
+      },
+    },
+  })
+
+  assert.equal(result.endpoint, 'ws://127.0.0.1:9489')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.result, { version: '2.01.2510290' })
+})
+
+test('connectWithRetry stops early when Tool is reachable but App runtime is not ready', async () => {
+  let attempts = 0
+  const miniPrograms = []
+
+  await assert.rejects(
+    connectWithRetry({ autoPort: '9498' }, {
+      maxAttempts: 10,
+      runtimeNotReadyMaxAttempts: 2,
+      probeCurrentPageTimeoutMs: 5,
+      probeToolTimeoutMs: 5,
+      async sleepFn() {},
+      automator: {
+        launcher: {
+          async connectTool() {
+            attempts += 1
+            const miniProgram = {
+              async send(method) {
+                if (method === 'Tool.getInfo') {
+                  return { version: '2.01.2510290' }
+                }
+                return new Promise(() => {})
+              },
+              async disconnect() {
+                miniPrograms.push('disconnect')
+              },
+            }
+            return miniProgram
+          },
+        },
+      },
+    }),
+    /App runtime did not become ready/i,
+  )
+
+  assert.equal(attempts, 2)
+  assert.deepEqual(miniPrograms, ['disconnect', 'disconnect'])
+})
+
+test('connectWithRetry can return a tool-ready runtime when app readiness is allowed to lag', async () => {
+  let attempts = 0
+  let disconnected = false
+
+  const miniProgram = await connectWithRetry({ autoPort: '9499' }, {
+    maxAttempts: 10,
+    runtimeNotReadyMaxAttempts: 2,
+    allowRuntimeNotReady: true,
+    probeCurrentPageTimeoutMs: 5,
+    probeToolTimeoutMs: 5,
+    async sleepFn() {},
+    automator: {
+      launcher: {
+        async connectTool() {
+          attempts += 1
+          return {
+            async send(method) {
+              if (method === 'Tool.getInfo') {
+                return { version: '2.01.2510290' }
+              }
+              return new Promise(() => {})
+            },
+            async disconnect() {
+              disconnected = true
+            },
+          }
+        },
+      },
+    },
+  })
+
+  assert.equal(attempts, 1)
+  assert.equal(miniProgram.__mpbRuntimeReady, false)
+  assert.equal(miniProgram.__mpbRuntimeProbe.appReady, false)
+  assert.deepEqual(miniProgram.__mpbRuntimeProbe.toolInfo, { version: '2.01.2510290' })
+  await cleanupMiniProgram(miniProgram)
+  assert.equal(disconnected, true)
+})
+
+test('withMiniProgram forwards allowRuntimeNotReady to the runtime connection layer', async () => {
+  const observed = {}
+  let evaluateCalled = false
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-with-mini-'))
+  const state = {
+    epoch: 0,
+    nextRefIndex: 1,
+    refs: {},
+    route: '',
+    config: {
+      projectPath: '/repo/apps/miniprogram',
+      screenshotDir: path.join(tempRoot, 'shots'),
+      tempScreenshotDir: path.join(tempRoot, 'tmp-shots'),
+    },
+    portResolution: {
+      autoPortAssigned: true,
+    },
+  }
+
+  const miniProgram = {
+    __mpbRuntimeReady: false,
+    on() {},
+    removeListener() {},
+    disconnect() {},
+    async evaluate() {
+      evaluateCalled = true
+      throw new Error('route monitor should be skipped while app runtime is not ready')
+    },
+    async send(method) {
+      if (method === 'Tool.getInfo') {
+        return { version: '2.01.2510290', SDKVersion: '3.15.1' }
+      }
+      if (method === 'App.enableLog') {
+        return {}
+      }
+      if (method === 'App.getPageStack') {
+        return { pageStack: [] }
+      }
+      if (method === 'App.getCurrentPage') {
+        return { pageId: 'page-1', path: 'pages/index/index', query: {} }
+      }
+      if (method === 'App.callWxMethod') {
+        return { result: {} }
+      }
+      return {}
+    },
+  }
+
+  try {
+    const result = await withMiniProgram(state, async () => 'ok', {
+      allowRuntimeNotReady: true,
+      connectOrEnable: async (_config, options) => {
+        observed.options = options
+        return miniProgram
+      },
+    })
+
+    assert.equal(result, 'ok')
+    assert.equal(observed.options.allowRuntimeNotReady, true)
+    assert.equal(observed.options.preferEnable, true)
+    assert.equal(evaluateCalled, false)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('collectDevtoolsLogs discovers the active WeappLog root from launch.log', async () => {
+  const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-user-data-'))
+  const defaultHash = 'f0900000000000000000000000000000'
+  const activeHash = 'c47e95d2ca97f7fdd1f0dc06a6544145'
+  const activeLogRoot = path.join(userDataRoot, activeHash, 'WeappLog')
+  fs.mkdirSync(activeLogRoot, { recursive: true })
+  fs.mkdirSync(path.join(userDataRoot, defaultHash, 'WeappLog'), { recursive: true })
+  fs.writeFileSync(path.join(activeLogRoot, 'launch.log'), 'launch from F:\\Tools\\wxwebtool\\cli.bat\n')
+  fs.writeFileSync(path.join(activeLogRoot, 'stdout.log'), 'appid missing\nappservice reload\n')
+
+  const payload = await collectDevtoolsLogs({
+    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
+  }, {
+    localAppData: 'C:\\Users\\wang\\AppData\\Local',
+    files: 2,
+    limit: 5,
+    grep: 'appid|appservice',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/mnt/f/Tools/wxwebtool')
+      return 'F:\\Tools\\wxwebtool'
+    },
+    windowsPathToWslPath(inputPath) {
+      const match = String(inputPath).match(/User Data\\([^\\]+)\\WeappLog$/u)
+      assert.ok(match)
+      return path.join(userDataRoot, match[1], 'WeappLog')
+    },
+  })
+
+  assert.equal(payload.productHash, activeHash)
+  assert.equal(payload.logRoot, activeLogRoot)
+  assert.equal(payload.files.some((file) => file.lines.includes('appid missing')), true)
+  assert.equal(payload.files.some((file) => file.lines.includes('appservice reload')), true)
 })

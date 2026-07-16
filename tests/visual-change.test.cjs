@@ -7,7 +7,7 @@ const {
   buildVisualDiffSummary,
   createVisualProbe,
   collectRecordRects,
-} = require('../scripts/lib/visual-change.cjs')
+} = require('../dist/lib/visual-change.js')
 
 test('buildSemanticSignature is stable for same semantic records', () => {
   const records = [

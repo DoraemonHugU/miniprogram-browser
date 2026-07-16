@@ -1,6 +1,6 @@
 {
   "name": "miniprogram-browser",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "description": "面向微信小程序的 agent-browser 风格自动化 CLI；配套 skill 通过 skills/miniprogram-browser 分发。",
   "keywords": [
     "wechat",
@@ -20,18 +20,20 @@
     "url": "https://github.com/DoraemonHugU/miniprogram-browser/issues"
   },
   "bin": {
-    "miniprogram-browser": "scripts/miniprogram-browser.cjs"
+    "miniprogram-browser": "dist/miniprogram-browser.js"
   },
   "files": [
     "README.md",
     "LICENSE",
-    "scripts/miniprogram-browser.cjs",
-    "scripts/lib/"
+    "dist/"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "test:node": "node --test tests/*.test.cjs",
     "test:image-processing": "python scripts/run-image-processing-tests.py",
-    "test": "npm run test:node && npm run test:image-processing",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && npm run test:node && npm run test:image-processing",
+    "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
   "engines": {
@@ -45,5 +47,9 @@
     "jimp": "0.6.4",
     "miniprogram-automator": "0.12.1",
     "pureimage": "^0.4.18"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "typescript": "^6.0.3"
   }
 }

@@ -1,6 +1,8 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
+type AnyRecord = Record<string, any>
+
 function requireJimp(config) {
   const jimp = require('jimp')
   if (jimp && typeof jimp.read === 'function') {
@@ -179,7 +181,7 @@ function rectsIntersect(regionPct, rectPct) {
   return !(rectLeft >= right || rectRight <= left || rectTop >= bottom || rectBottom <= top)
 }
 
-function buildVisualDiffSummary(beforeProbe, afterProbe, options = {}) {
+function buildVisualDiffSummary(beforeProbe, afterProbe, options: AnyRecord = {}) {
   if (!beforeProbe || !afterProbe) {
     return null
   }
@@ -200,7 +202,7 @@ function buildVisualDiffSummary(beforeProbe, afterProbe, options = {}) {
   }
 
   const threshold = Number(options.cellThreshold || 8)
-  const changed = new Set()
+  const changed = new Set<number>()
   for (let index = 0; index < afterProbe.cells.length; index += 1) {
     const diff = Math.abs(Number(afterProbe.cells[index] || 0) - Number(beforeProbe.cells[index] || 0))
     if (diff >= threshold) {
@@ -213,7 +215,7 @@ function buildVisualDiffSummary(beforeProbe, afterProbe, options = {}) {
   }
 
   const regions = []
-  const visited = new Set()
+  const visited = new Set<number>()
   const { columns, rows } = afterLayout
   const neighbors = [
     [1, 0],
@@ -235,7 +237,7 @@ function buildVisualDiffSummary(beforeProbe, afterProbe, options = {}) {
     let maxY = 0
 
     while (queue.length > 0) {
-      const current = queue.shift()
+      const current = queue.shift() as number
       const x = current % columns
       const y = Math.floor(current / columns)
       minX = Math.min(minX, x)

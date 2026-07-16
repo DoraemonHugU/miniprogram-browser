@@ -11,7 +11,7 @@ const {
   resolveCapsulePaintSpec,
   resolveNavigationMetrics,
   resolveCapsuleBox,
-} = require('../scripts/lib/visual.cjs')
+} = require('../dist/lib/visual.js')
 
 test('resolveNavigationMetrics matches project fallback behavior', () => {
   const result = resolveNavigationMetrics({

@@ -4,14 +4,24 @@ const assert = require('node:assert/strict')
 const {
   buildHelpText,
   buildCommandHelpText,
+  buildCliErrorPayload,
   getVersionText,
+  normalizeOpenStableWaitError,
   parseArgs,
   parseFocusRefs,
+  resolveOpenFailureNextAction,
+  resolveManagedArtifactCleanupOutcome,
+  shouldRetryOpenWithAnotherAutoPort,
+  summarizeOpenResolution,
+  summarizeDevtoolsStartupHints,
+  classifyOpenFailureFromStartupHints,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
+  shouldClearFailedOpenSession,
+  cleanupManagedProjectArtifacts,
   summarizeTimelinePayload,
   summarizeSnapshotPayload,
-} = require('../scripts/miniprogram-browser.cjs')
+} = require('../dist/miniprogram-browser.js')
 
 test('buildHelpText groups commands by priority and purpose', () => {
   const help = buildHelpText()
@@ -21,7 +31,11 @@ test('buildHelpText groups commands by priority and purpose', () => {
   assert.match(help, /逃逸点（高级）/)
   assert.match(help, /会话与连接/)
   assert.match(help, /app inspect/)
+  assert.match(help, /doctor/)
+  assert.match(help, /protocol <method>/)
+  assert.match(help, /devtools logs/)
   assert.match(help, /eval <js>/)
+  assert.match(help, /session kill <name>/)
 })
 
 test('buildHelpText mentions summary and full detail options', () => {
@@ -31,6 +45,7 @@ test('buildHelpText mentions summary and full detail options', () => {
   assert.match(help, /--sections <a,b,c>/)
   assert.match(help, /help <command>/)
   assert.match(help, /-v, --version/)
+  assert.match(help, /--auto-port <port>.*隐藏|--auto-port <port>.*\/auto/i)
 })
 
 test('getVersionText returns package version', () => {
@@ -43,7 +58,14 @@ test('buildCommandHelpText returns open command details', () => {
   assert.match(help, /^open\/connect/m)
   assert.match(help, /--session <name>/)
   assert.match(help, /--project <path>/)
+  assert.match(help, /--devtools-project <path>/)
+  assert.match(help, /--project-map <linux=windows>/)
   assert.match(help, /WECHAT_DEVTOOLS_CLI/)
+  assert.match(help, /优先 attach|attach 到同项目唯一 live runtime/i)
+  assert.match(help, /没有可复用 runtime 时才尝试启动新的|启动路径/i)
+  assert.match(help, /--fresh .*失败时不会偷偷 attach|必须新起/i)
+  assert.match(help, /显式 --auto-port.*fresh 启动|沿用 owner autoPort/i)
+  assert.match(help, /ws connect <port>.*\/upgrade|不是 automation ws/i)
 })
 
 test('buildCommandHelpText returns screenshot mode details', () => {
@@ -64,6 +86,32 @@ test('buildCommandHelpText returns snapshot layout option details', () => {
 
   assert.match(help, /^snapshot/m)
   assert.match(help, /--layout/)
+})
+
+test('buildCommandHelpText returns low-level diagnostic command details', () => {
+  assert.match(buildCommandHelpText('doctor'), /App runtime|Tool\.getInfo/)
+  assert.match(buildCommandHelpText('doctor'), /--project <path> --devtools-port <port>|bootstrap automation/u)
+  assert.match(buildCommandHelpText('protocol'), /Tool\.getInfo|底层协议/)
+  assert.match(buildCommandHelpText('devtools'), /WeappLog|底层日志/)
+})
+
+test('buildCommandHelpText returns await command details', () => {
+  const help = buildCommandHelpText('await')
+
+  assert.match(help, /^await/m)
+  assert.match(help, /tool-ready|app-ready/)
+  assert.match(help, /route:|selector:|visible:|hidden:|ref:/)
+  assert.match(help, /--timeout <ms>/)
+})
+
+test('buildCommandHelpText returns project-scoped session management details', () => {
+  const help = buildCommandHelpText('session')
+
+  assert.match(help, /session list/)
+  assert.match(help, /session kill <name>/)
+  assert.match(help, /项目|project/)
+  assert.match(help, /live|stale/)
+  assert.match(help, /orphan launch/)
 })
 
 test('parseFocusRefs normalizes comma separated focus refs', () => {
@@ -93,6 +141,242 @@ test('parseArgs keeps no-ref as boolean flag for screenshot', () => {
   assert.equal(parsed.options.session, 'demo')
   assert.equal(parsed.options.mode, 'layout')
   assert.equal(parsed.options.noRef, true)
+})
+
+test('parseArgs keeps capture-screenshot as boolean flag for doctor', () => {
+  const parsed = parseArgs(['doctor', '--session', 'demo', '--capture-screenshot'])
+  assert.deepEqual(parsed.positional, ['doctor'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.captureScreenshot, true)
+})
+
+test('parseArgs rejects value options when the value is missing', () => {
+  assert.throws(
+    () => parseArgs(['open', '--session', '--json']),
+    /--session.*value|--session.*值/i,
+  )
+})
+
+test('parseArgs supports disabling DevTools trust-project flag', () => {
+  const parsed = parseArgs(['open', '--session', 'demo', '--no-trust-project'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.trustProject, false)
+})
+
+test('parseArgs supports explicit fresh runtime escape hatch', () => {
+  const parsed = parseArgs(['open', '--session', 'demo', '--fresh'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.fresh, true)
+})
+
+test('parseArgs supports explicit await and disabling implicit await', () => {
+  const parsed = parseArgs(['click', '@e1', '--session', 'demo', '--await', 'route-settled', '--no-await'])
+
+  assert.deepEqual(parsed.positional, ['click', '@e1'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.await, 'route-settled')
+  assert.equal(parsed.options.noAwait, true)
+})
+
+test('buildCliErrorPayload keeps the error envelope short and stable', () => {
+  const payload = buildCliErrorPayload({
+    code: 'AWAIT_TIMEOUT',
+    message: 'await app-ready timed out after 90000ms',
+    hint: 'phase=app-ready; last=App.getCurrentPage timeout',
+    log: 'routeTo appLaunch timeout',
+    next: 'devtools logs',
+    raw: 'raw details',
+  })
+
+  assert.deepEqual(payload, {
+    ok: false,
+    error: {
+      code: 'AWAIT_TIMEOUT',
+      message: 'await app-ready timed out after 90000ms',
+      hint: 'phase=app-ready; last=App.getCurrentPage timeout',
+      log: 'routeTo appLaunch timeout',
+      next: 'devtools logs',
+      raw: 'raw details',
+    },
+  })
+})
+
+test('normalizeOpenStableWaitError degrades runtime stable timeout into an open result fact', () => {
+  const normalized = normalizeOpenStableWaitError({
+    code: 'RUNTIME_UNSTABLE',
+    message: 'runtime stable timed out after 15000ms',
+    hint: 'phase=stable; current=pages/home/index; stableMs=300',
+    next: 'await stable',
+    diagnostics: {
+      path: 'pages/home/index',
+    },
+  })
+
+  assert.equal(normalized.stable, null)
+  assert.deepEqual(normalized.stableTimeout, {
+    message: 'runtime stable timed out after 15000ms',
+    hint: 'phase=stable; current=pages/home/index; stableMs=300',
+    next: 'await stable',
+    diagnostics: {
+      path: 'pages/home/index',
+    },
+  })
+
+  assert.throws(
+    () => normalizeOpenStableWaitError({ code: 'APPID_MISSING', message: 'appid missing' }),
+    (error) => error && error.code === 'APPID_MISSING' && error.message === 'appid missing',
+  )
+})
+
+test('summarizeOpenResolution distinguishes attachable and start-required startup paths', () => {
+  assert.equal(summarizeOpenResolution({}, []), 'start-required')
+  assert.equal(summarizeOpenResolution({ devtoolsPort: '23986' }, []), 'adopt-via-devtools-port')
+  assert.equal(summarizeOpenResolution({}, [{ name: 'owner', autoPort: '9431' }]), 'attachable')
+  assert.equal(summarizeOpenResolution({ autoPort: '9555' }, [{ name: 'owner', autoPort: '9431' }]), 'attach-blocked-by-auto-port')
+  assert.equal(summarizeOpenResolution({}, [{ name: 'a' }, { name: 'b' }]), 'ambiguous')
+})
+
+test('resolveOpenFailureNextAction only suggests attach fallback when the request was fresh or auto-port pinned', () => {
+  assert.equal(resolveOpenFailureNextAction({}, []), '')
+  assert.equal(resolveOpenFailureNextAction({ fresh: true }, [{ name: 'owner', autoPort: '9431' }]), 'open without --fresh')
+  assert.equal(resolveOpenFailureNextAction({ autoPort: '9555' }, [{ name: 'owner', autoPort: '9431' }]), 'open without --auto-port')
+  assert.equal(resolveOpenFailureNextAction({}, [{ name: 'a' }, { name: 'b' }]), 'session list')
+})
+
+test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startup failures', () => {
+  const state = {
+    portResolution: {
+      autoPortAssigned: true,
+    },
+  }
+
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      message: 'Failed connecting to ws://127.0.0.1:9515, check if target project window is opened with automation enabled',
+    }, 1),
+    true,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      code: 'OPEN_TIMEOUT',
+      cause: {
+        message: 'Failed connecting to ws://127.0.0.1:9515, check if target project window is opened with automation enabled',
+      },
+    }, 1),
+    true,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'OPEN_TIMEOUT' }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      code: 'OPEN_TIMEOUT',
+      message: 'runtime stable timed out after 15000ms',
+    }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, { autoPort: '9515' }, 'started', { code: 'OPEN_TIMEOUT' }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'APPID_MISSING' }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED' }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      code: 'OPEN_TIMEOUT',
+      diagnostics: {
+        startupHints: [{ code: 'cli-server-start-error' }],
+      },
+    }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'connected', { code: 'OPEN_TIMEOUT' }, 1),
+    false,
+  )
+})
+
+test('shouldClearFailedOpenSession clears failed startup records once managed artifacts are drained', () => {
+  assert.equal(
+    shouldClearFailedOpenSession({ attempted: true, ok: false }, { mirrorDrained: true }, true),
+    true,
+  )
+  assert.equal(
+    shouldClearFailedOpenSession({ attempted: true, ok: false }, { mirrorRemoved: false, mirrorDrained: false, autoLinkRemoved: false }, true),
+    false,
+  )
+  assert.equal(
+    shouldClearFailedOpenSession({ attempted: true, ok: false }, {}, false),
+    false,
+  )
+  assert.equal(
+    shouldClearFailedOpenSession({ attempted: false, ok: false }, {}, false),
+    true,
+  )
+})
+
+test('resolveManagedArtifactCleanupOutcome keeps the pre-cleanup managed state when cleanup removes the mirror marker from config', async () => {
+  const config = {
+    projectPath: '/home/wang/demo/miniprogram',
+    devtoolsProjectMirror: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\miniprogram',
+      created: true,
+    },
+  }
+
+  const outcome = await resolveManagedArtifactCleanupOutcome(config, { attempted: true, ok: false }, {
+    attempts: 1,
+    delayMs: 0,
+    cleanupWindowsProjectAutoLink: () => false,
+    cleanupWindowsProjectMirror(currentConfig) {
+      delete currentConfig.devtoolsProjectMirror
+      return true
+    },
+    isWindowsProjectMirrorDrained: () => false,
+  })
+
+  assert.equal(outcome.hadManagedArtifacts, true)
+  assert.equal(outcome.artifactCleanup.mirrorRemoved, true)
+  assert.equal(outcome.canClearSession, true)
+})
+
+test('cleanupManagedProjectArtifacts reports drained mirrors when removal is blocked after the directory is already empty', async () => {
+  const config = {
+    devtoolsProjectMirror: {
+      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
+      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
+      created: true,
+    },
+  }
+
+  const result = await cleanupManagedProjectArtifacts(config, {
+    attempts: 1,
+    delayMs: 0,
+    cleanupWindowsProjectAutoLink() {
+      return false
+    },
+    cleanupWindowsProjectMirror() {
+      return false
+    },
+    isWindowsProjectMirrorDrained(nextConfig) {
+      assert.equal(nextConfig, config)
+      return true
+    },
+  })
+
+  assert.deepEqual(result, {
+    mirrorRemoved: false,
+    mirrorDrained: true,
+    autoLinkRemoved: false,
+  })
 })
 
 test('summarizeTimelinePayload keeps only high-value route fields by default', () => {
@@ -137,11 +421,146 @@ test('summarizeSnapshotPayload hides internal state unless --all', () => {
   assert.equal(summarizeSnapshotPayload(payload, { all: true }).state.route, 'pages/dashboard/index')
 })
 
+test('summarizeDevtoolsStartupHints extracts high-value startup diagnostics from DevTools logs', () => {
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        lines: [
+          '[ERROR] Error: 系统错误，错误码：41002,appid missing',
+          '[ERROR] routeTo appLaunch timeout',
+          '[ERROR] start cli server error: [object Object]',
+          '[ERROR:tcp_socket_win.cc(879)] connect failed: 10055',
+        ],
+      },
+      {
+        lines: [
+          '[ERROR] older unrelated file',
+        ],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints.map((item) => item.code), [
+    'appid-missing',
+    'app-launch-timeout',
+    'cli-server-start-error',
+    'windows-socket-10055',
+  ])
+  assert.match(hints[0].message, /appid|AppID/i)
+  assert.match(hints[1].sample, /appLaunch timeout/i)
+})
+
+test('summarizeDevtoolsStartupHints ignores older log files after the latest matching file', () => {
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        path: '/tmp/logs/2026-05-03-latest.log',
+        lines: [
+          '[ERROR] start cli server error: [object Object]',
+        ],
+      },
+      {
+        path: '/tmp/logs/2026-05-03-older.log',
+        lines: [
+          '[ERROR] Error: 系统错误，错误码：41002,appid missing',
+        ],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints.map((item) => item.code), ['cli-server-start-error'])
+})
+
+test('summarizeDevtoolsStartupHints prefers timestamped log files over stale stderr noise', () => {
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        path: '/tmp/stderr.log',
+        lines: [
+          '[ERROR:tcp_socket_win.cc(879)] connect failed: 10055',
+        ],
+      },
+      {
+        path: '/tmp/logs/2026-05-03-11-26-41.log',
+        lines: [
+          '[ERROR] Error: 系统错误，错误码：41002,appid missing',
+          '[ERROR] start cli server error: [object Object]',
+        ],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints.map((item) => item.code), [
+    'appid-missing',
+    'cli-server-start-error',
+  ])
+})
+
+test('summarizeDevtoolsStartupHints does not fall back to stderr when current timestamped logs have no startup hints', () => {
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        path: '/tmp/stderr.log',
+        lines: [
+          '[ERROR:tcp_socket_win.cc(879)] connect failed: 10055',
+        ],
+      },
+      {
+        path: '/tmp/logs/2026-05-03-11-41-03.log',
+        lines: [
+          '[ERROR] [ideplugin] get devtools manifest.json catch error Error: not installed',
+        ],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints, [])
+})
+
+test('classifyOpenFailureFromStartupHints treats cli-server-start-error as automation startup failure', () => {
+  const classification = classifyOpenFailureFromStartupHints([
+    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
+  ])
+
+  assert.deepEqual(classification, {
+    code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
+    hint: 'devtoolsLog=cli-server-start-error',
+  })
+})
+
+test('classifyOpenFailureFromStartupHints prefers app launch timeout over cli server noise', () => {
+  const classification = classifyOpenFailureFromStartupHints([
+    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
+    { code: 'app-launch-timeout', sample: '[ERROR] routeTo appLaunch timeout' },
+  ])
+
+  assert.deepEqual(classification, {
+    code: 'APP_LAUNCH_TIMEOUT',
+    hint: 'devtoolsLog=app-launch-timeout',
+  })
+})
+
+test('classifyOpenFailureFromStartupHints prefers the summarized latest log line over weaker hint codes', () => {
+  const classification = classifyOpenFailureFromStartupHints([
+    { code: 'appid-missing', sample: '[WARN] appid missing' },
+    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
+  ], {
+    summaryLine: '[2026-05-03 11:28:04.874][ERROR] start cli server error: [object Object]',
+  })
+
+  assert.deepEqual(classification, {
+    code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
+    hint: 'devtoolsLog=cli-server-start-error',
+  })
+})
+
 test('shouldEmitPreludeNotices skips logs and exceptions', () => {
   assert.equal(shouldEmitPreludeNotices('path'), true)
   assert.equal(shouldEmitPreludeNotices('timeline'), true)
   assert.equal(shouldEmitPreludeNotices('logs'), false)
   assert.equal(shouldEmitPreludeNotices('exceptions'), false)
+  assert.equal(shouldEmitPreludeNotices('await'), false)
+  assert.equal(shouldEmitPreludeNotices('wait'), false)
 })
 
 test('shouldAttemptVisualProbe only triggers when needed', () => {

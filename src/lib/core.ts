@@ -1,3 +1,5 @@
+type AnyRecord = Record<string, any>
+
 function nextRefName(index) {
   return `@e${index}`
 }
@@ -125,7 +127,7 @@ function createTreeStrategy(node) {
   return null
 }
 
-function createRefRecordFromNode(node, options = {}) {
+function createRefRecordFromNode(node, options: AnyRecord = {}) {
   const strategy = createTreeStrategy(node)
 
   if (!strategy) {
@@ -263,7 +265,7 @@ function buildFallbackSnapshotRecords({ matches, epoch, route, startIndex = 1, s
   return { records, nextIndex }
 }
 
-function formatSnapshotLines(records, options = {}) {
+function formatSnapshotLines(records, options: AnyRecord = {}) {
   const recordsByRef = new Map((records || []).map((record) => [record.ref, record]))
   const depthCache = new Map()
 

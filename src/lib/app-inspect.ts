@@ -1,6 +1,8 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
+type AnyRecord = Record<string, any>
+
 const DEFAULT_INSPECT_SECTIONS = [
   'pagesSummary',
   'tabBarSummary',
@@ -30,7 +32,7 @@ function normalizeRoutePath(value) {
   return normalized || null
 }
 
-function normalizeInspectSections(options = {}) {
+function normalizeInspectSections(options: AnyRecord = {}) {
   if (options.all) {
     return [...ALL_INSPECT_SECTIONS]
   }
@@ -48,7 +50,7 @@ function normalizeInspectSections(options = {}) {
 
 function parseRouteConstantsFromSource(source) {
   const input = String(source || '')
-  const result = {}
+  const result: Record<string, string> = {}
   const objectRegex = /export\s+const\s+(\w+)\s*=\s*\{([\s\S]*?)\}/gu
   let objectMatch
 
@@ -148,7 +150,7 @@ function buildStaticSummary(staticEdges, routeConstants) {
   }
 }
 
-function buildPagesSummary(runtimeConfig = {}) {
+function buildPagesSummary(runtimeConfig: AnyRecord = {}) {
   const pages = Array.isArray(runtimeConfig.pages) ? runtimeConfig.pages : []
   return {
     count: pages.length,
@@ -156,7 +158,7 @@ function buildPagesSummary(runtimeConfig = {}) {
   }
 }
 
-function buildTabBarSummary(tabBar = {}) {
+function buildTabBarSummary(tabBar: AnyRecord = {}) {
   const list = Array.isArray(tabBar.list) ? tabBar.list : []
   return {
     count: list.length,
@@ -276,11 +278,22 @@ async function inspectStaticProject(projectPath) {
   const { sourceRoot, scanRoots } = await resolveStaticRoots(projectPath)
   if (!sourceRoot || scanRoots.length === 0) {
     return {
+      appConfig: {},
       routeConstants: {},
       staticEdges: [],
       staticSummary: buildStaticSummary([], {}),
       sourceRoot: null,
       scanRoots: [],
+    }
+  }
+
+  let appConfig = {}
+  const appJsonPath = path.join(sourceRoot, 'app.json')
+  if (await pathExists(appJsonPath)) {
+    try {
+      appConfig = JSON.parse(await fs.readFile(appJsonPath, 'utf8'))
+    } catch (_) {
+      appConfig = {}
     }
   }
 
@@ -319,6 +332,7 @@ async function inspectStaticProject(projectPath) {
   const dedupedStaticEdges = dedupeStaticEdges(staticEdges)
 
   return {
+    appConfig,
     routeConstants,
     staticEdges: dedupedStaticEdges,
     staticSummary: buildStaticSummary(dedupedStaticEdges, routeConstants),
@@ -338,25 +352,33 @@ async function inspectProjectStructure({
 }) {
   const normalizedSections = sections || normalizeInspectSections({})
   const staticInspection = await inspectStaticProject(projectPath)
-  const result = {
+  const effectiveRuntimeConfig = runtimeConfig && Object.keys(runtimeConfig).length
+    ? runtimeConfig
+    : staticInspection.appConfig
+  const effectivePageStack = Array.isArray(pageStack) ? pageStack : []
+  const stackCurrent = effectivePageStack.length
+    ? effectivePageStack[effectivePageStack.length - 1].path
+    : ''
+  const effectiveCurrent = current || stackCurrent || null
+  const result: AnyRecord = {
     sections: normalizedSections,
   }
 
   if (normalizedSections.includes('pages')) {
-    result.pages = Array.isArray(runtimeConfig && runtimeConfig.pages) ? runtimeConfig.pages : []
+    result.pages = Array.isArray(effectiveRuntimeConfig && effectiveRuntimeConfig.pages) ? effectiveRuntimeConfig.pages : []
   }
   if (normalizedSections.includes('pagesSummary')) {
-    result.pagesSummary = buildPagesSummary(runtimeConfig)
+    result.pagesSummary = buildPagesSummary(effectiveRuntimeConfig)
   }
   if (normalizedSections.includes('tabbar')) {
-    result.tabBar = runtimeConfig && runtimeConfig.tabBar ? runtimeConfig.tabBar : { list: [] }
+    result.tabBar = effectiveRuntimeConfig && effectiveRuntimeConfig.tabBar ? effectiveRuntimeConfig.tabBar : { list: [] }
   }
   if (normalizedSections.includes('tabBarSummary')) {
-    result.tabBarSummary = buildTabBarSummary(runtimeConfig && runtimeConfig.tabBar ? runtimeConfig.tabBar : { list: [] })
+    result.tabBarSummary = buildTabBarSummary(effectiveRuntimeConfig && effectiveRuntimeConfig.tabBar ? effectiveRuntimeConfig.tabBar : { list: [] })
   }
   if (normalizedSections.includes('state')) {
-    result.current = current || null
-    result.pageStack = Array.isArray(pageStack) ? pageStack : []
+    result.current = effectiveCurrent
+    result.pageStack = effectivePageStack
   }
   if (normalizedSections.includes('recentRoutes')) {
     result.recentRoutes = summarizeRecentRoutes(recentRoutes)
@@ -365,7 +387,7 @@ async function inspectProjectStructure({
     result.observedEdges = Array.isArray(observedEdges) ? observedEdges : []
   }
   if (normalizedSections.includes('currentOutgoingEdges')) {
-    result.currentOutgoingEdges = buildCurrentOutgoingEdges(current, staticInspection.staticEdges, observedEdges)
+    result.currentOutgoingEdges = buildCurrentOutgoingEdges(effectiveCurrent, staticInspection.staticEdges, observedEdges)
   }
   if (normalizedSections.includes('staticSummary')) {
     result.staticSummary = staticInspection.staticSummary
