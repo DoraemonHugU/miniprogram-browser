@@ -30,6 +30,12 @@ npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/ski
 
 这个 skill 目录现在只包含 `SKILL.md`，不会再把 `tests/` 或 CLI 源码一起装进去。
 
+发布边界要分清：
+
+- npm 包只分发 CLI 运行时
+- GitHub 仓库负责同步 `skills/miniprogram-browser/` 和 `skills/image-processing/`
+- 因此发布新版本时，`npm publish` 之外还需要把仓库推到 GitHub，skill 安装端才会看到最新 `SKILL.md`
+
 如果要安装离线图片处理 skill，可使用：
 
 ```bash
@@ -42,11 +48,12 @@ npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/ski
 
 ```bash
 npm install
+npm run build
 npm test
-node scripts/miniprogram-browser.cjs help
+node dist/miniprogram-browser.js help
 ```
 
-本地跑完整测试前，还需要系统里有可用的 `python` 命令（用于图片处理 skill 的隔离虚拟环境和测试）。
+CLI 源码位于 `src/**/*.ts`，发布和本地执行入口由 TypeScript 编译到 `dist/**/*.js`。本地跑完整测试前，还需要系统里有可用的 `python` 命令（用于图片处理 skill 的隔离虚拟环境和测试）。
 
 ## 前置条件
 
@@ -54,10 +61,11 @@ node scripts/miniprogram-browser.cjs help
 
 1. 已安装并登录微信开发者工具
 2. 已在开发者工具中开启 **服务端口**
-3. `--project` 指向的是 **开发者工具实际打开的小程序项目根目录**
+3. 首次使用需要能确定小程序项目根目录；可以显式传 `--project`，也可以从当前目录 / Git 工作树唯一发现
 4. CLI 路径配置正确：
    - 标准安装路径下，工具会优先尝试自动探测
    - 非标准安装路径 / WSL 场景下，建议设置环境变量 `WECHAT_DEVTOOLS_CLI`
+5. WSL 场景下，`--project` 仍然填写 Linux 侧可读的小程序根目录；CLI 会按平台自动把可识别路径传给 DevTools
 
 例如：
 
@@ -67,6 +75,54 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 如果你的 shell 已经设置了 `WECHAT_DEVTOOLS_CLI`，就不需要重复 `export`。
 
+### 跨平台项目路径
+
+`miniprogram-browser` 会按当前平台自动处理传给微信开发者工具 CLI 的项目路径。正常情况下只传当前 shell 可读的 `--project`；如果当前目录或同 Git 工作树能唯一发现小程序项目，也可以省略：
+
+- macOS / Windows：直接使用项目根目录
+- WSL + Windows 盘挂载：`/mnt/f/...` 会自动转成 `F:\...`
+- WSL + Linux home 路径：只在显式 `open/doctor` 时，把项目一次性同步到 Windows `%TEMP%\miniprogram-browser\project-<hash>` 受控镜像，再把这个本地盘路径传给 DevTools
+
+```bash
+miniprogram-browser open \
+  --session demo \
+  --project /home/wang/work/demo/apps/miniprogram
+
+miniprogram-browser open --session demo
+```
+
+受控镜像的边界：
+
+- 不做后台循环，不做文件监听，不在普通 `path/snapshot/click/logs` 命令里刷新镜像
+- 只写入路径形如 `%TEMP%\miniprogram-browser\project-<hash>` 的受控目录
+- 受控目录内带 `.miniprogram-browser-managed` 标记文件；`close --session <name>` 只清理带标记且目标匹配的目录
+- 镜像排除 `node_modules` 和 `.git`，不会修改 Linux 源项目，也不会写用户全局配置
+- `open/doctor --json` 会输出 `projectStrategy=managed-mirror`、源项目路径和 DevTools 实际项目路径
+
+高级兜底只在自动镜像不可用时使用。可以显式指定 DevTools 侧路径：
+
+```bash
+miniprogram-browser open \
+  --session demo \
+  --project /home/wang/work/demo/apps/miniprogram \
+  --devtools-project 'P:\work\demo\apps\miniprogram'
+```
+
+显式前缀映射也属于高级兜底。它只做字符串前缀替换，不创建 Windows 映射盘、不复制项目、不写用户目录配置：
+
+```bash
+miniprogram-browser open \
+  --session demo \
+  --project /home/wang/work/demo/apps/miniprogram \
+  --project-map '/home/wang/work=P:\work'
+```
+
+也可以用环境变量固定多个映射，分号分隔，最长前缀优先：
+
+```bash
+export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tmp'
+```
+
 ## 最短可运行示例
 
 ```bash
@@ -74,12 +130,16 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 # 已安装时
+# 在小程序项目目录或同 Git 工作树里，通常可以省略 --project
+miniprogram-browser open --session demo
 miniprogram-browser open --session demo --project /path/to/miniprogram-root
 miniprogram-browser app inspect --session demo
+miniprogram-browser doctor --session demo --json
 miniprogram-browser goto /pages/dashboard/index --session demo
 miniprogram-browser snapshot -i --session demo
 miniprogram-browser click @e1 --session demo
 miniprogram-browser timeline --session demo
+miniprogram-browser devtools logs --session demo --limit 40 --grep "appservice|simulator|error"
 miniprogram-browser screenshot --session demo --mode annotate
 miniprogram-browser screenshot --session demo --mode annotate --focus @e16,@e17
 
@@ -87,12 +147,35 @@ miniprogram-browser screenshot --session demo --mode annotate --focus @e16,@e17
 npx miniprogram-browser help
 ```
 
+## 推荐启动策略
+
+日常优先这样理解 `open`：
+
+- `open` 已经默认等待通用 `stable` 条件
+- 常规链路不要在 `open` 后立刻再补一条 `await stable`
+- 如果 fresh 启动时人类已经**看到页面显示出来**，但 `open` 仍失败，不要立刻继续 `--fresh` 循环
+
+更稳的处理顺序：
+
+```bash
+miniprogram-browser open --session demo --project /path/to/miniprogram-root --fresh
+
+# 如果页面已经显示，但 open 仍失败
+sleep 8
+miniprogram-browser open --session demo --project /path/to/miniprogram-root
+miniprogram-browser await app-ready --session demo
+miniprogram-browser await stable --session demo
+```
+
+原因很简单：当前微信开发者工具有一类场景是**页面已经起来了，但 automation cli server 还没完全 ready**。这时继续反复 `--fresh` 往往比短等一次再复用现有 runtime 更不稳定。
+
 ## 这是什么
 
 `miniprogram-browser` 把微信小程序自动化收敛成更适合 agent 使用的工作流：
 
 - `open / goto / snapshot / click / fill / get`
 - `app inspect / timeline / logs / exceptions`
+- `doctor / devtools logs / protocol`
 - `eval / native / call wx / call page`
 - `screenshot --mode page|visual|annotate`
 - `screenshot --focus @e1,@e2`
@@ -116,33 +199,45 @@ npx miniprogram-browser help
 ## 当前能力
 
 - 运行时语义快照与 `@eNN` refs
-- 多 session 并发；同一 session 串行；通常复用当前 live DevTools HTTP 端口，只隔离 autoPort
+- 多 session 并发；同一 session 串行；默认 attach 同项目唯一 live runtime；`--fresh` 是显式新 runtime 逃逸点
+- 默认项目级 session 管理；`session list --all` 是显式全局查看入口
+- 共享同一 `autoPort` 的 attached sessions 通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime
+- `open` 默认等待通用 `stable` 条件；底层启动/连接失败会自动收尾，已连接但稳定超时会保留 session 便于继续等待
+- `session prune` 可清理当前项目 stale sessions、本 CLI 记录的 orphan launches 和受控镜像
 - 应用结构摘要（`app inspect`）
 - 路由时间线、console、exception
+- 分层诊断（`doctor`）：区分 DevTools CLI、automation WebSocket 和 App runtime
+- DevTools 底层日志（`devtools logs`）：普通运行时日志拿不到时查看 `WeappLog`
 - 页面截图、视觉截图、标注截图
-- 低层逃逸点：`eval / native / get attr|prop|get rect`
+- 低层逃逸点：`protocol / eval / native / get attr|prop|get rect`
 
 ## 已知边界
 
-- fresh `open` 后，DevTools 模拟器首帧有时还没稳定；建议先 `path` / `app inspect`，必要时再 `goto` 当前页一次
+- fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` / `devtools logs` 判断是否真的失败
+- 如果 fresh 启动阶段已经看到页面显示，但 `open` 仍未成功，优先短等 5 到 10 秒，再重跑同一个 `open`；不要立刻再次 `--fresh`
+- `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳
+- 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工已打开的实例建议先 `doctor --project <path> --devtools-port <port>`
+- 如果 fresh 启动已经显示 `Using AppID: ...`，但后续仍连不上 automation，这通常不是路径或 AppID 问题，而是 DevTools 自身的 `cli server` / 编译链路仍未起来
 - 如果真实 `screenshot` 偶发超时，优先切到 `screenshot --mode layout`，其次再看 `snapshot -i --layout`；不要把 `close/open` 或重启 DevTools 当默认修复手段
 - 某些自定义组件在 automator 运行时里不透明，语义增强不能 100% 覆盖
 - 当前更适合定位为 **beta**，不建议直接宣称为稳定版 `1.0`
 
 ## 已知问题（当前重点）
 
-### 1. WSL 项目路径下，截图可能偶发超时
+### 1. WSL 项目路径下，DevTools CLI 不能直接使用 UNC
 
-目前在 `//wsl.localhost/...` 这类 WSL 路径下，微信开发者工具偶尔会进入异常文档状态；表现为：
+目前在 `//wsl.localhost/...` / `\\wsl.localhost\...` 这类 WSL UNC 路径下，微信开发者工具 CLI 可能拒绝项目路径，并给出和二维码输出相关的误导性错误。`miniprogram-browser` 会优先创建受控 Windows 临时镜像；只有镜像不可用时，才会报出可操作提示。
+
+如果已经绕过 open 阶段，真实截图通道仍可能在 WSL 路径下偶发超时，表现为：
 
 - `snapshot/path/timeline` 仍然可用
 - 但 `screenshot --mode page` 可能卡住，最后报 `screenshot timeout`
 
-这更像是 DevTools / `miniprogram-automator` 底层截图通道没有返回，而不是本工具在上层做了错误转换。
+这更像是 DevTools / `miniprogram-automator` 底层截图通道没有返回，不应继续回退到 Windows GUI 截图或 OCR。
 
 当前建议：
 
-- 优先避免在 WSL 路径上做高频截图
+- WSL `/home/...` 项目默认走受控 Windows 临时镜像；如果镜像不可用，再通过 `--devtools-project` / `--project-map` 使用 Windows 映射盘路径
 - 鼓励在每次 `goto / click / fill / call / native` 之后适度 `wait`，避免操作链过快
 - 截图前先 `path` / `snapshot -i` 确认页面已经稳定，再执行 `screenshot`
 - 尽量不要把很多跳转、点击、截图压成一条过快的链式命令
@@ -241,7 +336,7 @@ miniprogram-browser ...
 npx miniprogram-browser ...
 ```
 
-`tests/` 和 `scripts/` 都保留在仓库根目录，只用于源码、npm 包和开发验证，不会随 skill 子目录一起安装。
+`src/` 和 `tests/` 都保留在仓库根目录，`src/` 是 CLI 的 TypeScript 源码（编译到 `dist/`），`tests/` 为行为测试，二者不会随 skill 子目录一起安装。
 
 也可以直接通过 `skills` CLI 从 GitHub 安装：
 
@@ -280,7 +375,7 @@ npm test
 ## 仓库结构
 
 ```text
-scripts/                     CLI 与运行时实现
+src/                         CLI 与运行时实现（TypeScript，编译产物在 dist/）
 skills/miniprogram-browser/  可安装的标准 skill 目录（仅 SKILL.md）
 skills/image-processing/     可安装的离线图片处理 skill
 tests/                       行为测试
