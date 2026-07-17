@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 2
+- **Total Sessions**: 3
 - **Last Active**: 2026-07-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~90 | Active |
+| `journal-1.md` | ~129 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 3 | 2026-07-17 | runtime.ts 拆包重构 + .bat→env 迁移 + 严格 TS 检查 | `505afd5`, `f371f06` | `main` |
 | 2 | 2026-07-17 | 平台识别层归一化：detectWsl / resolveEnvironment | `6f2d988` | `main` |
 | 1 | 2026-07-17 | snapshot 默认 ASCII 空间图 + 通道/flag 修复 | `9cff864` | `main` |
 <!-- @@@/auto:session-history -->

@@ -88,3 +88,42 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: runtime.ts 拆包重构 + .bat→env 迁移 + 严格 TS 检查
+
+**Date**: 2026-07-17
+**Task**: runtime.ts 拆包重构 + .bat→env 迁移 + 严格 TS 检查
+**Branch**: `main`
+
+### Summary
+
+完成三件事：
+1. 修复 2 个 .bat→env 迁移测试（注入 runtime: darwin）
+2. runtime.ts 从 3589 行拆包为 5 个文件：runtime.ts(核心)、runtime-windows.ts(路径桥接)、runtime-cli.ts(CLI 调用)、runtime-cli-shared.ts(错误解析)、runtime-logs.ts(日志发现)
+3. 添加 npm run typecheck:strict 命令（--strict 模式检查）
+4. 更新 platform-detection code-spec，新增 injectable options 契约
+5. 更新 platform.test 覆盖 injectable RuntimeOS 测试
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `505afd5` | (see git log) |
+| `f371f06` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
