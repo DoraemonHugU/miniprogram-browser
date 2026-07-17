@@ -59,7 +59,7 @@ function buildHelpText() {
   --json                       以 JSON 输出
   --project <path>             当前 shell 可读的小程序项目根目录；可由当前 Git 工作树自动发现
   --fresh                      open 时强制请求新 runtime；失败不会静默降级为 attach
-  --mode <page|visual|annotate|layout> 截图模式，默认 page
+  --mode <page|visual|annotate|layout> 截图模式，默认 layout
   --no-ref                     截图时不绘制 @eN 标签
   --await <condition>          动作后显式等待条件成立
   --no-await                   关闭命令默认隐式等待
@@ -131,6 +131,8 @@ function buildCommandHelpText(command) {
   --auto-port <port>
   --fresh
   --cli-path <path>
+  --trust-project
+  --no-trust-project
 
 示例:
   miniprogram-browser open --session demo
@@ -161,6 +163,8 @@ function buildCommandHelpText(command) {
   -c, --compact    折叠空容器，减少噪音
   -d, --depth <n>  限制层级，先看总览时使用
   --layout         为每个 ref 附加比例位置/尺寸信息
+  --no-map         关闭默认附带的 ASCII 空间图
+  --visual         显式触发真实像素视觉探针（默认不触发）
   --json           输出摘要化结构
   --all            输出完整细节
 `
@@ -353,7 +357,7 @@ function buildCommandHelpText(command) {
   layout    基于运行时 rect 的布局替代渲染
 
   说明:
-  - 默认模式是 page
+  - 默认模式是 layout
   - --focus 支持 @e1,@e2 这类多个 ref，高亮时会自动换色
   - --no-ref 会隐藏图片里的 @eN 标签，但不会影响 focus 框或 session/ref 解析
   - layout 默认用语义布局；加 --raw 可切到更底层的运行时节点布局

@@ -31,7 +31,7 @@ const SHOULD_BE_DOCUMENTED = [
 
 // 已实现但不在 `--help` 文本里显式列出的真实 flag（help 隐藏项）。
 // 文档引用它们时，一致性守卫不应误报为「CLI 不支持」。
-const KNOWN_HIDDEN_FLAGS = new Set(['--trust-project', '-h'])
+const KNOWN_HIDDEN_FLAGS = new Set(['-h'])
 const DOCUMENTED_CONDITIONS = [
   'app-ready', 'stable', 'route:/pages/index/index', 'route-settled',
   'route-change', 'visible:.page-root',

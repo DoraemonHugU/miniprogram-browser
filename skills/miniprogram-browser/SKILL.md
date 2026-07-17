@@ -31,6 +31,12 @@ npx miniprogram-browser ...
 - 想优先走稳定 ref，而不是手写脆弱的 class 链或 nth 选择器
 - 想查看当前页面状态、路由变化、日志、异常、应用结构摘要
 
+## 模型分派：非识图 vs 识图
+
+- **非识图模型（纯文本/结构化推理）**：默认用 `snapshot -i`。它输出结构化 ref 文本树 + 紧凑 ASCII 空间图，零真实像素、稳定，不依赖官方截图通道。
+- **识图模型（能直接看图片）**：确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`（真实图片）。`screenshot` 默认 `mode` 为 `layout`（纯 JS/字体渲染的结构图，同样不走不稳定的官方截图）；要真实像素请显式 `--mode page|visual|annotate`。
+- 不要把 `snapshot` 当真实截图工具：它默认只给结构化 + ASCII 空间图；要真实像素走 `screenshot --mode page|visual|annotate`，或 `snapshot -i --visual`。
+
 ## 核心心智
 
 1. `open` 绑定的是一个**小程序实例**，不是页面 URL
@@ -39,21 +45,28 @@ npx miniprogram-browser ...
 4. 绑定后先 `path` 或 `app inspect` 确认当前状态
 5. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
 6. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
-7. 优先用 `screenshot --mode layout` 理解页面结构
-8. 需要纯文字布局或比例 rect 时，再用 `snapshot -i --layout`
+7. 非识图模型优先用 `snapshot -i`：默认输出结构化 ref 文本树 + 紧凑 ASCII 空间图（零真实像素、稳定）
+8. 需要纯文字比例 rect 时，用 `snapshot -i --layout`（文本树额外附 x/y/w/h 百分比）
 9. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
-10. 只有在确实需要真实像素证据时，再退回 `page/visual/annotate`
+10. 识图模型、且确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`
 11. 页面明显变化后，重新 `snapshot -i`
 
 如果你的目标是让模型稳定理解页面结构，优先使用：
 
 ```bash
+miniprogram-browser snapshot -i --session feat-a
+miniprogram-browser snapshot -i --session feat-a --no-map
 miniprogram-browser screenshot out.png --session feat-a --mode layout --focus @e20,@e21
 miniprogram-browser screenshot out.png --session feat-a --mode layout --no-ref
 miniprogram-browser screenshot out.png --session feat-a --mode layout -c --capsule
 ```
 
-如果需要纯文字布局信息，再使用：
+`snapshot -i` 默认输出两部分，用同一 `@eN` ref 交叉引用：
+
+- 结构化 ref 文本树：层级 + ref + 文本标签
+- 紧凑 ASCII 空间图：用 `rectPct`（来自 `offset`/`size` 比例坐标，不触发官方截图）渲染；图例标 `top-left=(0,0) x→右 y→下`，每行左侧是该行对应页面 y% 区段，`@eN` 数字标记元素中心，容器画边框盒，`*` 表示碰撞
+
+需要纯文字比例 rect 时，改用：
 
 ```bash
 miniprogram-browser snapshot -i --layout --session feat-a
@@ -434,10 +447,11 @@ miniprogram-browser system-info --session feat-a
 
 对 agent 而言，推荐顺序通常是：
 
-1. `--mode layout`
-2. `snapshot -i --layout`
-3. `--mode annotate`
-4. `--mode page` / `--mode visual`
+1. `snapshot -i`（非识图模型默认：结构化 ref 文本树 + ASCII 空间图，零真实像素）
+2. `--mode layout`
+3. `snapshot -i --layout`
+4. `--mode annotate`
+5. `--mode page` / `--mode visual`
 
 原因：`layout` 更稳定，也更适合把结构、层次和 focus 交给模型分析；真实像素截图更适合留证或核对视觉细节。
 
@@ -449,14 +463,14 @@ miniprogram-browser system-info --session feat-a
 
 支持四种模式：
 
-- `--mode layout`：结构化布局图，优先推荐给 agent
+- `--mode layout`：结构化布局图，默认模式，优先推荐给 agent
 - `--mode page`：官方页面截图
 - `--mode visual`：页面截图 + 胶囊视觉合成
 - `--mode annotate`：页面截图 + `@eNN` 标注叠加
 - `--focus @e1,@e2`：对指定 ref 叠加高亮框，支持多元素自动换色；当前样式是高对比配色 + 双层边框 + 轻纹理填充
 - `--no-ref`：隐藏截图里的 `@eN` 标签；适合只看结构或汇报图
 
-默认模式是 `page`。
+默认模式是 `layout`。
 
 保存方式：
 

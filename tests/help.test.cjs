@@ -163,6 +163,12 @@ test('parseArgs supports disabling DevTools trust-project flag', () => {
   assert.equal(parsed.options.trustProject, false)
 })
 
+test('parseArgs supports enabling DevTools trust-project flag', () => {
+  const parsed = parseArgs(['open', '--session', 'demo', '--trust-project'])
+  assert.equal(parsed.options.session, 'demo')
+  assert.equal(parsed.options.trustProject, true)
+})
+
 test('parseArgs supports explicit fresh runtime escape hatch', () => {
   const parsed = parseArgs(['open', '--session', 'demo', '--fresh'])
   assert.equal(parsed.options.session, 'demo')
@@ -564,8 +570,9 @@ test('shouldEmitPreludeNotices skips logs and exceptions', () => {
 })
 
 test('shouldAttemptVisualProbe only triggers when needed', () => {
-  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: null, lastVisualProbe: null }, 'pages/a/index', null), true)
-  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: null, lastVisualProbe: { route: 'pages/a/index' } }, 'pages/a/index', null), false)
-  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: { route: 'pages/a/index' }, lastVisualProbe: { route: 'pages/a/index' } }, 'pages/a/index', null), true)
-  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: { route: 'pages/a/index' }, lastVisualProbe: { route: 'pages/a/index' } }, 'pages/a/index', '@e1'), false)
+  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: null, lastVisualProbe: null }, 'pages/a/index', null, { visual: true }), true)
+  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: null, lastVisualProbe: { route: 'pages/a/index' } }, 'pages/a/index', null, { visual: true }), false)
+  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: { route: 'pages/a/index' }, lastVisualProbe: { route: 'pages/a/index' } }, 'pages/a/index', null, { visual: true }), true)
+  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: { route: 'pages/a/index' }, lastVisualProbe: { route: 'pages/a/index' } }, 'pages/a/index', '@e1', { visual: true }), false)
+  assert.equal(shouldAttemptVisualProbe({ pendingVisualAction: null, lastVisualProbe: null }, 'pages/a/index', null, {}), false)
 })

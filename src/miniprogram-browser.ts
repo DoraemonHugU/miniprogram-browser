@@ -28,6 +28,10 @@ const {
 } = require('./lib/core')
 
 const {
+  renderAsciiMap,
+} = require('./lib/ascii-map')
+
+const {
   emit,
   emitProgress,
   parseArgs,
@@ -158,7 +162,17 @@ function shouldEmitPreludeNotices(command) {
   return !['logs', 'exceptions', 'await', 'wait'].includes(String(command || ''))
 }
 
-function shouldAttemptVisualProbe(state, route, scopeRef = null) {
+/**
+ * @param {any} state
+ * @param {string} route
+ * @param {string|null} scopeRef
+ * @param {any} [options]
+ */
+function shouldAttemptVisualProbe(state, route, scopeRef = null, options) {
+  if (!options || !options.visual) {
+    return false
+  }
+
   if (scopeRef) {
     return false
   }
@@ -1791,14 +1805,28 @@ async function handleSnapshot(state, options, scopeRef = null) {
     let records = result.records
     let lines = result.lines
 
-    if (options.layout) {
-      const rects = await collectRecordRects(page, records, await miniProgram.systemInfo())
+    const wantMap = !Boolean(options.noMap)
+    if (options.layout || wantMap) {
+      const systemInfo = await miniProgram.systemInfo()
+      const rects = await collectRecordRects(page, records, systemInfo)
       records = mergeRecordLayouts(records, rects)
-      lines = formatSnapshotLines(records, { layout: true })
+      if (options.layout) {
+        lines = formatSnapshotLines(records, { layout: true })
+      }
+      if (wantMap) {
+        const viewport = {
+          w: Number(systemInfo.windowWidth) || Number(systemInfo.screenWidth) || 375,
+          h: Number(systemInfo.windowHeight) || Number(systemInfo.screenHeight) || 812,
+        }
+        const map = renderAsciiMap(records, { viewport })
+        if (map) {
+          lines = lines.concat(map)
+        }
+      }
     }
 
     let visual = null
-    if (shouldAttemptVisualProbe(state, page.path, scopeRef)) {
+    if (options.visual && shouldAttemptVisualProbe(state, page.path, scopeRef, options)) {
       const visualProbePath = path.join(state.config.tempScreenshotDir, `visual-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
       const currentProbe = await captureVisualProbeForSnapshot(miniProgram, page, state, records, visualProbePath)
       visual = maybeBuildImplicitVisualChange(state, currentProbe)
@@ -2261,7 +2289,7 @@ async function handleScreenshot(state, outputPath, options) {
         timeout: options.timeout,
       })
     }
-    const mode = options.mode || 'page'
+    const mode = options.mode || 'layout'
     const focusRefs = parseFocusRefs(options.focus)
     const timeoutMs = Number(options.wait || 30000)
     const name = outputPath

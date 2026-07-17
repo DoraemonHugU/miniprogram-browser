@@ -45,6 +45,9 @@ function parseArgs(argv) {
     'fresh',
     'runtime',
     'no-await',
+    'no-map',
+    'map',
+    'visual',
   ])
 
   function readOptionValue(flag, index) {
@@ -91,6 +94,10 @@ function parseArgs(argv) {
     const key = token.slice(2)
     if (key === 'no-trust-project') {
       options.trustProject = false
+      continue
+    }
+    if (key === 'trust-project') {
+      options.trustProject = true
       continue
     }
 
