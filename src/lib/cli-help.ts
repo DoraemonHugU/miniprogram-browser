@@ -131,8 +131,8 @@ function buildCommandHelpText(command) {
   --auto-port <port>
   --fresh
   --cli-path <path>
-  --trust-project
-  --no-trust-project
+  --trust-project               默认开启
+  --no-trust-project            显式关闭信任
 
 示例:
   miniprogram-browser open --session demo

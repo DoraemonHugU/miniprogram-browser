@@ -13,6 +13,8 @@ const {
   formatSnapshotLines,
 } = require('./core')
 
+const { resolveEnvironment } = require('./platform')
+
 const RUNTIME_SNAPSHOT_SEED_TAGS = [
   'view',
   'text',
@@ -1160,6 +1162,7 @@ function buildAutomationArgs(config, options: AnyRecord = {}) {
   const explicitProjectPath = String((config && config.devtoolsProjectPath) || '').trim()
   const hasProjectMap = Boolean(String((config && config.devtoolsProjectMap) || '').trim())
   const devtoolsProjectPath = resolveDevtoolsProjectPath(config, options)
+  const env = resolveEnvironment(config, options)
   let projectStrategy = 'direct'
   if (config.devtoolsProjectMirror) {
     projectStrategy = 'managed-mirror'
@@ -1169,7 +1172,7 @@ function buildAutomationArgs(config, options: AnyRecord = {}) {
     projectStrategy = 'explicit'
   } else if (hasProjectMap) {
     projectStrategy = 'project-map'
-  } else if (hasWindowsBundle && String(config.projectPath || '').startsWith('/mnt/')) {
+  } else if (env.isWsl && String(config.projectPath || '').startsWith('/mnt/')) {
     projectStrategy = 'wsl-mounted-drive'
   }
   const args = [
@@ -1797,7 +1800,11 @@ function resolveDevtoolsLogRoot(config, options: AnyRecord = {}) {
     }
   }
 
-  throw new Error('DevTools log discovery is currently supported for Windows DevTools from WSL/Windows and macOS.')
+  const env = resolveEnvironment(config, options)
+  throw new Error(
+    `DevTools log discovery is only supported for Windows DevTools (from Windows or WSL) and macOS; ` +
+    `current environment runtime=${env.runtime} devtoolsHost=${env.devtoolsHost}.`
+  )
 }
 
 async function discoverActiveDevtoolsLogRoot(rootInfo) {
