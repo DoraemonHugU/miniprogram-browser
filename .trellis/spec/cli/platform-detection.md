@@ -18,15 +18,20 @@ type DevtoolsHostOS = 'win32' | 'darwin'             // DevTools 只装 win/mac
 interface Environment {
   runtime: RuntimeOS
   devtoolsHost: DevtoolsHostOS
-  isWsl: boolean        // runtime=linux 且 /proc/version 含 microsoft
-  needsBridge: boolean  // runtime=linux 且 devtoolsHost=win32
+  isWsl: boolean        // runtime=linux 且（/proc/version 含 microsoft 或 WSL_DISTRO_NAME 非空）
+  needsBridge: boolean  // isWsl（WSL 恒需路径翻译 + 受控镜像桥接）
 }
 
-function detectRuntimeOS(): RuntimeOS
-function detectWsl(versionText?: string): boolean
-function detectDevtoolsHost(config: AnyRecord): DevtoolsHostOS
+function detectRuntimeOS(platform?: string): RuntimeOS
+function detectWsl(versionText?: string, options?: AnyRecord): boolean
+function detectDevtoolsHost(runtime: RuntimeOS): DevtoolsHostOS
 function resolveEnvironment(config: AnyRecord, options?: AnyRecord): Environment
 ```
+
+所有检测函数均可注入（单测不依赖真实 `process.platform` / `/proc/version` / 环境变量）：
+- `detectRuntimeOS(platform?)`：`platform` 缺省取 `process.platform`。
+- `detectWsl(versionText?, { runtime, wslDistroName })`：`versionText` 缺省读真实 `/proc/version`；`runtime` 缺省取 `process.platform`；`wslDistroName` 缺省取 `process.env.WSL_DISTRO_NAME`。
+- `resolveEnvironment(config, { runtime, readProcVersion, wslDistroName })`：三个维度均可注入。
 
 ## 3. Contracts
 
@@ -35,22 +40,25 @@ function resolveEnvironment(config: AnyRecord, options?: AnyRecord): Environment
 | 维度 | 来源 | 取值 |
 |------|------|------|
 | `runtime` | `process.platform` | win32 / darwin / linux |
-| `devtoolsHost` | `cliPath` 是否 `.bat` 结尾 | win32（.bat）/ darwin（其他） |
+| `devtoolsHost` | **由 runtime 推导** | linux → win32（桥接 Windows DevTools）；win32 → win32；darwin → darwin |
 
 - **WSL** = `runtime=linux` 且 `devtoolsHost=win32` → `needsBridge=true`，需路径翻译 + 受控镜像桥接。
-- **裸 linux**（runtime=linux，devtoolsHost=darwin）→ 无 DevTools 可用，CLI 应在合适时机报「本环境不支持」。
+- **裸 linux**（runtime=linux，无 WSL 信号）→ `devtoolsHost` 仍按 runtime 推导为 `win32`，但 `needsBridge=false`（无可达 DevTools）；依赖上层兜底报错「本环境不支持」。
 
 ### 3.2 WSL 判据（关键）
 
-- 判据：`runtime==='linux'` 且 `/proc/version` 含 `microsoft`（不区分大小写）。
+- 判据：`runtime==='linux'` 且以下任一为真：
+  - `/proc/version` 含 `microsoft`（不区分大小写，主信号）—— 精简镜像也在；
+  - `process.env.WSL_DISTRO_NAME` 非空（辅助信号）—— WSL 始终注入，裸 linux 不会设置。
 - 为什么不用「能跑 wslpath」：精简 WSL 镜像可能缺 `wslpath`，但 `/proc/version` 一定在。
-- `versionText` 可注入（单测喂字符串，不依赖真实文件系统）；缺省读真实 `/proc/version`，读不到返回 `''` → `false`。
+- `versionText` / `wslDistroName` 可注入（单测喂字符串，不依赖真实文件系统或环境）；缺省读真实 `/proc/version`，读不到返回 `''` → 仅看辅助信号。
 - 非 linux 宿主 `detectWsl` 直接返回 `false`，**不读** `/proc/version`。
 
 ### 3.3 DevTools Host 判据
 
-- `cliPath` 以 `.bat` 结尾（不区分大小写）→ `win32`；否则 `darwin`。
-- 这与 `runtime.ts` 原有 `hasWindowsBundle` 判据一致，可逐步替换为 `env.devtoolsHost`。
+- **由 `runtime` 推导**：`runtime==='linux' → 'win32'`（WSL 桥接 Windows DevTools）；`win32 → 'win32'`；`darwin → 'darwin'`。
+- 设计动机：旧版用 `cliPath.endsWith('.bat')` 判定 Windows 包，但 Windows 上 `.exe` 包裹（非 .bat 入口）会被误判为 mac。`devtoolsHost` 本质是「DevTools 装在哪」，由运行宿主决定，与 CLI 入口名无关，故改为 runtime 推导。
+- `runtime.ts` 的 `buildAutomationArgs` 已改用 `env.devtoolsHost === 'win32'` 推导 `hasWindowsBundle`，与该单源一致。
 
 ## 4. Validation & Error Matrix
 
@@ -59,17 +67,18 @@ function resolveEnvironment(config: AnyRecord, options?: AnyRecord): Environment
 
 ## 5. Good / Base / Bad Cases
 
-- Good：WSL = `{runtime:'linux', devtoolsHost:'win32', isWsl:true, needsBridge:true}`
-- Base：mac = `{devtoolsHost:'darwin', isWsl:false, needsBridge:false}`（runtime 取决于真实宿主）
-- Bad：裸 linux + mac DevTools = `{runtime:'linux', devtoolsHost:'darwin', isWsl:false, needsBridge:false}` → 无可用 DevTools，依赖上层兜底报错
+- Good：WSL（microsoft 串）= `{runtime:'linux', devtoolsHost:'win32', isWsl:true, needsBridge:true}`
+- Good：WSL（WSL_DISTRO_NAME 辅助）= 同上
+- Base：mac = `{runtime:'darwin', devtoolsHost:'darwin', isWsl:false, needsBridge:false}`
+- Base：Windows = `{runtime:'win32', devtoolsHost:'win32', isWsl:false, needsBridge:false}`
+- Bad：裸 linux（无 WSL 信号）= `{runtime:'linux', devtoolsHost:'win32', isWsl:false, needsBridge:false}` → 无可用 DevTools，依赖上层兜底报错
 
 ## 6. Tests Required
 
 - `tests/platform.test.cjs`：
-  - `detectWsl`：含 microsoft 版本串 → true；普通 linux → false；注入文本路径不抛异常
-  - `detectDevtoolsHost`：`.bat` → win32；其他/缺失/undefined → darwin
-  - `resolveEnvironment`：WSL = linux+win32+needsBridge；mac DevTools → darwin+非桥接；Windows DevTools → win32+非 WSL
-  - 注：`runtime` 维度不可注入（来自 `process.platform`），mac/win 用例只断言可注入维度
+  - `detectWsl`：含 microsoft 版本串 → true；普通 linux + 注入 `wslDistroName:''` → false；注入 `wslDistroName` 辅助 → true；非 linux + 辅助信号 → false；缺省读真实 `/proc/version` 不抛异常
+  - `detectDevtoolsHost`：`'win32'/'linux' → 'win32'`；`'darwin' → 'darwin'`
+  - `resolveEnvironment`：Windows / macOS / 裸 linux / WSL(microsoft 串) / WSL(WSL_DISTRO_NAME 辅助) 五态，`runtime`/`readProcVersion`/`wslDistroName` 全注入
 
 ## 7. Wrong vs Correct
 
@@ -80,8 +89,19 @@ const isWsl = canRunWslpath()
 ```
 #### Correct
 ```ts
-// 用 /proc/version 含 microsoft 判定，更稳
-const isWsl = detectRuntimeOS() === 'linux' && /microsoft/i.test(readProcVersion())
+// 用 /proc/version 含 microsoft（主信号）+ WSL_DISTRO_NAME（辅助信号）判定，更稳
+const isWsl = detectRuntimeOS() === 'linux'
+  && (/microsoft/i.test(readProcVersion()) || Boolean(process.env.WSL_DISTRO_NAME))
+```
+#### Wrong (旧)
+```ts
+// 用 cliPath 是否 .bat 判定 DevTools 宿主（Windows .exe 包裹会被误判为 mac）
+const devtoolsHost = cliPath.toLowerCase().endsWith('.bat') ? 'win32' : 'darwin'
+```
+#### Correct
+```ts
+// 由 runtime 推导 DevTools 宿主
+const devtoolsHost = runtime === 'linux' ? 'win32' : runtime
 ```
 
 ## 8. 不变清单（回归面隔离）

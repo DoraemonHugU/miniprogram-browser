@@ -32,6 +32,7 @@
     "test:node": "node --test tests/*.test.cjs",
     "test:image-processing": "python scripts/run-image-processing-tests.py",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:strict": "tsc -p tsconfig.json --noEmit --strict",
     "test": "npm run build && npm run test:node && npm run test:image-processing",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"

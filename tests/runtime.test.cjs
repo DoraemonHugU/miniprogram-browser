@@ -1024,7 +1024,7 @@ test('enableAutomation pre-opens the project and reuses the resolved DevTools po
     devtoolsPort: '',
   }
 
-  const result = enableAutomation(config)
+  const result = enableAutomation(config, { runtime: 'darwin' })
   const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
 
   assert.equal(result.projectOpened, true)
@@ -1111,7 +1111,7 @@ test('closeDevtoolsProject closes the recorded DevTools project path', () => {
     projectPath: '/tmp/source-project',
     devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-abc123def456',
     devtoolsPort: '24880',
-  })
+  }, { runtime: 'darwin' })
 
   assert.equal(result.ok, true)
   assert.equal(result.attempted, true)
