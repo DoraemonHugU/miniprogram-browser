@@ -5,7 +5,7 @@ const { existsSync, readFileSync } = require('node:fs')
 const { spawnSync } = require('node:child_process')
 
 const { resolveEnvironment } = require('./platform')
-const { normalizeWindowsPathForCompare, isWslUncPath, toWindowsPath, runWindowsCommand } = require('./runtime-windows')
+const { normalizeWindowsPathForCompare, toWindowsPath, runWindowsCommand } = require('./runtime-windows')
 
 type AnyRecord = Record<string, any>
 

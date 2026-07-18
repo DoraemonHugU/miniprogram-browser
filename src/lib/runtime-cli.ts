@@ -6,7 +6,6 @@ const { resolveEnvironment } = require('./platform')
 const {
   toWindowsPath,
   isWslUncPath,
-  runWindowsCommand,
 } = require('./runtime-windows')
 const {
   parseAutomationCliFailure,
@@ -81,10 +80,6 @@ function resolveMappedDevtoolsProjectPath(sourcePath, rawMap) {
   return bestMatch
 }
 
-function assertSupportedDevtoolsProjectPath(projectPath) {
-  // WSL UNC 路径现在由 managed-mirror 机制支持，无需拒绝。
-}
-
 // ---- DevTools 项目路径解析 ----
 
 function resolveDevtoolsProjectPath(config, options: AnyRecord = {}) {
@@ -111,17 +106,8 @@ function resolveDevtoolsProjectPath(config, options: AnyRecord = {}) {
     if (devtoolsProjectPath === sourcePath && sourcePath.startsWith('/')) {
       devtoolsProjectPath = converter(sourcePath)
     }
-
-    if (!explicitPath && isWslUncPath(devtoolsProjectPath)) {
-      const { resolveWindowsManagedProjectPath } = require('./runtime-windows')
-      const mappedPath = resolveWindowsManagedProjectPath(devtoolsProjectPath, config, options)
-      if (mappedPath) {
-        devtoolsProjectPath = mappedPath
-      }
-    }
   }
 
-  assertSupportedDevtoolsProjectPath(devtoolsProjectPath)
   return devtoolsProjectPath
 }
 
@@ -136,11 +122,7 @@ function buildAutomationArgs(config, options: AnyRecord = {}) {
   // 不再依赖 cliPath 是否 .bat 的脆弱判断。
   const hasWindowsBundle = env.devtoolsHost === 'win32'
   let projectStrategy = 'direct'
-  if (config.devtoolsProjectMirror) {
-    projectStrategy = 'managed-mirror'
-  } else if (config.devtoolsProjectAutoLink) {
-    projectStrategy = 'managed-link'
-  } else if (explicitProjectPath) {
+  if (explicitProjectPath) {
     projectStrategy = 'explicit'
   } else if (hasProjectMap) {
     projectStrategy = 'project-map'
@@ -472,7 +454,6 @@ module.exports = {
   parseProjectMapEntries,
   matchesProjectMapPrefix,
   resolveMappedDevtoolsProjectPath,
-  assertSupportedDevtoolsProjectPath,
   resolveDevtoolsProjectPath,
   buildAutomationArgs,
   buildDevtoolsOpenArgs,

@@ -10,7 +10,6 @@ const {
   parseArgs,
   parseFocusRefs,
   resolveOpenFailureNextAction,
-  resolveManagedArtifactCleanupOutcome,
   shouldRetryOpenWithAnotherAutoPort,
   summarizeOpenResolution,
   summarizeDevtoolsStartupHints,
@@ -18,7 +17,6 @@ const {
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
   shouldClearFailedOpenSession,
-  cleanupManagedProjectArtifacts,
   summarizeTimelinePayload,
   summarizeSnapshotPayload,
 } = require('../dist/miniprogram-browser.js')
@@ -309,80 +307,23 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
   )
 })
 
-test('shouldClearFailedOpenSession clears failed startup records once managed artifacts are drained', () => {
+test('shouldClearFailedOpenSession clears when close is ok or not attempted', () => {
   assert.equal(
-    shouldClearFailedOpenSession({ attempted: true, ok: false }, { mirrorDrained: true }, true),
-    true,
-  )
-  assert.equal(
-    shouldClearFailedOpenSession({ attempted: true, ok: false }, { mirrorRemoved: false, mirrorDrained: false, autoLinkRemoved: false }, true),
+    shouldClearFailedOpenSession({ attempted: true, ok: false }),
     false,
   )
   assert.equal(
-    shouldClearFailedOpenSession({ attempted: true, ok: false }, {}, false),
-    false,
-  )
-  assert.equal(
-    shouldClearFailedOpenSession({ attempted: false, ok: false }, {}, false),
+    shouldClearFailedOpenSession({ attempted: true, ok: true }),
     true,
   )
-})
-
-test('resolveManagedArtifactCleanupOutcome keeps the pre-cleanup managed state when cleanup removes the mirror marker from config', async () => {
-  const config = {
-    projectPath: '/home/wang/demo/miniprogram',
-    devtoolsProjectMirror: {
-      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
-      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\miniprogram',
-      created: true,
-    },
-  }
-
-  const outcome = await resolveManagedArtifactCleanupOutcome(config, { attempted: true, ok: false }, {
-    attempts: 1,
-    delayMs: 0,
-    cleanupWindowsProjectAutoLink: () => false,
-    cleanupWindowsProjectMirror(currentConfig) {
-      delete currentConfig.devtoolsProjectMirror
-      return true
-    },
-    isWindowsProjectMirrorDrained: () => false,
-  })
-
-  assert.equal(outcome.hadManagedArtifacts, true)
-  assert.equal(outcome.artifactCleanup.mirrorRemoved, true)
-  assert.equal(outcome.canClearSession, true)
-})
-
-test('cleanupManagedProjectArtifacts reports drained mirrors when removal is blocked after the directory is already empty', async () => {
-  const config = {
-    devtoolsProjectMirror: {
-      path: 'C:\\Users\\TEMP\\miniprogram-browser\\project-abcdef123456',
-      target: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo',
-      created: true,
-    },
-  }
-
-  const result = await cleanupManagedProjectArtifacts(config, {
-    attempts: 1,
-    delayMs: 0,
-    cleanupWindowsProjectAutoLink() {
-      return false
-    },
-    cleanupWindowsProjectMirror() {
-      return false
-    },
-    isWindowsProjectMirrorDrained(nextConfig) {
-      assert.equal(nextConfig, config)
-      return true
-    },
-  })
-
-  assert.deepEqual(result, {
-    mirrorRemoved: false,
-    mirrorDrained: true,
-    autoLinkRemoved: false,
-  })
+  assert.equal(
+    shouldClearFailedOpenSession({ attempted: false }),
+    true,
+  )
+  assert.equal(
+    shouldClearFailedOpenSession(null),
+    true,
+  )
 })
 
 test('summarizeTimelinePayload keeps only high-value route fields by default', () => {

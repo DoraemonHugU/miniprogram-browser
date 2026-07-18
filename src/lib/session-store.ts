@@ -25,7 +25,7 @@ function createDefaultConfig(repoRoot = detectRepoRoot()) {
   if (process.platform === 'darwin') {
     defaultCliPath = '/Applications/wechatwebdevtools.app/Contents/MacOS/cli'
   } else if (process.platform === 'win32') {
-    defaultCliPath = 'C:\\Program Files (x86)\\Tencent\\微信web开发者工具\\cli.bat'
+    defaultCliPath = 'C:\\Program Files (x86)\\Tencent\\微信web开发者工具\\cli.js'
   }
 
   return {

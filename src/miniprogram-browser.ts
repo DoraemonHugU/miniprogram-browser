@@ -115,10 +115,6 @@ const {
   sendAutomationProtocol,
   collectDevtoolsLogs,
   closeDevtoolsProject,
-  cleanupWindowsProjectAutoLink,
-  cleanupWindowsProjectMirror,
-  isWindowsProjectMirrorDrained,
-  findManagedWindowsProjectMirrors,
   isAutomationEndpointLive,
   resolveTarget,
   snapshotInteractive,
@@ -348,8 +344,45 @@ async function withOpenTimeout(task, timeoutMs) {
   }
 }
 
-function isManagedRuntimeProject(config) {
-  return Boolean(config && (config.devtoolsProjectMirror || config.devtoolsProjectAutoLink))
+async function cleanupStartedOpenRuntime(state) {
+  const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 })
+  await waitAfterDevtoolsCloseRequest(closeResult)
+  const cleanup = {
+    projectClosed: Boolean(closeResult && closeResult.ok),
+    closeVerified: false,
+    closeAttempted: Boolean(closeResult && closeResult.attempted),
+  } as AnyRecord
+
+  if (closeResult && closeResult.reason) {
+    cleanup.reason = closeResult.reason
+  }
+  if (closeResult && closeResult.error) {
+    cleanup.error = closeResult.error
+  }
+  if (closeResult && closeResult.projectPath) {
+    cleanup.devtoolsProjectPath = closeResult.projectPath
+  }
+
+  if (state.runtimeLaunchId) {
+    cleanup.runtimeLaunchId = state.runtimeLaunchId
+  }
+
+  const canClearSession = shouldClearFailedOpenSession(closeResult)
+  if (canClearSession || !cleanup.closeAttempted) {
+    await clearSessionState(state.name, state.config)
+    cleanup.sessionCleared = true
+    if (state.runtimeLaunchId) {
+      await removeRuntimeLaunch(state.runtimeLaunchId, state.config).catch(() => false)
+    }
+  } else {
+    cleanup.sessionCleared = false
+    await markStartedRuntimeLaunch(state, {
+      status: 'cleanup-failed',
+      cleanup,
+    })
+  }
+
+  return cleanup
 }
 
 async function waitAfterDevtoolsCloseRequest(closeResult) {
@@ -423,104 +456,11 @@ function shouldCleanupStartedOpenRuntime(state, openOptions: AnyRecord = {}, err
   return openOptions.mode === 'started' && !state.runtimeAttached
 }
 
-function shouldClearFailedOpenSession(closeResult, artifactCleanup: AnyRecord = {}, hasManagedArtifacts = false) {
+function shouldClearFailedOpenSession(closeResult) {
   if (!closeResult || !closeResult.attempted) {
     return true
   }
-
-  if (!hasManagedArtifacts) {
-    return Boolean(closeResult.ok)
-  }
-
-  if (closeResult.ok) {
-    return Boolean(artifactCleanup.mirrorRemoved || artifactCleanup.mirrorDrained || artifactCleanup.autoLinkRemoved)
-  }
-
-  return Boolean(artifactCleanup.mirrorRemoved || artifactCleanup.mirrorDrained || artifactCleanup.autoLinkRemoved)
-}
-
-async function resolveManagedArtifactCleanupOutcome(
-  config,
-  closeResult,
-  options: AnyRecord = {},
-) {
-  const hadManagedArtifacts = isManagedRuntimeProject(config)
-  const artifactCleanup = await cleanupManagedProjectArtifacts(config, options)
-  return {
-    hadManagedArtifacts,
-    artifactCleanup,
-    canClearSession: shouldClearFailedOpenSession(closeResult, artifactCleanup, hadManagedArtifacts),
-  }
-}
-
-async function cleanupStartedOpenRuntime(state) {
-  const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 })
-  await waitAfterDevtoolsCloseRequest(closeResult)
-  const cleanupOutcome = await resolveManagedArtifactCleanupOutcome(state.config, closeResult)
-  const { artifactCleanup, canClearSession } = cleanupOutcome
-  const cleanup = {
-    projectClosed: Boolean(closeResult && closeResult.ok),
-    closeVerified: false,
-    closeAttempted: Boolean(closeResult && closeResult.attempted),
-    mirrorRemoved: artifactCleanup.mirrorRemoved,
-    mirrorDrained: artifactCleanup.mirrorDrained,
-    autoLinkRemoved: artifactCleanup.autoLinkRemoved,
-  } as AnyRecord
-
-  if (closeResult && closeResult.reason) {
-    cleanup.reason = closeResult.reason
-  }
-  if (closeResult && closeResult.error) {
-    cleanup.error = closeResult.error
-  }
-  if (closeResult && closeResult.projectPath) {
-    cleanup.devtoolsProjectPath = closeResult.projectPath
-  }
-
-  if (state.runtimeLaunchId) {
-    cleanup.runtimeLaunchId = state.runtimeLaunchId
-  }
-
-  if (canClearSession || !cleanup.closeAttempted) {
-    await clearSessionState(state.name, state.config)
-    cleanup.sessionCleared = true
-    if (state.runtimeLaunchId) {
-      await removeRuntimeLaunch(state.runtimeLaunchId, state.config).catch(() => false)
-    }
-  } else {
-    cleanup.sessionCleared = false
-    await markStartedRuntimeLaunch(state, {
-      status: 'cleanup-failed',
-      cleanup,
-    })
-  }
-
-  return cleanup
-}
-
-async function cleanupManagedProjectArtifacts(config, options: AnyRecord = {}) {
-  const attempts = Math.max(1, Number(options.attempts || 20))
-  const delayMs = Math.max(0, Number(options.delayMs || 500))
-  const cleanupAutoLink = options.cleanupWindowsProjectAutoLink || cleanupWindowsProjectAutoLink
-  const cleanupMirror = options.cleanupWindowsProjectMirror || cleanupWindowsProjectMirror
-  const inspectMirrorDrained = options.isWindowsProjectMirrorDrained || isWindowsProjectMirrorDrained
-  let mirrorRemoved = false
-  let mirrorDrained = false
-  let autoLinkRemoved = false
-
-  for (let index = 0; index < attempts; index += 1) {
-    autoLinkRemoved = cleanupAutoLink(config) || autoLinkRemoved
-    mirrorRemoved = cleanupMirror(config) || mirrorRemoved
-    mirrorDrained = (!mirrorRemoved && inspectMirrorDrained(config)) || mirrorDrained
-    if (mirrorRemoved || mirrorDrained || !config.devtoolsProjectMirror) {
-      break
-    }
-    if (delayMs > 0 && index < attempts - 1) {
-      await sleep(delayMs)
-    }
-  }
-
-  return { mirrorRemoved, mirrorDrained, autoLinkRemoved }
+  return Boolean(closeResult.ok)
 }
 
 async function openSessionWithDiagnostics(state, options, openOptions: AnyRecord = {}) {
@@ -1469,8 +1409,6 @@ async function shutdownOwnedRuntime(state) {
     automationClosed: false,
     projectClosed: false,
     closeAttempted: false,
-    mirrorRemoved: false,
-    autoLinkRemoved: false,
   }
 
   await withMiniProgram(state, async (miniProgram) => {
@@ -1494,11 +1432,6 @@ async function shutdownOwnedRuntime(state) {
     result.devtoolsProjectPath = closeResult.projectPath
   }
 
-  await waitAfterDevtoolsCloseRequest(closeResult)
-  const artifactCleanup = await cleanupManagedProjectArtifacts(state.config)
-  result.autoLinkRemoved = artifactCleanup.autoLinkRemoved
-  result.mirrorRemoved = artifactCleanup.mirrorRemoved
-  result.mirrorDrained = artifactCleanup.mirrorDrained
   if (state.runtimeLaunchId && (closeResult && closeResult.ok)) {
     await removeRuntimeLaunch(state.runtimeLaunchId, state.config).catch(() => false)
   }
@@ -1547,16 +1480,10 @@ async function handleSessionPrune(options) {
       const targetState = await loadSessionState(session.name, targetConfig)
       const closeResult = closeDevtoolsProject(targetState.config, { timeoutMs: 30000 })
       await waitAfterDevtoolsCloseRequest(closeResult)
-      const cleanupOutcome = await resolveManagedArtifactCleanupOutcome(targetState.config, closeResult)
-      const { artifactCleanup, hadManagedArtifacts } = cleanupOutcome
-      const artifactsCleared = !hadManagedArtifacts
-        || artifactCleanup.mirrorRemoved
-        || artifactCleanup.mirrorDrained
-        || artifactCleanup.autoLinkRemoved
-      const canClearSession = (artifactsCleared
+      const canClearSession = shouldClearFailedOpenSession(closeResult)
         && (Boolean(closeResult && closeResult.ok)
           || !Boolean(closeResult && closeResult.attempted)
-          || session.status === 'stale'))
+          || session.status === 'stale')
       const summary = {
         name: session.name,
         status: session.status,
@@ -1564,9 +1491,6 @@ async function handleSessionPrune(options) {
         projectClosed: Boolean(closeResult && closeResult.ok),
         closeVerified: false,
         closeAttempted: Boolean(closeResult && closeResult.attempted),
-        mirrorRemoved: artifactCleanup.mirrorRemoved,
-        mirrorDrained: artifactCleanup.mirrorDrained,
-        autoLinkRemoved: artifactCleanup.autoLinkRemoved,
       } as AnyRecord
 
       if (closeResult && closeResult.reason) {
@@ -1609,15 +1533,10 @@ async function handleSessionPrune(options) {
       autoPort: launch.autoPort,
       devtoolsPort: launch.devtoolsPort,
       devtoolsProjectPath: launch.devtoolsProjectPath,
-      devtoolsProjectMirror: launch.devtoolsProjectMirror,
-      devtoolsProjectAutoLink: launch.devtoolsProjectAutoLink,
     })
     const closeResult = closeDevtoolsProject(targetConfig, { timeoutMs: 30000 })
     await waitAfterDevtoolsCloseRequest(closeResult)
-    const cleanupOutcome = await resolveManagedArtifactCleanupOutcome(targetConfig, closeResult)
-    const { artifactCleanup, hadManagedArtifacts } = cleanupOutcome
-    const canClearLaunch = cleanupOutcome.canClearSession
-      && (!hadManagedArtifacts || artifactCleanup.mirrorRemoved || artifactCleanup.mirrorDrained || artifactCleanup.autoLinkRemoved)
+    const canClearLaunch = shouldClearFailedOpenSession(closeResult)
     const summary = {
       id: launch.id,
       sessionName: launch.sessionName || '',
@@ -1625,9 +1544,6 @@ async function handleSessionPrune(options) {
       projectClosed: Boolean(closeResult && closeResult.ok),
       closeVerified: false,
       closeAttempted: Boolean(closeResult && closeResult.attempted),
-      mirrorRemoved: artifactCleanup.mirrorRemoved,
-      mirrorDrained: artifactCleanup.mirrorDrained,
-      autoLinkRemoved: artifactCleanup.autoLinkRemoved,
     } as AnyRecord
 
     if (closeResult && closeResult.reason) {
@@ -1638,52 +1554,6 @@ async function handleSessionPrune(options) {
     }
     if (canClearLaunch || !summary.closeAttempted) {
       await removeRuntimeLaunch(launch.id, targetConfig)
-      summary.launchCleared = true
-      launchesPruned.push(summary)
-    } else {
-      summary.launchCleared = false
-      failed.push(summary)
-    }
-  }
-
-  const knownDevtoolsProjectPaths = new Set([
-    ...sessionsWithStatus.map((item) => String(item.devtoolsProjectPath || '').trim()).filter(Boolean),
-    ...launches.map((item) => String(item.devtoolsProjectPath || '').trim()).filter(Boolean),
-  ])
-  const managedMirrorOrphans = String(baseConfig.cliPath || '').toLowerCase().endsWith('.bat')
-    ? findManagedWindowsProjectMirrors({ ...baseConfig, projectPath: projectFilter })
-      .filter((mirror) => !knownDevtoolsProjectPaths.has(String(mirror.path || '').trim()))
-    : []
-
-  for (const mirror of managedMirrorOrphans) {
-    const targetConfig = mergeConfigOverrides(baseConfig, {
-      projectPath: projectFilter,
-      devtoolsProjectPath: mirror.path,
-      devtoolsProjectMirror: mirror,
-    })
-    const closeResult = closeDevtoolsProject(targetConfig, { timeoutMs: 30000 })
-    await waitAfterDevtoolsCloseRequest(closeResult)
-    const artifactCleanup = cleanupWindowsProjectMirror(targetConfig)
-    const canClearMirror = Boolean(closeResult && closeResult.ok) && artifactCleanup
-    const summary = {
-      id: `managed-mirror:${mirror.path}`,
-      sessionName: '',
-      autoPort: '',
-      projectClosed: Boolean(closeResult && closeResult.ok),
-      closeVerified: false,
-      closeAttempted: Boolean(closeResult && closeResult.attempted),
-      mirrorRemoved: artifactCleanup,
-      autoLinkRemoved: false,
-      devtoolsProjectPath: mirror.path,
-    } as AnyRecord
-
-    if (closeResult && closeResult.reason) {
-      summary.reason = closeResult.reason
-    }
-    if (closeResult && closeResult.error) {
-      summary.error = closeResult.error
-    }
-    if (canClearMirror) {
       summary.launchCleared = true
       launchesPruned.push(summary)
     } else {
@@ -2754,10 +2624,8 @@ module.exports = {
   summarizeDevtoolsStartupHints,
   summarizeOpenResolution,
   shouldClearFailedOpenSession,
-  resolveManagedArtifactCleanupOutcome,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
-  cleanupManagedProjectArtifacts,
   summarizeTimelinePayload,
   summarizeSnapshotPayload,
 }

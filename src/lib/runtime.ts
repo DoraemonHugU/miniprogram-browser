@@ -6,12 +6,6 @@
  */
 
 const {
-  cleanupWindowsProjectAutoLink,
-  cleanupWindowsProjectMirror,
-  isWindowsProjectMirrorDrained,
-  findManagedWindowsProjectMirrors,
-} = require('./runtime-windows')
-const {
   buildAutomationArgs,
   validateAutomationCliConfig,
   closeDevtoolsProject,
@@ -155,11 +149,6 @@ module.exports = {
   enableAutomation,
   closeDevtoolsProject,
   buildAutomationArgs,
-  // ---- runtime-windows ----
-  cleanupWindowsProjectAutoLink,
-  cleanupWindowsProjectMirror,
-  isWindowsProjectMirrorDrained,
-  findManagedWindowsProjectMirrors,
   // ---- runtime-snapshot ----
   readRuntimeTree,
   applySnapshotOptions,

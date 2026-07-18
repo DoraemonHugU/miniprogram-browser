@@ -13,8 +13,8 @@ type RuntimeOS = 'win32' | 'darwin' | 'linux'
  * WSL 场景里 runtime=linux 但 devtoolsHost=win32，需要做路径翻译与镜像桥接。
  *
  * devtoolsHost 由 runtime 推导（非 cliPath 扩展名）：linux 恒为 win32（WSL 桥接），
- * win32/darwin 与 runtime 同值。这比「cliPath 是否 .bat」更稳——Windows 上
- * 即便用 .exe 包裹（非 .bat 入口）也不会被误判成 mac。
+ * win32/darwin 与 runtime 同值。这比「cliPath 扩展名」更稳——Windows 上
+ * 即便用 .exe 包裹入口也不会被误判成 mac。
  */
 type DevtoolsHostOS = 'win32' | 'darwin'
 
