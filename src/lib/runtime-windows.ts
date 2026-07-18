@@ -34,11 +34,31 @@ function isWslUncPath(inputPath) {
 }
 
 function runWindowsCommand(script) {
-  // cmd.exe 在 WSL UNC 路径（/mnt/c/...）下启动时会丢失 UNC 参数解析能力。
-  // pushd C:\ 确保 cmd.exe 在当前目录为 Windows 本地盘时执行脚本。
-  return spawnSync('cmd.exe', ['/C', `pushd C:\\ && ${script}`], {
+  // cmd.exe 从 Windows 本地路径启动，避免 WSL 的 UNC 当前目录问题。
+  return spawnSync('cmd.exe', ['/C', script], {
+    cwd: '/mnt/c',
     encoding: 'utf8',
   })
+}
+
+/**
+ * 将 UNC 路径（\\wsl.localhost\ubuntu\home\wang\...）转回 WSL 路径（/home/wang/...）。
+ */
+function uncPathToWslPath(uncPath) {
+  const result = spawnSync('wslpath', ['-u', String(uncPath || '').trim()], { encoding: 'utf8' })
+  if (result.status !== 0) {
+    return ''
+  }
+  return result.stdout.trim()
+}
+
+/**
+ * 将 Windows 路径（C:\Users\...）转成 WSL 可读的 /mnt/ 路径。
+ */
+function winPathToMntPath(winPath) {
+  return String(winPath || '').trim()
+    .replace(/\\/gu, '/')
+    .replace(/^([a-z]):/iu, (_match, drive) => `/mnt/${drive.toLowerCase()}`)
 }
 
 function splitWslUncPath(inputPath) {
@@ -167,6 +187,13 @@ function createWindowsProjectMirrorFromWslUnc(uncPath, options: AnyRecord = {}) 
     return null
   }
 
+  // 将 UNC 路径转回 WSL 路径，再转到 /mnt/ 做文件操作
+  const uncToWsl = options.uncPathToWslPath || uncPathToWslPath
+  const wslPath = uncToWsl(parsed.fullPath)
+  if (!wslPath || !wslPath.startsWith('/')) {
+    return null
+  }
+
   const runCommand = options.runWindowsCommand || runWindowsCommand
   const tempDirectory = String(options.windowsTempDir || resolveWindowsTempDirectory(runCommand)).trim().replace(/\\+$/u, '')
   if (!isSafeWindowsShellPath(tempDirectory)) {
@@ -224,12 +251,19 @@ function createWindowsProjectMirrorFromWslUnc(uncPath, options: AnyRecord = {}) 
       continue
     }
 
-    const copyResult = runCommand(`robocopy ${parsed.fullPath} ${mirrorPath} /MIR /XD node_modules .git /XF .DS_Store`)
-    if (!isRobocopySuccess(copyResult)) {
+    // 使用 WSL cp -r 而非 robocopy（robocopy 在 WSL interop + UNC 路径下不可靠）
+    const mntMirrorPath = winPathToMntPath(mirrorPath)
+    const copyToDir = options.copyToWindowsDir || ((src, dest) => {
+      const r = spawnSync('rsync', ['-a', '--delete', '--exclude', 'node_modules', '--exclude', '.git', `${src}/`, dest], { encoding: 'utf8', timeout: 120000 })
+      return r.status === 0
+    })
+    const copyOk = copyToDir(wslPath, mntMirrorPath)
+    if (!copyOk) {
+      runCommand(`if exist ${mirrorPath} rmdir /S /Q ${mirrorPath}`)
       continue
     }
 
-    const markerResult = runCommand(`echo ${parsed.fullPath} > ${markerPath}`)
+    const markerResult = runCommand(`@echo ${parsed.fullPath} > ${markerPath}`)
     if (!markerResult || markerResult.status !== 0) {
       continue
     }
@@ -435,6 +469,8 @@ module.exports = {
   toWindowsPath,
   isWslUncPath,
   runWindowsCommand,
+  uncPathToWslPath,
+  winPathToMntPath,
   splitWslUncPath,
   isSafeWindowsShellPath,
   isSafeWslUncShellPath,

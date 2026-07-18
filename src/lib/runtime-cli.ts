@@ -82,11 +82,7 @@ function resolveMappedDevtoolsProjectPath(sourcePath, rawMap) {
 }
 
 function assertSupportedDevtoolsProjectPath(projectPath) {
-  if (!isWslUncPath(projectPath)) {
-    return
-  }
-
-  throw new Error('WSL UNC project path is not accepted by WeChat DevTools CLI, and miniprogram-browser could not create a managed Windows temp mirror for it. Put the project under /mnt/<drive>/..., pass --devtools-project <Windows drive path> / WECHAT_DEVTOOLS_PROJECT, or configure --project-map <linux=windows> / WECHAT_DEVTOOLS_PROJECT_MAP when you have a mapped drive.')
+  // WSL UNC 路径现在由 managed-mirror 机制支持，无需拒绝。
 }
 
 // ---- DevTools 项目路径解析 ----
@@ -421,13 +417,20 @@ function closeDevtoolsProject(config, options: AnyRecord = {}) {
 }
 
 function enableAutomation(config, options: AnyRecord = {}) {
-  const preOpen = openDevtoolsProject(config, options)
-  if (preOpen && !preOpen.ok) {
-    const error = new Error(preOpen.error || 'Failed to open WeChat DevTools project before automation startup') as ErrorWithMeta
-    error.code = preOpen.code || 'DEVTOOLS_CLI_ERROR'
-    error.hint = preOpen.hint
-    error.raw = preOpen.raw
-    throw error
+  // openPrefer 模式：先 open（GUI 项目打开）再 auto（自动化启用）。
+  // 默认跳过 open 直接 auto，因为 devtools auto 已涵盖启动 IDE + 打开项目 + 自动化注册的全部流程，
+  // 而 devtools open 在 WSL/UNC 路径下始终抛代码 17（QR_PATH_NOT_VALID_OR_NOT_EXIST），
+  // 且在 headless 场景下无实际意义。
+  let preOpen = null
+  if (options.openFirst) {
+    preOpen = openDevtoolsProject(config, options)
+    if (preOpen && !preOpen.ok) {
+      const error = new Error(preOpen.error || 'Failed to open WeChat DevTools project before automation startup') as ErrorWithMeta
+      error.code = preOpen.code || 'DEVTOOLS_CLI_ERROR'
+      error.hint = preOpen.hint
+      error.raw = preOpen.raw
+      throw error
+    }
   }
 
   const result = runAutomationCli(config, options)

@@ -10,12 +10,15 @@ function detectAutomationStartupIssue(rawMessage) {
     return null
   }
 
-  if (!/MinTabbarCount|getPreCompileOptions|checkTabbar|miniprogram-builder|appJSON\.js|checkAppFields\.js/iu.test(message)) {
+  if (!/MinTabbarCount|getPreCompileOptions|checkTabbar|miniprogram-builder|appJSON\.js|checkAppFields\.js|subPackages.*undefined|simulator.*launch.*catch.*error/iu.test(message)) {
     return null
   }
 
+  const isSubPackagesError = /Cannot read property ['"]subPackages['"] of undefined/iu.test(message)
   return {
-    message: 'DevTools 已启动，但当前项目在编译阶段失败（builder/checkTabbar）；这不是普通的 session/port 冲突。请先在微信开发者工具里确认当前项目能编译通过，再重试 open/connect。若终端里出现 checkTabbar、MinTabbarCount、getPreCompileOptions，优先检查 tabBar/custom-tab-bar 相关改动。',
+    message: isSubPackagesError
+      ? 'DevTools 已启动，但当前项目在模拟器启动阶段失败：app.json 中 subPackages 格式异常。请先在微信开发者工具里打开该项目手动编译一次，确认模拟器能正常渲染。常见原因：app.json 使用了非标准的子包结构。'
+      : 'DevTools 已启动，但当前项目在编译阶段失败（builder/checkTabbar）；这不是普通的 session/port 冲突。请先在微信开发者工具里确认当前项目能编译通过，再重试 open/connect。若终端里出现 checkTabbar、MinTabbarCount、getPreCompileOptions，优先检查 tabBar/custom-tab-bar 相关改动。',
     raw: message,
   }
 }

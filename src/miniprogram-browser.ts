@@ -559,7 +559,6 @@ async function handleOpen(state, options) {
       attachStateToRuntime(state, attachResult.ownerState)
       await saveSessionState(state)
       const attached = await openSessionWithDiagnostics(state, options, {
-        preferEnable: false,
         mode: 'attached',
         attachedTo: attachResult.ownerState.name,
       })
@@ -593,7 +592,6 @@ async function handleOpen(state, options) {
 
     try {
       result = await openSessionWithDiagnostics(state, options, {
-        preferEnable: !currentEndpointLive,
         mode: openMode,
         attachedTo: state.runtimeAttached ? state.runtimeOwnerSession : '',
       })
@@ -743,7 +741,6 @@ async function connectOpenSession(state, options, openOptions: AnyRecord = {}) {
       runtimeOwnerSession: state.runtimeOwnerSession || undefined,
     }
   }, {
-    preferEnable: Boolean(openOptions.preferEnable),
     allowRuntimeNotReady: true,
     connectTimeoutMs: resolveOpenTimeoutMs(options),
     onProgress(phase) {

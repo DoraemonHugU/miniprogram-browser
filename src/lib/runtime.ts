@@ -85,7 +85,6 @@ const {
   captureScreenshotToPath,
   cleanupMiniProgram,
   shutdownMiniProgram,
-  buildConnectRetryOptions,
   connectWithRetry,
   isAutomationEndpointLive,
   probeAutomationRuntime,
@@ -93,6 +92,7 @@ const {
   connectOrEnable,
   withMiniProgram,
   confirmRouteAfterAction,
+  waitForRuntimeReady,
 } = require('./runtime-connect')
 
 module.exports = {
@@ -113,10 +113,10 @@ module.exports = {
   confirmRouteAfterAction,
   connectWithRetry,
   isAutomationEndpointLive,
-  buildConnectRetryOptions,
   connectOrEnable,
   probeAutomationRuntime,
   sendAutomationProtocol,
+  waitForRuntimeReady,
   // ---- runtime-bridge ----
   getCurrentPage,
   getSystemInfo,

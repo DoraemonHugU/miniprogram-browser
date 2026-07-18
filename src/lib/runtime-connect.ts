@@ -5,7 +5,7 @@
  * - 与 DevTools automation WebSocket 的连接/重试
  * - 运行时准备性探测
  * - miniProgram 清理和生命周期管理
- * - connectOrEnable 策略（优先 enable 或优先 connect）
+ * - open：一次 enable + connect，无复杂策略
  * - 自动化协议发送
  */
 
@@ -19,6 +19,17 @@ const { mkdir } = require('node:fs/promises')
 
 type AnyRecord = Record<string, any>
 type ErrorWithMeta = Error & AnyRecord
+
+// ---- 连接常量 ----
+
+const WS_CONNECT_ATTEMPTS = 3
+const WS_CONNECT_TIMEOUT_MS = 10000
+const WS_RETRY_GAP_MS = 2000
+const RUNTIME_PROBE_ATTEMPTS = 8
+const RUNTIME_PROBE_TIMEOUT_MS = 15000
+const RUNTIME_PROBE_GAP_MS = 3000
+const DEFAULT_CONNECT_TIMEOUT_MS = 120000
+const ENABLE_AUTO_WAIT_MS = 3000
 
 // ---- 通用超时辅助 ----
 
@@ -139,99 +150,49 @@ async function connectAutomationTool(automator, config) {
   return await automator.connect({ wsEndpoint: endpoint })
 }
 
-function buildConnectRetryOptions(options: AnyRecord = {}) {
-  const timeoutMs = Number(options.connectTimeoutMs || options.timeoutMs || options.timeout || 0)
-  if (!(timeoutMs > 0)) {
-    return options.allowRuntimeNotReady ? { allowRuntimeNotReady: true } : {}
-  }
-
-  const attempts = Math.max(1, Math.ceil(timeoutMs / 1000))
-  const result: AnyRecord = {
-    timeoutMs,
-    maxAttempts: attempts,
-    runtimeNotReadyMaxAttempts: Math.max(2, attempts),
-    connectAttemptTimeoutMs: Math.max(250, Math.min(5000, Math.ceil(timeoutMs / attempts))),
-  }
-  if (options.allowRuntimeNotReady) {
-    result.allowRuntimeNotReady = true
-  }
-  return result
-}
-
 /**
- * 带重试的自动化连接。
+ * 连接 WebSocket（简化版）。
  *
  * 策略：
- * 1. 最多尝试 maxAttempts 次
- * 2. 每次连接后检查 App runtime ready
- * 3. runtimeNotReady 超限后 break
- * 4. 支持 deadline 超时（timeoutMs）
+ * - 最多尝试 WS_CONNECT_ATTEMPTS（3）次
+ * - 每次超时 WS_CONNECT_TIMEOUT_MS（10s）
+ * - 间隔 WS_RETRY_GAP_MS（2s）
+ * - 受 deadlineAt 外部约束
  */
 async function connectWithRetry(config, options: AnyRecord = {}) {
   const automator = options.automator || requireAutomator(config)
-  const maxAttempts = Number(options.maxAttempts || 10)
-  const runtimeNotReadyMaxAttempts = Number(options.runtimeNotReadyMaxAttempts || 2)
+  const deadlineAt = Number(options.deadlineAt || 0)
+  const maxAttempts = Number(options.maxAttempts || WS_CONNECT_ATTEMPTS)
+  const attemptTimeoutMs = Number(options.attemptTimeoutMs || WS_CONNECT_TIMEOUT_MS)
   const sleepFn = options.sleepFn || sleep
-  const timeoutMs = Number(options.timeoutMs || 0)
-  const deadlineAt = timeoutMs > 0 ? Date.now() + timeoutMs : 0
-  const defaultAttemptTimeoutMs = Math.max(100, Number(options.connectAttemptTimeoutMs || 5000))
-  let lastError
-  let runtimeNotReadyAttempts = 0
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (deadlineAt && Date.now() >= deadlineAt) {
       break
     }
 
-    let miniProgram = null
     try {
-      const remainingMs = deadlineAt ? Math.max(1, deadlineAt - Date.now()) : defaultAttemptTimeoutMs
-      miniProgram = await withProtocolTimeout(
+      const remainingMs = deadlineAt ? Math.max(1000, deadlineAt - Date.now()) : attemptTimeoutMs
+      return await withProtocolTimeout(
         connectAutomationTool(automator, config),
         'connectTool',
-        Math.min(defaultAttemptTimeoutMs, remainingMs),
+        Math.min(attemptTimeoutMs, remainingMs),
       )
-      await assertMiniProgramRuntimeReady(miniProgram, config, options)
-      miniProgram.__mpbRuntimeReady = true
-      delete miniProgram.__mpbRuntimeProbe
-      return miniProgram
     } catch (error) {
-      lastError = error
-      if (error && error.runtimeNotReady && options.allowRuntimeNotReady && miniProgram) {
-        miniProgram.__mpbRuntimeReady = false
-        miniProgram.__mpbRuntimeProbe = error.runtimeProbe || null
-        return miniProgram
-      }
-      if (miniProgram) {
-        await cleanupMiniProgram(miniProgram)
-      }
-
-      if (error && error.runtimeNotReady) {
-        runtimeNotReadyAttempts += 1
-        if (runtimeNotReadyAttempts >= runtimeNotReadyMaxAttempts) {
-          break
+      if (attempt < maxAttempts) {
+        const delayMs = deadlineAt
+          ? Math.min(WS_RETRY_GAP_MS, Math.max(0, deadlineAt - Date.now()))
+          : WS_RETRY_GAP_MS
+        if (delayMs > 0) {
+          await sleepFn(delayMs)
         }
-      }
-
-      if (deadlineAt && Date.now() >= deadlineAt) {
-        break
-      }
-
-      const delayMs = deadlineAt ? Math.min(1000, Math.max(0, deadlineAt - Date.now())) : 1000
-      if (delayMs > 0) {
-        await sleepFn(delayMs)
+      } else {
+        throw error
       }
     }
   }
 
-  if (deadlineAt && Date.now() >= deadlineAt) {
-    const error = new Error(`automation connect timed out after ${timeoutMs}ms`) as ErrorWithMeta
-    error.code = 'AUTOMATION_CONNECT_TIMEOUT'
-    error.cause = lastError
-    throw error
-  }
-
-  throw lastError
+  throw new Error(`Automation WebSocket connection failed after ${maxAttempts} attempts`)
 }
 
 /** 检查 automation 端点是否存活（快速探针） */
@@ -253,7 +214,7 @@ async function isAutomationEndpointLive(config, options: AnyRecord = {}) {
 
 // ---- 探针 ----
 
-/** 总结探针返回值（深对象截断） */
+/** 截断探针返回值（深对象截断） */
 function summarizeProbeResult(value) {
   if (value === undefined) {
     return null
@@ -311,6 +272,54 @@ function formatRuntimeNotReadyMessage(config, probe) {
     details.push(`Timed out methods: ${timedOut.join(', ')}.`)
   }
   return details.join(' ')
+}
+
+/**
+ * 等待 App runtime 就绪。
+ *
+ * 轮询 App.getCurrentPage，超时 RUNTIME_PROBE_TIMEOUT_MS（15s），
+ * 最多 RUNTIME_PROBE_ATTEMPTS（8）次 = 最长 ~120s。
+ *
+ * 成功 → 返回 miniProgram（标记 runtimeReady=true）
+ * 超时 → 返回 miniProgram（标记 runtimeReady=false）
+ */
+async function waitForRuntimeReady(miniProgram, config, options: AnyRecord = {}) {
+  const maxAttempts = Number(options.runtimeProbeAttempts || RUNTIME_PROBE_ATTEMPTS)
+  const probeTimeoutMs = Number(options.runtimeProbeTimeoutMs || RUNTIME_PROBE_TIMEOUT_MS)
+  const gapMs = Number(options.runtimeProbeGapMs || RUNTIME_PROBE_GAP_MS)
+  const deadlineAt = Number(options.deadlineAt || 0)
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (deadlineAt && Date.now() >= deadlineAt) {
+      break
+    }
+
+    try {
+      const result = await withProtocolTimeout(
+        miniProgram.send('App.getCurrentPage'),
+        'App.getCurrentPage',
+        probeTimeoutMs,
+      )
+      // App runtime 就绪
+      miniProgram.__mpbRuntimeReady = true
+      delete miniProgram.__mpbRuntimeProbe
+      return { appReady: true }
+    } catch (_) {
+      // 继续等
+    }
+
+    const remainingMs = deadlineAt ? Math.max(0, deadlineAt - Date.now()) : gapMs
+    if (remainingMs > 0) {
+      await sleep(Math.min(gapMs, remainingMs))
+    }
+  }
+
+  // 超时——App runtime 未就绪，但不抛异常
+  miniProgram.__mpbRuntimeReady = false
+  const probe = await probeReadyMiniProgram(miniProgram, { probeToolTimeoutMs: 1000, probeCurrentPageTimeoutMs: 1000 })
+  miniProgram.__mpbRuntimeProbe = probe
+
+  return { appReady: false, probe }
 }
 
 /**
@@ -382,19 +391,6 @@ async function probeAutomationRuntime(config, options: AnyRecord = {}) {
   }
 }
 
-/** 断言 miniProgram 运行时已就绪 */
-async function assertMiniProgramRuntimeReady(miniProgram, config, options: AnyRecord = {}) {
-  const probe = await probeReadyMiniProgram(miniProgram, options)
-  if (probe.appReady) {
-    return
-  }
-  const error = new Error(formatRuntimeNotReadyMessage(config, probe)) as ErrorWithMeta
-  error.raw = JSON.stringify(probe)
-  error.runtimeNotReady = true
-  error.runtimeProbe = probe
-  throw error
-}
-
 /** 快速运行时准备性探针（Tool.getInfo + App.getCurrentPage） */
 async function probeReadyMiniProgram(miniProgram, options: AnyRecord = {}) {
   const probes = []
@@ -407,6 +403,19 @@ async function probeReadyMiniProgram(miniProgram, options: AnyRecord = {}) {
     appReady: currentPageProbe.ok,
     probes,
   }
+}
+
+/** 断言 miniProgram 运行时已就绪 */
+async function assertMiniProgramRuntimeReady(miniProgram, config, options: AnyRecord = {}) {
+  const probe = await probeReadyMiniProgram(miniProgram, options)
+  if (probe.appReady) {
+    return
+  }
+  const error = new Error(formatRuntimeNotReadyMessage(config, probe)) as ErrorWithMeta
+  error.raw = JSON.stringify(probe)
+  error.runtimeNotReady = true
+  error.runtimeProbe = probe
+  throw error
 }
 
 // ---- 协议发送 ----
@@ -429,61 +438,55 @@ async function sendAutomationProtocol(config, method, params: AnyRecord = {}, op
   }
 }
 
-// ---- 连接策略 ----
+// ---- 连接入口（单通道）----
 
 /**
  * 连接或启用自动化。
  *
- * 策略模式：
- * - preferEnable：先 enable（启动 DevTools auto）再 connect
- * - 默认先 connect，失败且有 allowEnableFallback 时 fallback 到 enable
+ * 策略：先 enable（devtools auto），等一会，再 connect。
+ * 不再支持先 connect 后 fallback 的模式——在 WSL 场景下 WS 永远不可用直至 auto 运行。
  */
 async function connectOrEnable(config, options: AnyRecord = {}, overrides: AnyRecord = {}) {
   const connect = overrides.connect || connectWithRetry
   const enable = overrides.enable || (await Promise.resolve().then(() => require('./runtime-cli'))).enableAutomation
   const sleepFn = overrides.sleepFn || sleep
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null
-  const connectOptions = buildConnectRetryOptions(options)
-  const enableDelayMs = Number(options.connectTimeoutMs || options.timeoutMs || options.timeout || 0) > 0
-    ? Math.max(50, Math.min(5000, Math.floor(Number(options.connectTimeoutMs || options.timeoutMs || options.timeout) / 4)))
-    : 5000
 
-  if (options.preferEnable) {
-    onProgress && onProgress('enable')
-    const metadata = enable(config) || {}
-    if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
-      config.devtoolsPort = metadata.resolvedDevtoolsPort
-    }
-    await sleepFn(enableDelayMs)
-    onProgress && onProgress('connect')
-    try {
-      return await connect(config, connectOptions)
-    } catch (error) {
-      throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue)
-    }
+  const overallDeadlineMs = Number(options.timeoutMs || options.connectTimeoutMs || DEFAULT_CONNECT_TIMEOUT_MS)
+  const deadlineAt = Date.now() + overallDeadlineMs
+
+  // 1. enable: devtools auto
+  onProgress && onProgress('enable')
+  const metadata = enable(config, { openFirst: false }) || {}
+  if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
+    config.devtoolsPort = metadata.resolvedDevtoolsPort
   }
 
+  // 2. 等一会，让 DevTools IDE 有时间完成初始化
+  await sleepFn(ENABLE_AUTO_WAIT_MS)
+
+  // 3. connect WS
+  onProgress && onProgress('connect')
+  let miniProgram = null
   try {
-    onProgress && onProgress('connect')
-    return await connect(config, connectOptions)
-  } catch (connectError) {
-    if (!options.allowEnableFallback) {
-      throw connectError
+    miniProgram = await connect(config, { deadlineAt })
+    if (!miniProgram) {
+      throw new Error('connect returned no miniProgram reference')
     }
-
-    onProgress && onProgress('enable')
-    const metadata = enable(config) || {}
-    if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
-      config.devtoolsPort = metadata.resolvedDevtoolsPort
-    }
-    await sleepFn(enableDelayMs)
-    onProgress && onProgress('connect')
-    try {
-      return await connect(config, connectOptions)
-    } catch (error) {
-      throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue)
-    }
+  } catch (error) {
+    throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue)
   }
+
+  // 4. wait for App runtime ready
+  const runtimeResult = await waitForRuntimeReady(miniProgram, config, { deadlineAt })
+  if (!runtimeResult.appReady) {
+    miniProgram.__mpbRuntimeReady = false
+    miniProgram.__mpbRuntimeProbe = runtimeResult.probe || null
+  } else {
+    miniProgram.__mpbRuntimeReady = true
+  }
+
+  return miniProgram
 }
 
 // ---- 高阶封装 ----
@@ -505,9 +508,6 @@ async function withMiniProgram(state, task, options: AnyRecord = {}) {
   await mkdir(state.config.tempScreenshotDir, { recursive: true })
   const connect = options.connectOrEnable || connectOrEnable
   const miniProgram = await connect(state.config, {
-    preferEnable: options.preferEnable !== undefined
-      ? Boolean(options.preferEnable)
-      : Boolean(state.portResolution && state.portResolution.autoPortAssigned),
     connectTimeoutMs: options.connectTimeoutMs || options.timeoutMs || options.timeout,
     allowRuntimeNotReady: Boolean(options.allowRuntimeNotReady),
     onProgress: options.onProgress,
@@ -613,7 +613,6 @@ module.exports = {
   requireAutomator,
   automationWsEndpoint,
   connectAutomationTool,
-  buildConnectRetryOptions,
   connectWithRetry,
   isAutomationEndpointLive,
   summarizeProbeResult,
@@ -622,6 +621,7 @@ module.exports = {
   probeAutomationRuntime,
   assertMiniProgramRuntimeReady,
   probeReadyMiniProgram,
+  waitForRuntimeReady,
   sendAutomationProtocol,
   connectOrEnable,
   withMiniProgram,
