@@ -33,17 +33,10 @@ function isWslUncPath(inputPath) {
   return /^\\\\(?:wsl\.localhost|wsl\$)\\/iu.test(normalized)
 }
 
-function windowsCommandCwd() {
-  const candidates = [
-    '/mnt/c/Windows/System32',
-    '/mnt/c/Windows',
-  ]
-  return candidates.find((candidate) => existsSync(candidate)) || undefined
-}
-
 function runWindowsCommand(script) {
-  return spawnSync('cmd.exe', ['/C', script], {
-    cwd: windowsCommandCwd(),
+  // cmd.exe 在 WSL UNC 路径（/mnt/c/...）下启动时会丢失 UNC 参数解析能力。
+  // pushd C:\ 确保 cmd.exe 在当前目录为 Windows 本地盘时执行脚本。
+  return spawnSync('cmd.exe', ['/C', `pushd C:\\ && ${script}`], {
     encoding: 'utf8',
   })
 }
@@ -441,7 +434,6 @@ function findManagedWindowsProjectMirrors(config, options: AnyRecord = {}) {
 module.exports = {
   toWindowsPath,
   isWslUncPath,
-  windowsCommandCwd,
   runWindowsCommand,
   splitWslUncPath,
   isSafeWindowsShellPath,

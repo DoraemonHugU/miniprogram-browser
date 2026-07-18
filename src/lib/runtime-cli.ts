@@ -201,10 +201,51 @@ function buildDevtoolsOpenArgs(config, options: AnyRecord = {}) {
 
 // ---- CLI 验证与运行 ----
 
+function normalizeCliPath(rawPath) {
+  const trimmed = String(rawPath || '').trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  const statInfo = existsSync(trimmed) ? statSync(trimmed) : null
+  // 如果指向目录，补全 cli.js
+  if (statInfo && statInfo.isDirectory()) {
+    const cliJs = path.join(trimmed, 'cli.js')
+    if (existsSync(cliJs)) {
+      return cliJs
+    }
+    return trimmed
+  }
+
+  // 如果指向 .bat，归一化为同目录 cli.js
+  if (/\.bat$/iu.test(trimmed)) {
+    const dirName = path.dirname(trimmed)
+    const cliJs = path.join(dirName, 'cli.js')
+    if (existsSync(cliJs)) {
+      return cliJs
+    }
+  }
+
+  return trimmed
+}
+
 function validateAutomationCliConfig(config, options: AnyRecord = {}) {
+  const rawPath = String((config && config.cliPath) || '').trim()
+  if (!rawPath) {
+    const error = new Error('Missing WeChat DevTools CLI path. Set WECHAT_DEVTOOLS_CLI or pass --cli-path <path>.') as ErrorWithMeta
+    error.code = 'DEVTOOLS_CLI_ERROR'
+    throw error
+  }
+
+  // 归一化：.bat→.js、目录→cli.js
+  const normalizedPath = normalizeCliPath(rawPath)
+  if (normalizedPath !== rawPath) {
+    config.cliPath = normalizedPath
+  }
+
   const cliPath = String((config && config.cliPath) || '').trim()
   if (!cliPath) {
-    const error = new Error('Missing WeChat DevTools CLI path. Set WECHAT_DEVTOOLS_CLI or pass --cli-path <path>.') as ErrorWithMeta
+    const error = new Error('Missing WeChat DevTools CLI path after normalization. Set WECHAT_DEVTOOLS_CLI or pass --cli-path <path>.') as ErrorWithMeta
     error.code = 'DEVTOOLS_CLI_ERROR'
     throw error
   }
@@ -225,9 +266,8 @@ function validateAutomationCliConfig(config, options: AnyRecord = {}) {
   if (hasWindowsBundle) {
     const cliDirectory = path.dirname(cliPath)
     const nodeExePath = path.join(cliDirectory, 'node.exe')
-    const cliJsPath = path.join(cliDirectory, 'cli.js')
-    if (!existsSync(nodeExePath) || !existsSync(cliJsPath)) {
-      throw new Error(`WeChat DevTools CLI bundle is incomplete near ${cliPath}; expected node.exe and cli.js next to the Windows DevTools CLI.`)
+    if (!existsSync(nodeExePath)) {
+      throw new Error(`WeChat DevTools CLI bundle is incomplete near ${cliPath}; expected node.exe next to cli.js.`)
     }
     return
   }
@@ -244,14 +284,16 @@ function validateAutomationCliConfig(config, options: AnyRecord = {}) {
 function runDevtoolsCli(config, args, options: AnyRecord = {}) {
   validateAutomationCliConfig(config, options)
   const cliDirectory = path.dirname(config.cliPath)
-  const nodeExePath = path.join(cliDirectory, 'node.exe')
-  const cliJsPath = path.join(cliDirectory, 'cli.js')
   const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
   const timeoutMs = Number(options.timeoutMs || 30000)
 
+  // cliPath 经过 normalizeCliPath 已统一为 cli.js，但 Windows node.exe
+  // 不认 /mnt/ 路径，需转成 Windows 格式。
+  const cliJsArg = hasWindowsBundle ? toWindowsPath(config.cliPath) : config.cliPath
+
   const result = hasWindowsBundle
-    ? spawnSync(nodeExePath, [
-      toWindowsPath(cliJsPath),
+    ? spawnSync(path.join(cliDirectory, 'node.exe'), [
+      cliJsArg,
       ...args,
     ], {
       cwd: cliDirectory,
