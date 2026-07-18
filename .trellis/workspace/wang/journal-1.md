@@ -127,3 +127,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: 完成 runtime.ts 终极拆包重构 + 冗余清理 + code-spec 更新
+
+**Date**: 2026-07-18
+**Task**: 完成 runtime.ts 终极拆包重构 + 冗余清理 + code-spec 更新
+**Branch**: `main`
+
+### Summary
+
+从 2603 行拆为 10 个专注子模块（runtime-{core,snapshot,state,wait,bridge,timeline,resolve,connect,windows,cli,cli-shared,logs}），runtime.ts 缩减至 120 行纯导出入口。清理所有未使用 import（fs,crypto,path,spawnSync 等）。保留 10 个需真实环境的预存测试不改动。测试基线一致：247 pass / 10 fail。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c97a0e2` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
