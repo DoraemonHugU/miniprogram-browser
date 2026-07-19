@@ -481,22 +481,48 @@ miniprogram-browser system-info --session feat-a
 2. 再 `screenshot --focus @e1,@e2`
 3. 如果需要更简洁视图，可以先看 `snapshot -i -c`；但 compact 现在只是同一套 ref 的子集，不会再重新编号
 
-## Ref 使用边界
+## 稳定 CLI 面（公共契约）
 
-- ref 代表“可重解算的节点身份”，不是旧元素句柄
-- 页面明显变化后，重新执行 `snapshot -i`
-- 如果当前路由和 ref 绑定路由不一致，应重新 query 或 snapshot
-- `snapshot -i -c` 只是更紧凑的显示方式；compact 视图中的 ref 现在会复用普通快照里的同一 identity
-- `snapshot -i --layout` 会附加比例 rect；适合让模型做纯文字布局分析
+权威细节：仓库 `.trellis/spec/cli/product-contracts.md`。
+
+- **公共 API = CLI 命令**，不是 `dist/lib/**` 的 Node require 面
+- **L0 主路径（优先）**：`open` / `snapshot` / `click` / `fill` / `get` / `goto` / `await` / `close` / `session` / `path`
+- **L1 诊断**：`doctor` / `logs` / `exceptions` / `timeline` / `devtools logs` / `app inspect`
+- **L2 逃逸**：`protocol` / `eval` / `native` / `call` / `query` / `within` / 高级 `screenshot`
+- 成功时关注：`session`、`path`、`mode`、`autoPort`、`project`（其余为观测扩展）
+- 失败时：读人话 + 保留的底层 raw；不要假设一定有 `code` / `next`
+
+## Ref 使用边界（`@e` 硬规则）
+
+`@eN` 是 **当前 session 内、以 snapshot 为界的可解析句柄**。实现会用 stableKey **尽力**跨 snapshot 复用同号，但：
+
+**不是**全局永久 ID，**不是**跨 session ID，**不是**「永远是保存按钮」的业务主键。
+
+硬规则（必须遵守）：
+
+1. **先 `snapshot -i`（或本轮已产出 refs 的查询），只用本轮输出里的 `@eN`。**
+2. **页面可能变化后（导航、列表刷新、弹层开关、明显重渲染）必须重新 `snapshot -i`，不得沿用旧号碰运气。**
+3. **路由变了 → 旧页 `@e` 全部作废**；出现 route mismatch 时重新 snapshot。
+4. **stale / unknown ref / selector 失效 → 禁止重试同一旧 `@e`**；重新 `snapshot -i` 再操作。
+5. **`@e` 仅在产生它的 session 内有效**；换 session 必须重新 snapshot。
+6. **ASCII 图中的数字 = `@eN` 的 N**；命令仍写 `@e23` 这种完整形式。读文案看语义树，不看图内文字（图默认不渲染文案）。
+
+补充：
+
+- `snapshot -i -c` 更紧凑，但 ref 与普通快照同一套 identity，不会因 compact 单独重编号
+- `snapshot -i --layout` 附加比例 rect，便于纯文字布局分析
+- 业务若要跨会话稳定定位，应在小程序侧提供 testid / businessKey，而不是神化 `@e` 编号
 
 ## 常见误区
 
 - 误以为 `open` 是打开页面 URL；它的本质是绑定实例
 - 误以为 `open` 成功就代表当前页已经对了；应先 `path` 或 `app inspect`
-- 误以为可以默认猜项目目录；`--project` 必须是当前 shell 可读的小程序项目根目录
+- 误以为可以默认猜项目目录；`--project` 必须是当前 shell 可读的小程序项目根目录（或 cwd 唯一发现）
 - 误以为 WSL 下可以把 Windows 盘符路径直接塞进 `--project`；默认仍传 Linux 路径，必要时用 `--devtools-project` 或 `--project-map` 指定 DevTools 侧路径
 - 误以为登录过期还能继续自动化；需在 DevTools 重新登录，CLI 会保留底层原始错误
 - 误以为 session 文件会长期固化 `autoPort`；端口在 runtime 池，成功连接时回显，后续命令自动回绑
+- 误以为 `@eN` 是永久 ID 或跨页/跨 session 仍有效；见上方硬规则
+- 误以为 ASCII 图上的 `3` 是「第三项」而不是 `@e3`；图上数字只是编号 N
 - 误以为 `snapshot -i` 需要业务自己提供 tree；不需要
 - 误以为 `timeline` 是截图历史；它记录的是路由事件，不是视觉历史
 - 误以为 `eval` 等价于浏览器 DOM 脚本；这里执行的是小程序 AppService 运行时
@@ -504,3 +530,4 @@ miniprogram-browser system-info --session feat-a
 - 误以为 debug 日志里的 `ws connect <port>` 就是 automation ws；实际那是 CLI 自己的 `/upgrade` 长连接
 - 误以为 session 名不同就一定隔离；不要依赖抢占不同 `devtoolsPort` 来做多分支并行
 - 误以为很多操作可以无间隔链起来；优先写 `--await`，只有没有合适条件时才退回 `wait`
+- 误以为应 `require` 包内 `dist/lib/*` 当 SDK；公共面是 CLI

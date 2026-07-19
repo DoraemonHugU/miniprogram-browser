@@ -5,6 +5,7 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 ## Development Priorities
 
 - Treat `AGENTS.md` and `skills/miniprogram-browser/SKILL.md` as the primary operational documentation for future agents.
+- Product contracts (CLI stable surface, `@e` lifecycle): `.trellis/spec/cli/product-contracts.md` — keep skill in sync when those rules change.
 - Keep `README.md` useful for package users, but do not let README maintenance block CLI behavior, tests, or skill guidance.
 - Prefer small, explicit abstractions over hidden background behavior.
 - Do not use Windows GUI automation, PowerShell window control, OCR, or keyboard driving to solve DevTools runtime issues.
