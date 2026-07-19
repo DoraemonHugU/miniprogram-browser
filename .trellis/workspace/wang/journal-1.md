@@ -323,3 +323,36 @@ waitUntilAutomationLive；共享 live 不误杀 close；auto-port attach；sessi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: 冷启动自愈无需二次 open
+
+**Date**: 2026-07-19
+**Task**: 冷启动自愈无需二次 open
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+同 port live 自动重连；其它 live attach；cleanup 延后且 live 不 close；late live 探测；runtime/core/cli-behavior 全绿。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `24c6b27` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
