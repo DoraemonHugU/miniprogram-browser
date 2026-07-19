@@ -537,6 +537,32 @@ async function countOtherLiveRuntimesInProject(state: SessionState): Promise<num
 }
 
 async function cleanupStartedOpenRuntime(state: SessionState) {
+  // 本 port 已 live：说明 automation 实际起来了，禁止 close/清 session（用户无需再 open）
+  if (await isStateAutoPortLive(state, 1200)) {
+    const cleanup = {
+      projectClosed: false,
+      closeVerified: false,
+      closeAttempted: false,
+      skippedCloseReason: 'own-auto-port-live',
+      sessionCleared: false,
+    } as unknown as AnyRecord
+    if (state.runtimeLaunchId) {
+      cleanup.runtimeLaunchId = state.runtimeLaunchId
+      await markStartedRuntimeLaunch(state, {
+        status: 'live',
+        autoPort: state.config.autoPort,
+        cleanup,
+      }).catch(() => null)
+    } else {
+      await ensureLiveRuntimeLaunch(state, {
+        autoPort: state.config.autoPort,
+        devtoolsPort: state.config.devtoolsPort,
+      }).catch(() => null)
+    }
+    await saveSessionState(state).catch(() => null)
+    return cleanup
+  }
+
   const sharedLive = await countOtherLiveRuntimesInProject(state).catch(() => 0)
   if (sharedLive > 0) {
     const cleanup = {
@@ -715,7 +741,7 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
   if (
     openError
     && !openError.code
-    && /automation 在超时前未在 autoPort=|open timed out after/iu.test(String(openError.message || ''))
+    && /冷启动未完成|automation 在超时前未在 autoPort=|open timed out after/iu.test(String(openError.message || ''))
   ) {
     const timeoutError = createOpenTimeoutError(resolveOpenTimeoutMs(options))
     openError.code = timeoutError.code
@@ -766,33 +792,71 @@ function shouldClearFailedOpenSession(closeResult: AnyRecord) {
   return Boolean(closeResult.ok)
 }
 
+/**
+ * open 连接阶段：只负责 withOpenTimeout + 错误 enrich。
+ * cleanup 延后到 handleOpen 在「自愈失败」之后执行，避免拆掉已 live 的 port。
+ */
 async function openSessionWithDiagnostics(state: SessionState, options: AnyRecord, openOptions: AnyRecord = {}) {
   try {
-    // --timeout 约束整段 open 连接（含 enable + connect 重试），到期统一 OPEN_TIMEOUT
     return await withOpenTimeout(
       () => connectOpenSession(state, options, openOptions),
       resolveOpenTimeoutMs(options),
     )
   } catch (error: unknown) {
     const openError = await enrichOpenFailure(error as AnyRecord, state, options)
-    if (shouldCleanupStartedOpenRuntime(state, openOptions, openError)) {
-      const cleanup = await cleanupStartedOpenRuntime(state).catch((cleanupError) => ({
-        projectClosed: false,
-        closeAttempted: false,
-        sessionCleared: false,
-        error: cleanupError && cleanupError.message ? String(cleanupError.message) : String(cleanupError),
-      }))
-      openError.diagnostics = {
-        ...((openError.diagnostics as AnyRecord) || {}),
-        cleanup,
-      }
-    }
+    openError.needsStartedCleanup = shouldCleanupStartedOpenRuntime(state, openOptions, openError)
     throw openError
   }
 }
 
+async function isStateAutoPortLive(state: SessionState, timeoutMs = 1500): Promise<boolean> {
+  const autoPort = String((state.config as AnyRecord).autoPort || '').trim()
+  if (!autoPort) {
+    return false
+  }
+  return await isAutomationEndpointLive(
+    { ...state.config, autoPort },
+    { timeoutMs },
+  ).catch(() => false)
+}
 
-async function tryRescueAttachAfterStartFailure(state: SessionState, options: AnyRecord, previousError: AnyRecord) {
+/**
+ * 冷启动失败自愈（工具包揽，用户无需二次 open）：
+ * 1) 本 autoPort 已 live → connect-only 成功
+ * 2) 同项目其它 live → attach
+ */
+async function tryHealOpenAfterStartFailure(state: SessionState, options: AnyRecord, previousError: AnyRecord) {
+  const previousMessage = previousError && previousError.message
+    ? String(previousError.message).slice(0, 240)
+    : undefined
+
+  // 1) 同 port 已 live：enable 实际已成功，仅 connect 阶段失败/超时
+  if (await isStateAutoPortLive(state, 2000)) {
+    try {
+      const connected = await withOpenTimeout(
+        () => connectOpenSession(state, options, {
+          mode: 'connected',
+          attachedTo: '',
+        }),
+        Math.min(30000, Math.max(8000, resolveOpenTimeoutMs(options))),
+      )
+      await ensureLiveRuntimeLaunch(state, {
+        route: connected.path || '',
+        autoPort: connected.autoPort || state.config.autoPort,
+        devtoolsPort: connected.devtoolsPort || state.config.devtoolsPort,
+      })
+      await saveSessionState(state)
+      connected.rescuedFromStartFailure = true
+      connected.healedSamePort = true
+      connected.previousStartError = previousMessage
+      emitOpenResult(connected, options)
+      return connected
+    } catch (_) {
+      // 同 port 仍连不上，继续尝试其它 live
+    }
+  }
+
+  // 2) 同项目其它 live runtime
   const attachResult = await resolveAttachableRuntime(state)
   if (attachResult.mode !== 'attach' || !attachResult.session) {
     return null
@@ -802,8 +866,9 @@ async function tryRescueAttachAfterStartFailure(state: SessionState, options: An
   if (!autoPort) {
     return null
   }
-  // 不要 attach 到本次刚失败的同一 port（仍可能半死）
-  if (autoPort === String(state.config.autoPort || '').trim()) {
+  const ownPort = String((state.config as AnyRecord).autoPort || '').trim()
+  // 同 port 已在上面试过
+  if (autoPort === ownPort) {
     return null
   }
   const live = await isAutomationEndpointLive(
@@ -822,22 +887,27 @@ async function tryRescueAttachAfterStartFailure(state: SessionState, options: An
   state.runtimeOwnerSession = String(sessionInfo.name || sessionInfo.sessionName || '')
 
   await saveSessionState(state)
-  const attached = await openSessionWithDiagnostics(state, options, {
-    mode: 'attached',
-    attachedTo: state.runtimeOwnerSession || '',
-  })
-  await ensureLiveRuntimeLaunch(state, {
-    route: attached.path || '',
-    autoPort: attached.autoPort || state.config.autoPort,
-    devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
-  })
-  await saveSessionState(state)
-  attached.rescuedFromStartFailure = true
-  attached.previousStartError = previousError && previousError.message
-    ? String(previousError.message).slice(0, 240)
-    : undefined
-  emitOpenResult(attached, options)
-  return attached
+  try {
+    const attached = await withOpenTimeout(
+      () => connectOpenSession(state, options, {
+        mode: 'attached',
+        attachedTo: state.runtimeOwnerSession || '',
+      }),
+      Math.min(30000, Math.max(8000, resolveOpenTimeoutMs(options))),
+    )
+    await ensureLiveRuntimeLaunch(state, {
+      route: attached.path || '',
+      autoPort: attached.autoPort || state.config.autoPort,
+      devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
+    })
+    await saveSessionState(state)
+    attached.rescuedFromStartFailure = true
+    attached.previousStartError = previousMessage
+    emitOpenResult(attached, options)
+    return attached
+  } catch (_) {
+    return null
+  }
 }
 
 async function handleOpen(state: SessionState, options: AnyRecord) {
@@ -947,11 +1017,23 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
           ...((caughtError.diagnostics as AnyRecord) || {}),
           attemptedAutoPorts: [...attemptedAutoPorts, state.config.autoPort].filter(Boolean),
         }
-        // 救援：非 fresh 且同项目已有唯一 live → attach，避免冷启动失败后孤儿 runtime 浪费
+        // 自愈：同 port live 重连 / 其它 live attach——在 cleanup 之前，用户无需二次 open
         if (openMode === 'started' && !options.fresh) {
-          const rescued = await tryRescueAttachAfterStartFailure(state, options, caughtError).catch(() => null)
-          if (rescued) {
-            return rescued
+          const healed = await tryHealOpenAfterStartFailure(state, options, caughtError).catch(() => null)
+          if (healed) {
+            return healed
+          }
+        }
+        if (caughtError.needsStartedCleanup || shouldCleanupStartedOpenRuntime(state, { mode: openMode }, caughtError)) {
+          const cleanup = await cleanupStartedOpenRuntime(state).catch((cleanupError) => ({
+            projectClosed: false,
+            closeAttempted: false,
+            sessionCleared: false,
+            error: cleanupError && cleanupError.message ? String(cleanupError.message) : String(cleanupError),
+          }))
+          caughtError.diagnostics = {
+            ...((caughtError.diagnostics as AnyRecord) || {}),
+            cleanup,
           }
         }
         throw caughtError
@@ -3120,6 +3202,8 @@ module.exports = {
   resolveOpenFailureNextAction,
   shouldRetryOpenWithAnotherAutoPort,
   enrichOpenFailure,
+  tryHealOpenAfterStartFailure,
+  cleanupStartedOpenRuntime,
   classifyOpenFailureFromStartupHints,
   summarizeDevtoolsStartupHints,
   summarizeOpenResolution,

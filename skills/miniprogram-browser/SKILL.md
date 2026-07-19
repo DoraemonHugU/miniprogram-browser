@@ -272,8 +272,8 @@ miniprogram-browser open --session agent-task-a --fresh
 
 - 热启动：已有 live automation → 直接连（快）
 - 冷启动：要先 `devtools auto`，再等到端口 live，再连（慢是正常的；进度里会出现「等待 automation 端口就绪」）
-- 冷启动超时：**先重试同一个 open**（可加大 `--timeout`），**不要立刻 `--fresh`**（容易双开/打坏已有窗）
-- 若提示端口未就绪但人已看到小程序页：短等后再 open 复用，或 `session list` 看是否已有 live
+- 冷启动超时：CLI 会**自动**在「本 port 已 live / 同项目其它 live」时自愈重连，多数情况**不必**人再 open 一次
+- 仍失败时再：加大 `--timeout` 重试同一 open；**不要立刻 `--fresh`**；最后才 `devtools logs` / 重启开发者工具
 
 ## 诊断与逃逸
 

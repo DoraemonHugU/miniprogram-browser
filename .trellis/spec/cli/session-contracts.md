@@ -131,6 +131,9 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 - 同项目 `open` 串行：`locks/__open_project__.lock`，避免双 auto。
 - `OPEN_TIMEOUT` 不被 WeappLog 的 `cli-server-start-error` 覆盖 code。
 - started 失败后非 `--fresh` 可救援 attach 到同项目其它 live port。
+- 冷启动失败自愈（在 cleanup 之前）：① 本 `autoPort` 已 live → connect-only 成功；② 同项目其它 live → attach；仅自愈失败才 close/清 session。
+- wait-live 预算耗尽后仍做一次 late live 探测，减少边界竞态导致的假失败。
+
 
 
 

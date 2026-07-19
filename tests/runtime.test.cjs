@@ -1287,6 +1287,34 @@ test('connectOrEnable waits for automation live after enable before connect', as
   assert.ok(calls.indexOf('connect') > calls.indexOf('live:2'))
 })
 
+test('connectOrEnable proceeds when port becomes live on final check after wait budget', async () => {
+  const calls = []
+  let liveChecks = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    connectTimeoutMs: 50,
+    onProgress(phase) { calls.push(phase) },
+  }, {
+    enable() { calls.push('enable') },
+    async isLive() {
+      liveChecks += 1
+      calls.push(`live:${liveChecks}`)
+      // 预算内一直 false，最终 late check 才 true
+      return liveChecks >= 3
+    },
+    async connect() {
+      calls.push('connect')
+      return { ok: true }
+    },
+    async sleepFn() {},
+  })
+  assert.ok(result.ok)
+  assert.ok(calls.includes('enable'))
+  assert.ok(calls.includes('connect'))
+  assert.ok(liveChecks >= 2)
+})
+
 test('connectOrEnable refuses enable when allowEnable is false and endpoint is not live', async () => {
   await assert.rejects(
     connectOrEnable({ autoPort: 9421, projectPath: '/repo/apps/miniprogram' }, {
