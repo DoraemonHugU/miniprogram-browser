@@ -4,20 +4,231 @@ const os = require('node:os')
 const PImage = require('pureimage')
 const fontkit = require('fontkit')
 
-type AnyRecord = Record<string, any>
+import type { MiniProgram } from 'miniprogram-automator'
+
 type RgbTuple = [number, number, number]
 
-function resolveNavigationMetrics(windowInfo, menuButtonRect) {
+interface Box {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+interface RectPct {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+interface VisualBitmap {
+  width: number
+  height: number
+  data: Buffer
+}
+
+type ScanCallback = (this: VisualImage, x: number, y: number, idx: number) => void
+
+interface VisualImage {
+  bitmap: VisualBitmap
+  scan(x: number, y: number, w: number, h: number, cb: ScanCallback): unknown
+  writeAsync(targetPath: string): Promise<unknown>
+  composite?(src: VisualImage, x: number, y: number): unknown
+  print?(font: unknown, x: number, y: number, text: string, maxWidth?: number): unknown
+}
+
+interface JimpLike {
+  read(targetPath: string): Promise<VisualImage>
+  rgbaToInt(r: number, g: number, b: number, a: number): number
+  loadFont?(file: string): Promise<unknown>
+  FONT_SANS_16_WHITE?: string
+  create?(w: number, h: number, color: number): Promise<VisualImage>
+}
+
+interface FontKitGlyphPath {
+  commands: Array<{ command: string; args?: unknown[] }>
+}
+
+interface FontKitGlyph {
+  path: FontKitGlyphPath
+  xAdvance?: number
+}
+
+interface FontKitGlyphRun {
+  glyphs: FontKitGlyph[]
+  positions: Array<{ xAdvance?: number; xOffset?: number; yOffset?: number }>
+}
+
+interface FontKitFont {
+  unitsPerEm: number
+  layout(text: string): FontKitGlyphRun
+}
+
+interface CanvasContext {
+  fillStyle: string
+  beginPath(): void
+  moveTo(x: number, y: number): void
+  lineTo(x: number, y: number): void
+  quadraticCurveTo(cp1x: number, cp1y: number, x: number, y: number): void
+  bezierCurveTo(cp1x: number, cp1y: number, cp2x: number, cp2y: number, x: number, y: number): void
+  closePath(): void
+  fill(): void
+}
+
+interface VisualRecord {
+  ref?: string
+  businessKey?: string
+  selector?: string
+  parentRef?: string | null
+  kind?: string
+  text?: string
+  rectPct?: RectPct
+}
+
+interface SystemInfoLike {
+  windowWidth?: number
+  windowHeight?: number
+  screenWidth?: number
+  screenHeight?: number
+  pixelRatio?: number
+  statusBarHeight?: number
+}
+
+interface MenuButtonRectLike {
+  top?: number
+  right?: number
+  bottom?: number
+  left?: number
+  width?: number
+  height?: number
+}
+
+interface NavigationMetrics {
+  statusBarHeight: number
+  navBarHeight: number
+  navBarContentHeight: number
+  contentTop: number
+  capsuleWidth: number
+  capsuleSlotWidth: number
+}
+
+interface CapsuleBox {
+  x: number
+  y: number
+  width: number
+  height: number
+  separatorX: number
+  centerY: number
+  scale: number
+}
+
+interface CapsulePaintSpec {
+  shadowLayers: Array<{ spread: number; alpha: number }>
+  borderThickness: number
+  separatorInset: number
+  dividerThickness: number
+  menuDotRadius: number
+  menuDotGap: number
+  closeRingRadius: number
+  closeRingStroke: number
+}
+
+interface StyleSpec {
+  fill: number
+  border: number
+  labelBg: number
+}
+
+interface LayoutMetric {
+  depth: number
+  group: number
+}
+
+interface LayoutTextItem {
+  ref: string | undefined
+  kind: string | undefined
+  text: string
+  box: Box
+  safeBox: Box
+}
+
+interface FocusTarget {
+  ref?: string
+  businessKey?: string
+  selector?: string
+  parentRef?: string | null
+  kind?: string
+  text?: string
+  rectPct?: RectPct
+  color: { name: string; rgb: RgbTuple }
+}
+
+interface BadgeState {
+  badges: Box[]
+  metrics: Map<string, LayoutMetric>
+}
+
+interface CaptureLayoutInput {
+  targetPath: string
+  config: Record<string, unknown>
+  refs: VisualRecord[]
+  focusRefs?: string[]
+  focusRecords?: VisualRecord[]
+  badgeRecords?: VisualRecord[]
+  noRef?: boolean
+  systemInfo: SystemInfoLike
+  menuButtonRect: MenuButtonRectLike | undefined
+  capsule?: boolean
+  createImageAdapter?: (targetPath: string) => Promise<VisualImage>
+  colorAdapter?: JimpLike
+  textRenderer?: (input: { image: VisualImage; refs: VisualRecord[]; systemInfo: SystemInfoLike; textItems: LayoutTextItem[] }) => Promise<unknown>
+}
+
+interface OverlayFocusInput {
+  targetPath: string
+  config: Record<string, unknown>
+  refs: VisualRecord[]
+  focusRefs?: string[]
+  noRef?: boolean
+  createImageAdapter?: (targetPath: string) => Promise<VisualImage>
+  colorAdapter?: JimpLike
+}
+
+interface CaptureVisualInput {
+  miniProgram: MiniProgram
+  targetPath: string
+  config: Record<string, unknown>
+  timeoutMs?: number
+  pageCapture?: (destinationPath: string, timeoutMs?: number) => Promise<string>
+  createImageAdapter?: (targetPath: string) => Promise<VisualImage>
+  colorAdapter?: JimpLike
+}
+
+interface CaptureAnnotatedInput {
+  miniProgram: MiniProgram
+  targetPath: string
+  config: Record<string, unknown>
+  refs: VisualRecord[]
+  focusRefs?: string[]
+  noRef?: boolean
+  timeoutMs?: number
+  pageCapture?: (destinationPath: string, timeoutMs?: number) => Promise<string>
+  createImageAdapter?: (targetPath: string) => Promise<VisualImage>
+  colorAdapter?: JimpLike
+}
+
+function resolveNavigationMetrics(windowInfo: SystemInfoLike, menuButtonRect: MenuButtonRectLike | undefined) {
   const screenWidth = windowInfo.screenWidth ?? windowInfo.windowWidth ?? 375
   const statusBarHeight = windowInfo.statusBarHeight ?? 20
   const fallbackGap = 8
   const fallbackMenuWidth = 88
   const fallbackMenuHeight = 32
   const rightInset = menuButtonRect
-    ? Math.max(screenWidth - menuButtonRect.right, 14)
+    ? Math.max(screenWidth - (menuButtonRect.right ?? 0), 14)
     : 14
   const gap = menuButtonRect
-    ? Math.max(menuButtonRect.top - statusBarHeight, 4)
+    ? Math.max((menuButtonRect.top ?? 0) - statusBarHeight, 4)
     : fallbackGap
   const menuHeight = menuButtonRect?.height ?? fallbackMenuHeight
   const menuWidth = menuButtonRect?.width ?? fallbackMenuWidth
@@ -33,7 +244,7 @@ function resolveNavigationMetrics(windowInfo, menuButtonRect) {
   }
 }
 
-function resolveCapsuleBox({ imageWidth, navigationMetrics, windowWidth, pixelRatio }) {
+function resolveCapsuleBox({ imageWidth, navigationMetrics, windowWidth, pixelRatio }: { imageWidth: number; navigationMetrics: NavigationMetrics; windowWidth: number; pixelRatio: number }) {
   const scale = imageWidth / (windowWidth || 375)
   const rightInset = navigationMetrics.capsuleWidth - navigationMetrics.capsuleSlotWidth
   const capsuleWidth = navigationMetrics.capsuleSlotWidth - rightInset
@@ -54,7 +265,7 @@ function resolveCapsuleBox({ imageWidth, navigationMetrics, windowWidth, pixelRa
   }
 }
 
-function resolveCapsulePaintSpec(box) {
+function resolveCapsulePaintSpec(box: CapsuleBox) {
   const scale = box.scale || 1
 
   return {
@@ -72,28 +283,28 @@ function resolveCapsulePaintSpec(box) {
   }
 }
 
-function requireJimp(config) {
+function requireJimp(config: Record<string, unknown> = {}): JimpLike {
   const jimp = require('jimp')
   if (jimp && typeof jimp.read === 'function') {
-    return jimp
+    return jimp as unknown as JimpLike
   }
   if (jimp && jimp.Jimp && typeof jimp.Jimp.read === 'function') {
     return {
       ...jimp,
       read: jimp.Jimp.read.bind(jimp.Jimp),
-    }
+    } as unknown as JimpLike
   }
-  return jimp
+  return jimp as unknown as JimpLike
 }
 
-async function createBlankImage(Jimp, width, height, color) {
+async function createBlankImage(Jimp: JimpLike, width: number, height: number, color: number): Promise<VisualImage> {
   if (typeof Jimp.create === 'function') {
     return Jimp.create(width, height, color)
   }
   throw new Error('Jimp blank image creation is not available')
 }
 
-const FOCUS_PALETTE: Array<{ name: string, rgb: RgbTuple }> = [
+const FOCUS_PALETTE: Array<{ name: string; rgb: RgbTuple }> = [
   { name: 'blue', rgb: [0, 102, 255] },
   { name: 'green', rgb: [0, 214, 143] },
   { name: 'amber', rgb: [255, 176, 0] },
@@ -104,7 +315,7 @@ const FOCUS_PALETTE: Array<{ name: string, rgb: RgbTuple }> = [
   { name: 'lime', rgb: [164, 214, 0] },
 ]
 
-function hashString(value) {
+function hashString(value: unknown): number {
   let hash = 2166136261
   const input = String(value || '')
   for (let index = 0; index < input.length; index += 1) {
@@ -114,10 +325,11 @@ function hashString(value) {
   return hash >>> 0
 }
 
-function hslToRgb(h, s, l): RgbTuple {
+function hslToRgb(h: number, s: number, l: number): RgbTuple {
   const hue = ((h % 360) + 360) % 360 / 360
   const saturation = clampNumber(s, 0, 100) / 100
   const lightness = clampNumber(l, 0, 100) / 100
+
   if (saturation === 0) {
     const gray = Math.round(lightness * 255)
     return [gray, gray, gray]
@@ -126,7 +338,7 @@ function hslToRgb(h, s, l): RgbTuple {
     ? lightness * (1 + saturation)
     : lightness + saturation - lightness * saturation
   const p = 2 * lightness - q
-  const toRgb = (t) => {
+  const toRgb = (t: number): number => {
     let channel = t
     if (channel < 0) channel += 1
     if (channel > 1) channel -= 1
@@ -142,17 +354,20 @@ function hslToRgb(h, s, l): RgbTuple {
   ]
 }
 
-function layoutIdentity(record) {
-  return record && (record.ref || record.businessKey || record.selector || `${record.kind || 'node'}:${record.text || ''}`)
+function layoutIdentity(record: VisualRecord | null | undefined): string {
+  if (!record) {
+    return ''
+  }
+  return record.ref || record.businessKey || record.selector || `${record.kind || 'node'}:${record.text || ''}`
 }
 
-function rgba(Jimp, r, g, b, a) {
+function rgba(Jimp: JimpLike, r: number, g: number, b: number, a: number): number {
   return typeof Jimp.rgbaToInt === 'function'
     ? Jimp.rgbaToInt(r, g, b, a)
     : 0
 }
 
-function unpackRgba(color) {
+function unpackRgba(color: number) {
   return {
     r: (color >>> 24) & 255,
     g: (color >>> 16) & 255,
@@ -161,7 +376,7 @@ function unpackRgba(color) {
   }
 }
 
-function clampBox(box, bitmap) {
+function clampBox(box: Box, bitmap: VisualBitmap): Box {
   const x = Math.max(0, Math.min(bitmap.width - 1, Math.round(box.x)))
   const y = Math.max(0, Math.min(bitmap.height - 1, Math.round(box.y)))
   const width = Math.max(1, Math.min(bitmap.width - x, Math.round(box.width)))
@@ -170,7 +385,7 @@ function clampBox(box, bitmap) {
   return { x, y, width, height }
 }
 
-function insetBox(box, inset) {
+function insetBox(box: Box, inset: number): Box {
   const safeInset = Math.max(0, Math.round(inset))
   const width = Math.max(1, box.width - safeInset * 2)
   const height = Math.max(1, box.height - safeInset * 2)
@@ -183,15 +398,15 @@ function insetBox(box, inset) {
   }
 }
 
-function clampNumber(value, min, max) {
+function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-function boxesOverlap(left, right) {
+function boxesOverlap(left: Box, right: Box): boolean {
   return !(left.x + left.width <= right.x || right.x + right.width <= left.x || left.y + left.height <= right.y || right.y + right.height <= left.y)
 }
 
-function placeBadgeBox(preferredBox, image, occupiedBadges) {
+function placeBadgeBox(preferredBox: Box, image: VisualImage, occupiedBadges: Box[]): Box {
   const candidateOffsets = [0, 28, 56, -28, 84, -56]
   for (const offset of candidateOffsets) {
     const candidate = clampBox({
@@ -209,17 +424,17 @@ function placeBadgeBox(preferredBox, image, occupiedBadges) {
   return preferredBox
 }
 
-function drawRectFill(image, box, color) {
-  image.scan(box.x, box.y, box.width, box.height, function scan(_pixelX, _pixelY, idx) {
+function drawRectFill(image: VisualImage, box: Box, color: number): void {
+  image.scan(box.x, box.y, box.width, box.height, function scan(this: VisualImage, _pixelX: number, _pixelY: number, idx: number): void {
     this.bitmap.data.writeUInt32BE(color, idx)
   })
 }
 
-function blendRectFill(image, box, color) {
+function blendRectFill(image: VisualImage, box: Box, color: number): void {
   const { r, g, b, a } = unpackRgba(color)
   const alpha = a / 255
 
-  image.scan(box.x, box.y, box.width, box.height, function scan(_pixelX, _pixelY, idx) {
+  image.scan(box.x, box.y, box.width, box.height, function scan(this: VisualImage, _pixelX: number, _pixelY: number, idx: number): void {
     const currentR = this.bitmap.data[idx]
     const currentG = this.bitmap.data[idx + 1]
     const currentB = this.bitmap.data[idx + 2]
@@ -230,22 +445,22 @@ function blendRectFill(image, box, color) {
   })
 }
 
-function blendPixel(buffer, idx, r, g, b, alpha) {
+function blendPixel(buffer: Buffer, idx: number, r: number, g: number, b: number, alpha: number): void {
   buffer[idx] = Math.round(buffer[idx] * (1 - alpha) + r * alpha)
   buffer[idx + 1] = Math.round(buffer[idx + 1] * (1 - alpha) + g * alpha)
   buffer[idx + 2] = Math.round(buffer[idx + 2] * (1 - alpha) + b * alpha)
   buffer[idx + 3] = 255
 }
 
-function blendHatchFill(image, box, color, options: AnyRecord = {}) {
+function blendHatchFill(image: VisualImage, box: Box, color: number, options: Record<string, unknown> = {}): void {
   const { r, g, b } = unpackRgba(color)
   const minDimension = Math.max(1, Math.min(box.width, box.height))
-  const spacing = clampNumber(options.spacing || Math.round(minDimension * 0.5), 6, 12)
-  const stripeWidth = clampNumber(options.stripeWidth || Math.round(spacing / 3), 1, 3)
-  const baseAlpha = options.baseAlpha || 0.04
-  const stripeAlpha = options.stripeAlpha || 0.18
+  const spacing = clampNumber(Number(options.spacing) || Math.round(minDimension * 0.5), 6, 12)
+  const stripeWidth = clampNumber(Number(options.stripeWidth) || Math.round(spacing / 3), 1, 3)
+  const baseAlpha = Number(options.baseAlpha) || 0.04
+  const stripeAlpha = Number(options.stripeAlpha) || 0.18
 
-  image.scan(box.x, box.y, box.width, box.height, function scan(pixelX, pixelY, idx) {
+  image.scan(box.x, box.y, box.width, box.height, function scan(this: VisualImage, pixelX: number, pixelY: number, idx: number): void {
     const localX = pixelX - box.x
     const localY = pixelY - box.y
     const stripe = ((localX + localY) % spacing) < stripeWidth
@@ -253,7 +468,7 @@ function blendHatchFill(image, box, color, options: AnyRecord = {}) {
   })
 }
 
-function drawRectOutline(image, box, color, thickness = 3) {
+function drawRectOutline(image: VisualImage, box: Box, color: number, thickness = 3): void {
   const safeThickness = Math.max(1, Math.round(thickness))
   drawRectFill(image, { x: box.x, y: box.y, width: box.width, height: Math.min(box.height, safeThickness) }, color)
   drawRectFill(image, { x: box.x, y: Math.max(box.y, box.y + box.height - safeThickness), width: box.width, height: Math.min(box.height, safeThickness) }, color)
@@ -261,8 +476,8 @@ function drawRectOutline(image, box, color, thickness = 3) {
   drawRectFill(image, { x: Math.max(box.x, box.x + box.width - safeThickness), y: box.y, width: Math.min(box.width, safeThickness), height: box.height }, color)
 }
 
-function kindVisualStyle(Jimp, kind) {
-  const styles = {
+function kindVisualStyle(Jimp: JimpLike, kind: string): StyleSpec {
+  const styles: Record<string, StyleSpec> = {
     button: {
       fill: rgba(Jimp, 219, 234, 254, 255),
       border: rgba(Jimp, 37, 99, 235, 255),
@@ -293,13 +508,13 @@ function kindVisualStyle(Jimp, kind) {
   return styles[kind] || styles.default
 }
 
-function resolveLayoutFontPath(config: AnyRecord = {}) {
+function resolveLayoutFontPath(config: Record<string, unknown> = {}): string {
   const candidates = [
     process.env.MINIPROGRAM_BROWSER_LAYOUT_FONT,
     process.env.MPB_LAYOUT_FONT,
     '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
     '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf',
-  ].filter(Boolean)
+  ].filter((value): value is string => Boolean(value))
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
@@ -310,22 +525,22 @@ function resolveLayoutFontPath(config: AnyRecord = {}) {
   return ''
 }
 
-function resolveFontkitFont(fontPath) {
+function resolveFontkitFont(fontPath: string): FontKitFont {
   const opened = fontkit.openSync(fontPath)
   if (opened && Array.isArray(opened.fonts) && opened.fonts.length) {
-    return opened.fonts[0]
+    return opened.fonts[0] as FontKitFont
   }
-  return opened
+  return opened as FontKitFont
 }
 
-function measureGlyphRun(font, text, fontSize) {
+function measureGlyphRun(font: FontKitFont, text: string, fontSize: number) {
   const run = font.layout(text)
   const scale = fontSize / font.unitsPerEm
   const width = run.positions.reduce((sum, position) => sum + (position.xAdvance || 0), 0) * scale
   return { run, width }
 }
 
-function fitLayoutText(font, text, fontSize, maxWidth) {
+function fitLayoutText(font: FontKitFont, text: string, fontSize: number, maxWidth: number): string {
   const raw = String(text || '').trim()
   if (!raw) {
     return ''
@@ -348,7 +563,7 @@ function fitLayoutText(font, text, fontSize, maxWidth) {
   return raw
 }
 
-function drawGlyphRun(ctx, font, text, x, baselineY, fontSize) {
+function drawGlyphRun(ctx: CanvasContext, font: FontKitFont, text: string, x: number, baselineY: number, fontSize: number): void {
   const { run } = measureGlyphRun(font, text, fontSize)
   const scale = fontSize / font.unitsPerEm
   let penX = x
@@ -364,27 +579,27 @@ function drawGlyphRun(ctx, font, text, x, baselineY, fontSize) {
       const args = command.args || []
       if (command.command === 'moveTo') {
         hasPath = true
-        ctx.moveTo(penX + args[0] * scale + position.xOffset * scale, baselineY - args[1] * scale - position.yOffset * scale)
+        ctx.moveTo(penX + (args[0] as number) * scale + (position.xOffset as number) * scale, baselineY - (args[1] as number) * scale - (position.yOffset as number) * scale)
       } else if (command.command === 'lineTo') {
         hasPath = true
-        ctx.lineTo(penX + args[0] * scale + position.xOffset * scale, baselineY - args[1] * scale - position.yOffset * scale)
+        ctx.lineTo(penX + (args[0] as number) * scale + (position.xOffset as number) * scale, baselineY - (args[1] as number) * scale - (position.yOffset as number) * scale)
       } else if (command.command === 'quadraticCurveTo') {
         hasPath = true
         ctx.quadraticCurveTo(
-          penX + args[0] * scale + position.xOffset * scale,
-          baselineY - args[1] * scale - position.yOffset * scale,
-          penX + args[2] * scale + position.xOffset * scale,
-          baselineY - args[3] * scale - position.yOffset * scale,
+          penX + (args[0] as number) * scale + (position.xOffset as number) * scale,
+          baselineY - (args[1] as number) * scale - (position.yOffset as number) * scale,
+          penX + (args[2] as number) * scale + (position.xOffset as number) * scale,
+          baselineY - (args[3] as number) * scale - (position.yOffset as number) * scale,
         )
       } else if (command.command === 'bezierCurveTo') {
         hasPath = true
         ctx.bezierCurveTo(
-          penX + args[0] * scale + position.xOffset * scale,
-          baselineY - args[1] * scale - position.yOffset * scale,
-          penX + args[2] * scale + position.xOffset * scale,
-          baselineY - args[3] * scale - position.yOffset * scale,
-          penX + args[4] * scale + position.xOffset * scale,
-          baselineY - args[5] * scale - position.yOffset * scale,
+          penX + (args[0] as number) * scale + (position.xOffset as number) * scale,
+          baselineY - (args[1] as number) * scale - (position.yOffset as number) * scale,
+          penX + (args[2] as number) * scale + (position.xOffset as number) * scale,
+          baselineY - (args[3] as number) * scale - (position.yOffset as number) * scale,
+          penX + (args[4] as number) * scale + (position.xOffset as number) * scale,
+          baselineY - (args[5] as number) * scale - (position.yOffset as number) * scale,
         )
       } else if (command.command === 'closePath') {
         ctx.closePath()
@@ -394,18 +609,18 @@ function drawGlyphRun(ctx, font, text, x, baselineY, fontSize) {
     if (hasPath) {
       ctx.fill()
     }
-    penX += position.xAdvance * scale
+    penX += (position.xAdvance as number) * scale
   }
 }
 
-function stripLayoutContextSuffix(text) {
+function stripLayoutContextSuffix(text: string | undefined): string {
   return String(text || '').replace(/\s*<[^>]+>\s*$/u, '').trim()
 }
 
-function buildLayoutTextItems(image, refs) {
-  const parentRefs = new Set((refs || []).map((record) => record.parentRef).filter(Boolean))
-  const byId = new Map((refs || []).map((record) => [record.ref || record.businessKey || record.selector, record]))
-  const childrenByParent = new Map()
+function buildLayoutTextItems(image: VisualImage, refs: VisualRecord[]) {
+  const parentRefs = new Set<string | null | undefined>((refs || []).map((record) => record.parentRef).filter(Boolean))
+  const byId = new Map<string | null | undefined, VisualRecord>((refs || []).map((record) => [record.ref || record.businessKey || record.selector, record]))
+  const childrenByParent = new Map<string, VisualRecord[]>()
   for (const record of refs || []) {
     const parentId = record.parentRef
     if (parentId) {
@@ -415,17 +630,17 @@ function buildLayoutTextItems(image, refs) {
     }
   }
 
-  const textByNode = new Map()
-  function collectDescendantTexts(record) {
+  const textByNode = new Map<string, Set<string>>()
+  function collectDescendantTexts(record: VisualRecord): Set<string> {
     const id = record.ref || record.businessKey || record.selector
     if (!id) {
-      return new Set()
+      return new Set<string>()
     }
     if (textByNode.has(id)) {
-      return textByNode.get(id)
+      return textByNode.get(id) as Set<string>
     }
 
-    const texts = new Set()
+    const texts = new Set<string>()
     for (const child of childrenByParent.get(id) || []) {
       const childText = stripLayoutContextSuffix(child.text)
       if (child.kind === 'text' && childText) {
@@ -449,7 +664,7 @@ function buildLayoutTextItems(image, refs) {
     }
     collectDescendantTexts(byId.get(record.parentRef) || record)
   }
-  const items = []
+  const items: LayoutTextItem[] = []
 
   for (const record of refs || []) {
     const text = stripLayoutContextSuffix(record && record.text)
@@ -479,9 +694,9 @@ function buildLayoutTextItems(image, refs) {
   return items
 }
 
-function computeTextSafeBoxes(textItems, occupiedBadges) {
+function computeTextSafeBoxes(textItems: LayoutTextItem[], occupiedBadges: Box[]) {
   for (const item of textItems || []) {
-    const safeBox = {
+    const safeBox: Box = {
       x: item.box.x + 8,
       y: item.box.y + 6,
       width: Math.max(1, item.box.width - 16),
@@ -509,7 +724,7 @@ function computeTextSafeBoxes(textItems, occupiedBadges) {
   return textItems
 }
 
-function drawCapsuleOverlay(image, Jimp, systemInfo, menuButtonRect) {
+function drawCapsuleOverlay(image: VisualImage, Jimp: JimpLike, systemInfo: SystemInfoLike, menuButtonRect: MenuButtonRectLike | undefined): void {
   const navigationMetrics = resolveNavigationMetrics(systemInfo || {}, menuButtonRect)
   const box = resolveCapsuleBox({
     imageWidth: image.bitmap.width,
@@ -532,7 +747,7 @@ function drawCapsuleOverlay(image, Jimp, systemInfo, menuButtonRect) {
   drawRing(image, rightCenterX, box.centerY, paint.closeRingRadius, paint.closeRingStroke, iconColor)
 }
 
-async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }) {
+async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }: { image: VisualImage; refs: VisualRecord[]; textItems: LayoutTextItem[]; systemInfo: SystemInfoLike }): Promise<boolean> {
   const fontPath = resolveLayoutFontPath()
   if (!fontPath) {
     return false
@@ -559,7 +774,9 @@ async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }) {
   await PImage.encodePNGToStream(canvas, fs.createWriteStream(overlayPath))
   const Jimp = requireJimp({})
   const overlay = await Jimp.read(overlayPath)
-  image.composite(overlay, 0, 0)
+  if (typeof image.composite === 'function') {
+    image.composite(overlay, 0, 0)
+  }
   try {
     await fs.promises.unlink(overlayPath)
   } catch (_) {
@@ -567,26 +784,26 @@ async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }) {
   return true
 }
 
-function buildLayoutMetrics(refs) {
-  const byRef = new Map<string, any>((refs || []).map((record) => [layoutIdentity(record), record]))
-  const cache = new Map<string, any>()
+function buildLayoutMetrics(refs: VisualRecord[]) {
+  const byRef = new Map<string | null | undefined, VisualRecord>((refs || []).map((record) => [layoutIdentity(record), record]))
+  const cache = new Map<string, LayoutMetric>()
   let rootIndex = 0
 
-  function resolve(record) {
+  function resolve(record: VisualRecord | undefined): LayoutMetric {
     if (!record) {
       return { depth: 0, group: 0 }
     }
     const identity = layoutIdentity(record)
     if (cache.has(identity)) {
-      return cache.get(identity)
+      return cache.get(identity) as LayoutMetric
     }
     if (!record.parentRef) {
-      const result = { depth: 0, group: rootIndex++ }
+      const result: LayoutMetric = { depth: 0, group: rootIndex++ }
       cache.set(identity, result)
       return result
     }
     const parentMetrics = resolve(byRef.get(record.parentRef))
-    const result = { depth: parentMetrics.depth + 1, group: parentMetrics.group }
+    const result: LayoutMetric = { depth: parentMetrics.depth + 1, group: parentMetrics.group }
     cache.set(identity, result)
     return result
   }
@@ -598,7 +815,7 @@ function buildLayoutMetrics(refs) {
   return cache
 }
 
-function layoutColorScheme(Jimp, record, metrics) {
+function layoutColorScheme(Jimp: JimpLike, record: VisualRecord, metrics: Map<string, LayoutMetric>) {
   const metric = metrics.get(layoutIdentity(record)) || { depth: 0, group: 0 }
   const identityHash = hashString(layoutIdentity(record))
   const hue = (metric.group * 83 + identityHash) % 360
@@ -615,11 +832,11 @@ function layoutColorScheme(Jimp, record, metrics) {
   }
 }
 
-function textForLayout(record) {
+function textForLayout(record: VisualRecord): string | undefined {
   return record.ref
 }
 
-function drawLayoutNode(image, Jimp, record, font, metrics, badgeState, options: AnyRecord = {}) {
+function drawLayoutNode(image: VisualImage, Jimp: JimpLike, record: VisualRecord, font: FontKitFont | null, metrics: Map<string, LayoutMetric>, badgeState: BadgeState, options: Record<string, unknown> = {}): void {
   if (!record || !record.rectPct) {
     return
   }
@@ -646,7 +863,7 @@ function drawLayoutNode(image, Jimp, record, font, metrics, badgeState, options:
   }
 }
 
-function drawSemanticBadge(image, Jimp, record, font, badgeState, depth = 0) {
+function drawSemanticBadge(image: VisualImage, Jimp: JimpLike, record: VisualRecord, font: FontKitFont | null, badgeState: BadgeState, depth = 0): void {
   if (!record || !record.ref || !record.rectPct) {
     return
   }
@@ -657,7 +874,7 @@ function drawSemanticBadge(image, Jimp, record, font, badgeState, depth = 0) {
     width: image.bitmap.width * (record.rectPct.w / 100),
     height: image.bitmap.height * (record.rectPct.h / 100),
   }, image.bitmap)
-  const labelWidth = clampNumber(Math.max(56, record.ref.length * 10 + 18), 56, Math.max(56, image.bitmap.width - box.x))
+  const labelWidth = clampNumber(Math.max(56, (record.ref as string).length * 10 + 18), 56, Math.max(56, image.bitmap.width - box.x))
   const labelBox = placeBadgeBox(clampBox({
     x: (depth % 2 === 0)
       ? box.x
@@ -666,11 +883,11 @@ function drawSemanticBadge(image, Jimp, record, font, badgeState, depth = 0) {
     width: labelWidth,
     height: 20,
   }, image.bitmap), image, badgeState.badges)
-  const badgeMetrics = badgeState.metrics || new Map()
+  const badgeMetrics = badgeState.metrics || new Map<string, LayoutMetric>()
   const badgePalette = layoutColorScheme(Jimp, record, badgeMetrics)
   drawRoundedRect(image, labelBox, badgePalette.labelBg, rgba(Jimp, 15, 23, 42, 220))
   if (font && typeof image.print === 'function') {
-    image.print(font, labelBox.x + 6, labelBox.y + 4, record.ref, Math.max(1, labelWidth - 12))
+    image.print(font, labelBox.x + 6, labelBox.y + 4, record.ref as string, Math.max(1, labelWidth - 12))
   }
 }
 
@@ -688,7 +905,7 @@ async function captureLayoutScreenshot({
   createImageAdapter,
   colorAdapter,
   textRenderer,
-}) {
+}: CaptureLayoutInput) {
   const Jimp = colorAdapter || requireJimp(config)
   const windowWidth = Number(systemInfo && (systemInfo.windowWidth || systemInfo.screenWidth)) || 375
   const windowHeight = Number(systemInfo && (systemInfo.windowHeight || systemInfo.screenHeight)) || 812
@@ -697,11 +914,11 @@ async function captureLayoutScreenshot({
   const image = createImageAdapter
     ? await createImageAdapter(targetPath)
     : await createBlankImage(Jimp, imageWidth, imageHeight, rgba(Jimp, 248, 250, 252, 255))
-  const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
-    ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
+  const font: FontKitFont | null = (typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE)
+    ? (await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)) as FontKitFont
     : null
   const metrics = buildLayoutMetrics(refs)
-  const badgeState = { badges: [], metrics: buildLayoutMetrics(badgeRecords || refs) }
+  const badgeState: BadgeState = { badges: [], metrics: buildLayoutMetrics(badgeRecords || refs) }
   const suppressedBadgeRefs = new Set(Array.isArray(focusRefs) ? focusRefs : [])
   const semanticBadges = badgeRecords || refs || []
 
@@ -714,7 +931,7 @@ async function captureLayoutScreenshot({
   }
 
   for (const record of semanticBadges) {
-    if (suppressedBadgeRefs.has(record.ref)) {
+    if (suppressedBadgeRefs.has(record.ref as string)) {
       continue
     }
     if (!noRef) {
@@ -730,7 +947,7 @@ async function captureLayoutScreenshot({
     await renderLayoutTextOverlay({ image, refs, textItems, systemInfo })
   }
 
-  let focusLegend = []
+  let focusLegend: string[] = []
   if (Array.isArray(focusRefs) && focusRefs.length) {
     focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(focusRecords || semanticBadges || refs, focusRefs), font, { showLabel: !noRef })
   }
@@ -745,13 +962,13 @@ async function captureLayoutScreenshot({
   }
 }
 
-function resolveFocusTargets(refs, focusRefs) {
+function resolveFocusTargets(refs: VisualRecord[], focusRefs: string[] | undefined) {
   const requested = Array.isArray(focusRefs) ? focusRefs : []
   if (!requested.length) {
     return []
   }
 
-  const byRef = new Map<string, any>((refs || []).map((item) => [item.ref, item]))
+  const byRef = new Map<string | undefined, VisualRecord>((refs || []).map((item) => [item.ref, item]))
   const missing = requested.filter((ref) => !byRef.has(ref))
   if (missing.length) {
     throw new Error(`Unknown focus refs: ${missing.join(', ')}`)
@@ -760,11 +977,11 @@ function resolveFocusTargets(refs, focusRefs) {
   return requested.map((ref, index) => ({
     ...(byRef.get(ref) || {}),
     color: FOCUS_PALETTE[index % FOCUS_PALETTE.length],
-  }))
+  })) as FocusTarget[]
 }
 
-function renderFocusOverlay(image, Jimp, refs, font, options: AnyRecord = {}) {
-  const legend = []
+function renderFocusOverlay(image: VisualImage, Jimp: JimpLike, refs: FocusTarget[], font: FontKitFont | null, options: Record<string, unknown> = {}): string[] {
+  const legend: string[] = []
   const showLabel = options.showLabel !== false
 
   for (const item of refs || []) {
@@ -788,7 +1005,7 @@ function renderFocusOverlay(image, Jimp, refs, font, options: AnyRecord = {}) {
     const fillColor = rgba(Jimp, ...rgb, 255)
     const labelFill = rgba(Jimp, ...rgb, 228)
     const labelBorder = rgba(Jimp, 15, 23, 42, 216)
-    const labelWidth = Math.max(52, item.ref.length * 10 + 18)
+    const labelWidth = Math.max(52, (item.ref as string).length * 10 + 18)
     const labelBox = clampBox({
       x: box.x,
       y: Math.max(0, box.y - 28),
@@ -802,7 +1019,7 @@ function renderFocusOverlay(image, Jimp, refs, font, options: AnyRecord = {}) {
     if (showLabel) {
       drawRoundedRect(image, labelBox, labelFill, labelBorder)
       if (font && typeof image.print === 'function') {
-        image.print(font, labelBox.x + 6, labelBox.y + 5, item.ref)
+        image.print(font, labelBox.x + 6, labelBox.y + 5, item.ref as string)
       }
     }
     legend.push(`${item.ref} [${item.kind}] ${item.text || ''} color=${item.color.name}`.trim())
@@ -819,12 +1036,12 @@ async function overlayFocusScreenshot({
   noRef,
   createImageAdapter,
   colorAdapter,
-}) {
+}: OverlayFocusInput) {
   const targets = resolveFocusTargets(refs, focusRefs)
   const Jimp = colorAdapter || requireJimp(config)
   const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
-  const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
-    ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
+  const font: FontKitFont | null = (typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE)
+    ? (await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)) as FontKitFont
     : null
   const focusLegend = renderFocusOverlay(image, Jimp, targets, font, { showLabel: !noRef })
 
@@ -836,8 +1053,8 @@ async function overlayFocusScreenshot({
   }
 }
 
-async function readOfficialMenuButtonRect(miniProgram, timeoutMs = 800) {
-  const tasks = []
+async function readOfficialMenuButtonRect(miniProgram: MiniProgram, timeoutMs = 800): Promise<MenuButtonRectLike | undefined> {
+  const tasks: Promise<unknown>[] = []
 
   if (typeof miniProgram.evaluate === 'function') {
     tasks.push(Promise.resolve().then(() => miniProgram.evaluate(() => wx.getMenuButtonBoundingClientRect())))
@@ -852,19 +1069,19 @@ async function readOfficialMenuButtonRect(miniProgram, timeoutMs = 800) {
   }
 
   try {
-    return await Promise.race([
+    return (await Promise.race([
       ...tasks,
       new Promise((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
-    ])
+    ])) as MenuButtonRectLike | undefined
   } catch (_) {
     return undefined
   }
 }
 
-function drawRoundedRect(image, box, fillColor, borderColor) {
+function drawRoundedRect(image: VisualImage, box: Box, fillColor: number, borderColor: number): void {
   const radius = Math.round(box.height / 2)
 
-  image.scan(box.x, box.y, box.width, box.height, function scan(pixelX, pixelY, idx) {
+  image.scan(box.x, box.y, box.width, box.height, function scan(this: VisualImage, pixelX: number, pixelY: number, idx: number): void {
     const localX = pixelX - box.x
     const localY = pixelY - box.y
     let inside = false
@@ -887,7 +1104,7 @@ function drawRoundedRect(image, box, fillColor, borderColor) {
   })
 }
 
-function expandBox(box, spread, offsetY = 0) {
+function expandBox(box: Box, spread: number, offsetY = 0): Box {
   return {
     x: box.x - spread,
     y: box.y - spread + offsetY,
@@ -896,13 +1113,13 @@ function expandBox(box, spread, offsetY = 0) {
   }
 }
 
-function drawLine(image, x1, y1, x2, y2, color, thickness = 2) {
+function drawLine(image: VisualImage, x1: number, y1: number, x2: number, y2: number, color: number, thickness = 2): void {
   const minX = Math.min(x1, x2)
   const maxX = Math.max(x1, x2)
   const minY = Math.min(y1, y2)
   const maxY = Math.max(y1, y2)
 
-  image.scan(minX - thickness, minY - thickness, maxX - minX + thickness * 2 + 1, maxY - minY + thickness * 2 + 1, function scan(pixelX, pixelY, idx) {
+  image.scan(minX - thickness, minY - thickness, maxX - minX + thickness * 2 + 1, maxY - minY + thickness * 2 + 1, function scan(this: VisualImage, pixelX: number, pixelY: number, idx: number): void {
     const area = Math.abs((y2 - y1) * pixelX - (x2 - x1) * pixelY + x2 * y1 - y2 * x1)
     const base = Math.hypot(y2 - y1, x2 - x1) || 1
     const distance = area / base
@@ -912,8 +1129,8 @@ function drawLine(image, x1, y1, x2, y2, color, thickness = 2) {
   })
 }
 
-function drawCircle(image, centerX, centerY, radius, color) {
-  image.scan(centerX - radius, centerY - radius, radius * 2 + 1, radius * 2 + 1, function scan(pixelX, pixelY, idx) {
+function drawCircle(image: VisualImage, centerX: number, centerY: number, radius: number, color: number): void {
+  image.scan(centerX - radius, centerY - radius, radius * 2 + 1, radius * 2 + 1, function scan(this: VisualImage, pixelX: number, pixelY: number, idx: number): void {
     const dx = pixelX - centerX
     const dy = pixelY - centerY
     if (dx * dx + dy * dy <= radius * radius) {
@@ -922,8 +1139,8 @@ function drawCircle(image, centerX, centerY, radius, color) {
   })
 }
 
-function drawRing(image, centerX, centerY, radius, strokeWidth, color) {
-  image.scan(centerX - radius - strokeWidth, centerY - radius - strokeWidth, (radius + strokeWidth) * 2 + 1, (radius + strokeWidth) * 2 + 1, function scan(pixelX, pixelY, idx) {
+function drawRing(image: VisualImage, centerX: number, centerY: number, radius: number, strokeWidth: number, color: number): void {
+  image.scan(centerX - radius - strokeWidth, centerY - radius - strokeWidth, (radius + strokeWidth) * 2 + 1, (radius + strokeWidth) * 2 + 1, function scan(this: VisualImage, pixelX: number, pixelY: number, idx: number): void {
     const dx = pixelX - centerX
     const dy = pixelY - centerY
     const distance = Math.sqrt(dx * dx + dy * dy)
@@ -941,16 +1158,16 @@ async function captureVisualScreenshot({
   pageCapture,
   createImageAdapter,
   colorAdapter,
-}) {
+}: CaptureVisualInput) {
   const Jimp = colorAdapter || requireJimp(config)
-  const capturePage = pageCapture || (async (destinationPath) => {
+  const capturePage = pageCapture || (async (destinationPath: string) => {
     await miniProgram.screenshot({ path: destinationPath })
     return destinationPath
   })
 
   await capturePage(targetPath, timeoutMs)
 
-  const systemInfo = await miniProgram.systemInfo()
+  const systemInfo = await miniProgram.systemInfo() as SystemInfoLike
   const menuButtonRect = await readOfficialMenuButtonRect(miniProgram, 800)
 
   const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
@@ -965,7 +1182,7 @@ async function captureVisualScreenshot({
   const fillColor = Jimp.rgbaToInt(255, 255, 255, 232)
   const borderColor = Jimp.rgbaToInt(148, 163, 184, 168)
   const iconColor = Jimp.rgbaToInt(71, 85, 105, 255)
-  const shadowColor = (alpha) => Jimp.rgbaToInt(15, 23, 42, alpha)
+  const shadowColor = (alpha: number) => Jimp.rgbaToInt(15, 23, 42, alpha)
   const paint = resolveCapsulePaintSpec(box)
 
   for (const layer of paint.shadowLayers) {
@@ -1004,9 +1221,9 @@ async function captureAnnotatedScreenshot({
   pageCapture,
   createImageAdapter,
   colorAdapter,
-}) {
+}: CaptureAnnotatedInput) {
   const Jimp = colorAdapter || requireJimp(config)
-  const capturePage = pageCapture || (async (destinationPath) => {
+  const capturePage = pageCapture || (async (destinationPath: string) => {
     await miniProgram.screenshot({ path: destinationPath })
     return destinationPath
   })
@@ -1014,8 +1231,8 @@ async function captureAnnotatedScreenshot({
   await capturePage(targetPath, timeoutMs)
 
   const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
-  const font = typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE
-    ? await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)
+  const font: FontKitFont | null = (typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE)
+    ? (await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)) as FontKitFont
     : null
   const fillColor = typeof Jimp.rgbaToInt === 'function'
     ? Jimp.rgbaToInt(15, 23, 42, 232)
@@ -1023,7 +1240,7 @@ async function captureAnnotatedScreenshot({
   const borderColor = typeof Jimp.rgbaToInt === 'function'
     ? Jimp.rgbaToInt(148, 163, 184, 180)
     : 0
-  const legend = []
+  const legend: string[] = []
   const focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(refs, focusRefs), font, { showLabel: !noRef })
 
   if (!noRef) {
@@ -1032,7 +1249,7 @@ async function captureAnnotatedScreenshot({
         continue
       }
 
-      const label = item.ref
+      const label = item.ref || ''
       const x = Math.max(0, Math.round(image.bitmap.width * (item.rectPct.x / 100)))
       const y = Math.max(0, Math.round(image.bitmap.height * (item.rectPct.y / 100)) - 24)
       const width = Math.max(42, label.length * 10 + 12)

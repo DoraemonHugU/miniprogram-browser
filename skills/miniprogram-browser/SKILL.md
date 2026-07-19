@@ -17,10 +17,11 @@ miniprogram-browser ...
 npx miniprogram-browser ...
 ```
 
-它适合让 agent 直接操作微信小程序，但要记住两点：
+它适合让 agent 直接操作微信小程序，但要记住：
 
 - `--project` 指向 agent 当前系统可读的小程序项目根目录；当前目录或同 Git 工作树能唯一发现项目时可以省略
-- DevTools 实际接收的项目路径由 CLI 按平台自动推导；WSL `/home` 场景会在显式 `open/doctor` 时创建受控 Windows 临时镜像
+- DevTools 实际接收的项目路径由 CLI 按平台自动推导（macOS/Windows 直传；WSL `/mnt/*` 转盘符；必要时用 `--devtools-project` / `--project-map`）
+- 必须已登录微信开发者工具；登录过期时无法自动化，错误会保留 DevTools 原文
 - 它不是浏览器 DOM 自动化，部分自定义组件在运行时里可能不透明
 
 不要用它做上传、预览、发布、CI 打包；那属于 `miniprogram-ci`。
@@ -39,17 +40,19 @@ npx miniprogram-browser ...
 
 ## 核心心智
 
-1. `open` 绑定的是一个**小程序实例**，不是页面 URL
-2. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
-3. fresh 启动默认会先让 DevTools 显式 `open project`，再开启 automation；常规使用不要自己再额外手拼一条 `cli open`
-4. 绑定后先 `path` 或 `app inspect` 确认当前状态
-5. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
-6. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
-7. 非识图模型优先用 `snapshot -i`：默认输出结构化 ref 文本树 + 紧凑 ASCII 空间图（零真实像素、稳定）
-8. 需要纯文字比例 rect 时，用 `snapshot -i --layout`（文本树额外附 x/y/w/h 百分比）
-9. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
-10. 识图模型、且确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`
-11. 页面明显变化后，重新 `snapshot -i`
+1. `open` 绑定的是一个**小程序实例 / session**，不是页面 URL
+2. **session ≠ runtime**：session 存 route/refs；`autoPort` 等连接信息在 runtime 池，后续命令会自动回绑
+3. `open` 默认复用同项目唯一 live runtime；没有才启动；`--fresh` 才强制新 runtime
+4. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
+5. 常规使用不要自己再额外手拼 DevTools `cli open`；`open/connect` 已包揽 trust / 路径 / 端口等脏活
+6. 绑定后先 `path` 或 `app inspect` 确认当前状态
+7. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
+8. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
+9. 非识图模型优先用 `snapshot -i`：默认输出结构化 ref 文本树 + 紧凑 ASCII 空间图（零真实像素、稳定）
+10. 需要纯文字比例 rect 时，用 `snapshot -i --layout`（文本树额外附 x/y/w/h 百分比）
+11. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
+12. 识图模型、且确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`
+13. 页面明显变化后，重新 `snapshot -i`
 
 如果你的目标是让模型稳定理解页面结构，优先使用：
 
@@ -91,22 +94,14 @@ miniprogram-browser snapshot -i --layout --session feat-a
 # 如果本地还没设置 WECHAT_DEVTOOLS_CLI，再先 export
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
-miniprogram-browser open --session feat-a --project /path/to/miniprogram-root
-miniprogram-browser app inspect --session feat-a
-miniprogram-browser logs --session feat-a --limit 20
-miniprogram-browser exceptions --session feat-a
-miniprogram-browser goto /pages/dashboard/index --session feat-a --await route:/pages/dashboard/index
-miniprogram-browser screenshot artifacts/layout.png --session feat-a --mode layout --await route-settled --no-ref
-miniprogram-browser snapshot -i --layout --session feat-a --await route-settled
-miniprogram-browser screenshot artifacts/layout-focus.png --session feat-a --mode layout --await route-settled --focus @e16,@e17
-miniprogram-browser snapshot -i --session feat-a
-miniprogram-browser click @e1 --session feat-a --await route-change
-miniprogram-browser timeline --session feat-a
-miniprogram-browser screenshot --session feat-a --mode annotate
-miniprogram-browser session prune
-miniprogram-browser close --session feat-a
+# 最短路径：可省略 --session（自动 earlyriser-x1 这类名字）
+miniprogram-browser open --project /path/to/miniprogram-root
+miniprogram-browser snapshot -i
+miniprogram-browser click @e1 --await route-change
 
-miniprogram-browser help
+# 需要并行时再显式命名
+miniprogram-browser open --session work --project /path/to/miniprogram-root
+miniprogram-browser open --session debug --project /path/to/miniprogram-root --fresh
 ```
 
 `open` 已经默认等待 `stable`，常规流程不要再补一条 `await stable`。只有 `open` 返回 `RUNTIME_UNSTABLE`，或你明确看到 DevTools 还在编译/刷新时，才继续执行 `miniprogram-browser await stable --session feat-a`。
@@ -137,7 +132,7 @@ miniprogram-browser await stable --session feat-a
 - `miniprogram-browser` 默认已经传 `--trust-project`；如果当前 DevTools 版本仍弹窗，说明这次启动没有被工具自动吸收
 - 这类确认目前不要靠 agent 猜测或硬等；应由人类确认一次
 - 确认后优先重新执行同一个 `open`；如果 session 已保留，也可以先执行 `await app-ready` 或 `doctor`
-- WSL `/home/...` fresh 启动时，DevTools 可能把新的受控镜像路径视为新项目；attach 到已有 live runtime 往往比反复 fresh 更稳定
+- WSL 下优先用 `/mnt/<drive>/...` 项目路径；attach 到已有 live runtime 往往比反复 `--fresh` 更稳定
 
 如果本地 shell 已经设置了 `WECHAT_DEVTOOLS_CLI`，就不需要重复 `export`。
 
@@ -185,31 +180,20 @@ miniprogram-browser wait 1200 --session feat-a
 
 - `--project` 始终写当前 shell 可读的小程序根目录
 - macOS / Windows / WSL `/mnt/*` 路径由 CLI 自动转成 DevTools 可接受的路径
-- WSL `/home/...` 项目默认创建受控 Windows 临时镜像，再把该本地盘路径传给 DevTools
+- WSL 推荐把项目放在 `/mnt/<drive>/...`；`/home/...` 不再做受控镜像复制
 - 不要为了路径问题回退到 GUI 截图、OCR、PowerShell 控窗
 
-WSL `/home/...` 项目的日常用法仍然只有一个参数：
+WSL 日常推荐：
 
 ```bash
 miniprogram-browser open \
   --session feat-a \
-  --project /home/wang/work/demo/apps/miniprogram
+  --project /mnt/d/work/demo/apps/miniprogram
 ```
-
-受控镜像的边界：
-
-- 不做后台循环，不做文件监听，不在普通 `path/snapshot/click/logs` 命令里刷新镜像
-- 只写入路径形如 `%TEMP%\miniprogram-browser\project-<hash>` 的受控目录
-- 受控目录内带 `.miniprogram-browser-managed` 标记文件
-- `close --session <name>` 只清理该 session 记录、带标记且目标匹配的受控镜像
-- 镜像排除 `node_modules` 和 `.git`
-- 不删除用户显式传入的 DevTools 项目路径
-- 不删除 Windows 盘符路径、不删除项目目录、不清理任意 temp 目录
-- `open/doctor --json` 会输出 `projectStrategy` 和 DevTools 实际项目路径，不做黑盒切换
 
 ### 高级路径兜底
 
-只有 CLI 明确报告自动镜像不可用时，才使用这些兜底能力：
+当自动路径策略不够用时：
 
 ```bash
 miniprogram-browser open \
@@ -228,19 +212,25 @@ export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tm
 
 ## Session 语义
 
-一个 session 绑定的是：
+**session** 是用户/agent 的工作上下文；**runtime** 是 DevTools 自动化连接。
+
+session 持久化大致包括：
 
 - `projectPath`
-- `devtoolsProjectPath`（可选，仅 DevTools CLI 使用）
-- `devtoolsPort`
-- `autoPort`
+- `route` / refs / logs 等用户状态
+
+**不**固化在 session 文件中：
+
+- `autoPort` / `devtoolsPort`（运行时资源，存在 runtime 池；成功连接时仍会回显）
 
 规则：
 
-- 首次 `open/connect` 必须显式传 `--session`；`--project` 可由当前目录/Git 工作树自动发现
-- fresh session 下，`autoPort` 默认自动分配，调用方通常不需要传端口
+- 可省略 `--session`：按项目自动生成/复用 `{project}-xN`（如 `earlyriser-x1`）；`open --fresh` 且未显式 session 时分配下一个 `xN`
+- 显式 `--session work` 等仍用于并行工作台；**不要**用全局 `default`
+- `--project` 可由当前目录/Git 工作树自动发现
+- fresh session 下，`autoPort` 默认自动分配；调用方通常不需要传端口
 - 本机 DevTools 的 `auto -h` 可能不显示 `--auto-port`，但 CLI 实际仍支持并透传给 `/auto`
-- 显式 `--auto-port` 只用于 fresh 启动；attach 到已有 runtime 时会沿用 owner `autoPort`
+- 显式 `--auto-port` 只用于调试/指定端口；后续命令会从 runtime 池按 session 回绑 live 端口
 - `devtoolsPort` 默认不作为隔离边界；CLI 会让 DevTools 回显/沿用当前 HTTP 服务端口
 - 只有在明确排查 DevTools HTTP 服务端口时，才显式传 `--devtools-port`
 - 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工打开的小程序要先用 `doctor --project <path> --devtools-port <port>` 做 bootstrap 预检
@@ -259,7 +249,7 @@ export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tm
 - 只有 owner session 或显式 `--runtime` 才关闭底层 DevTools runtime
 - `open` 如果自己新启动 runtime，会先登记一个项目级 launch record；底层启动失败/连接失败时会按该记录尝试 `close --project` 收尾，避免失败后丢失清理线索
 - 如果已经连上但只是 `stable` 超时，不会立刻关闭 runtime；这类情况通常可以继续等待或诊断
-- `session prune` 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；它会尝试关闭对应 DevTools 项目窗口并删除受控镜像，不会全局扫其他项目
+- `session prune` 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；会尝试关闭对应 DevTools 项目窗口，不会全局扫其他项目
 - `session list` 默认只列当前项目；找不到当前项目时默认返回空并提示，避免泄漏全局旧 session
 - `session list --all` 是显式全局查看入口
 - `session kill <name>` / `session close <name>` 会优先终止当前项目下的同名 session，不会清理其他项目
@@ -504,7 +494,9 @@ miniprogram-browser system-info --session feat-a
 - 误以为 `open` 是打开页面 URL；它的本质是绑定实例
 - 误以为 `open` 成功就代表当前页已经对了；应先 `path` 或 `app inspect`
 - 误以为可以默认猜项目目录；`--project` 必须是当前 shell 可读的小程序项目根目录
-- 误以为 WSL 下可以把 Windows 盘符路径直接塞进 `--project`；默认仍传 Linux 路径，自动镜像不可用时才使用 `--devtools-project` 或 `--project-map`
+- 误以为 WSL 下可以把 Windows 盘符路径直接塞进 `--project`；默认仍传 Linux 路径，必要时用 `--devtools-project` 或 `--project-map` 指定 DevTools 侧路径
+- 误以为登录过期还能继续自动化；需在 DevTools 重新登录，CLI 会保留底层原始错误
+- 误以为 session 文件会长期固化 `autoPort`；端口在 runtime 池，成功连接时回显，后续命令自动回绑
 - 误以为 `snapshot -i` 需要业务自己提供 tree；不需要
 - 误以为 `timeline` 是截图历史；它记录的是路由事件，不是视觉历史
 - 误以为 `eval` 等价于浏览器 DOM 脚本；这里执行的是小程序 AppService 运行时

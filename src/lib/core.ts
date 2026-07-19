@@ -1,68 +1,67 @@
-type AnyRecord = Record<string, any>
-
-function nextRefName(index) {
+function nextRefName(index: number): string {
   return `@e${index}`
 }
 
-function toSegment(label, value) {
+function toSegment(label: string, value: string): string {
   return `${label}:${String(value)}`
 }
 
-function normalizeIdentityText(value) {
+function normalizeIdentityText(value: string): string {
   return String(value || '').replace(/\s+/gu, ' ').trim().slice(0, 80)
 }
 
-function resolveStableText(node) {
-  return normalizeIdentityText(node && typeof node === 'object' ? (node.identityText || node.text) : '')
+function resolveStableText(node: Record<string, unknown> | null | undefined): string {
+  const text = node && typeof node === 'object' ? (node.identityText || node.text) as string | undefined : undefined
+  return normalizeIdentityText(text || '')
 }
 
-function buildNodeIdentity(node) {
+function buildNodeIdentity(node: Record<string, unknown> | null | undefined): string | null {
   if (!node || typeof node !== 'object') {
     return null
   }
 
   if (node.registryId) {
-    return toSegment('registry', node.registryId)
+    return toSegment('registry', node.registryId as string)
   }
 
   if (node.testid) {
-    return toSegment('testid', node.testid)
+    return toSegment('testid', node.testid as string)
   }
 
   if (node.businessKey) {
-    return toSegment('business', node.businessKey)
+    return toSegment('business', node.businessKey as string)
   }
 
   if (node.scopeKey) {
-    return toSegment('scope', node.scopeKey)
+    return toSegment('scope', node.scopeKey as string)
   }
 
   const normalizedText = resolveStableText(node)
   if (normalizedText && node.selector) {
-    return `${toSegment(node.kind || 'custom', node.selector)}|${toSegment('text', normalizedText)}`
+    return `${toSegment((node.kind as string) || 'custom', node.selector as string)}|${toSegment('text', normalizedText)}`
   }
 
   if (node.selector) {
-    return toSegment(node.kind || 'custom', node.selector)
+    return toSegment((node.kind as string) || 'custom', node.selector as string)
   }
 
   return null
 }
 
-function buildNodeSignature(node) {
+function buildNodeSignature(node: Record<string, unknown> | null | undefined): string {
   if (!node || typeof node !== 'object') {
     return ''
   }
 
   return [
-    node.kind || '',
+    (node.kind as string) || '',
     resolveStableText(node),
-    node.businessKey || '',
-    node.selector || '',
+    (node.businessKey as string) || '',
+    (node.selector as string) || '',
   ].join('|')
 }
 
-function buildScopedPath(parentPath, node, siblingOccurrences) {
+function buildScopedPath(parentPath: string | null, node: Record<string, unknown> | null | undefined, siblingOccurrences: Map<string, number>): string {
   const identity = buildNodeIdentity(node)
   if (!identity) {
     return parentPath || ''
@@ -76,7 +75,7 @@ function buildScopedPath(parentPath, node, siblingOccurrences) {
   return parentPath ? `${parentPath}/${segment}` : segment
 }
 
-function createTreeStrategy(node) {
+function createTreeStrategy(node: Record<string, unknown>): { kind: string; value: string; selector: string; index: number } | null {
   const index = Number(node.index || 0)
 
   if (node.testid && node.selector) {
@@ -127,7 +126,7 @@ function createTreeStrategy(node) {
   return null
 }
 
-function createRefRecordFromNode(node, options: AnyRecord = {}) {
+function createRefRecordFromNode(node: Record<string, unknown>, options: Record<string, unknown> = {}): Record<string, unknown> | null {
   const strategy = createTreeStrategy(node)
 
   if (!strategy) {
@@ -153,7 +152,7 @@ function createRefRecordFromNode(node, options: AnyRecord = {}) {
   }
 }
 
-function allocateRef(stableKey, previousState, nextIndexState) {
+function allocateRef(stableKey: string, previousState: { stableKeyToRef?: Record<string, string> } | null, nextIndexState: { value: number }): string {
   const existingRef = previousState && previousState.stableKeyToRef
     ? previousState.stableKeyToRef[stableKey]
     : null
@@ -175,8 +174,16 @@ function buildTreeSnapshotRecords({
   startIndex = 1,
   scopeRef = null,
   previousState = null,
-}) {
-  const records = []
+}: {
+  nodes: Record<string, unknown>[]
+  epoch: number
+  route: string
+  pageKey?: string
+  startIndex?: number
+  scopeRef?: string | null
+  previousState?: { nextRefIndex?: number; stableKeyToRef?: Record<string, string> } | null
+}): { records: Record<string, unknown>[]; nextIndex: number } {
+  const records: Record<string, unknown>[] = []
   const nextIndexState = {
     value: Math.max(
       startIndex,
@@ -186,7 +193,7 @@ function buildTreeSnapshotRecords({
     ),
   }
 
-  function visit(currentNodes, parentRef, parentPath) {
+  function visit(currentNodes: Record<string, unknown>[], parentRef: string | null, parentPath: string): void {
     const siblingOccurrences = new Map()
 
     for (const node of currentNodes || []) {
@@ -208,19 +215,19 @@ function buildTreeSnapshotRecords({
 
       if (record) {
         records.push(record)
-        visit(node.children || [], record.ref, currentPath)
+        visit(node.children as Record<string, unknown>[] || [], String(record.ref), currentPath)
       } else {
-        visit(node.children || [], parentRef, currentPath)
+        visit(node.children as Record<string, unknown>[] || [], parentRef, currentPath)
       }
     }
   }
 
-  visit(Array.isArray(nodes) ? nodes : [nodes], null, '')
+  visit((Array.isArray(nodes) ? nodes : [nodes]) as Record<string, unknown>[], null, '')
 
   return { records, nextIndex: nextIndexState.value }
 }
 
-function fallbackSignature(match) {
+function fallbackSignature(match: Record<string, unknown>): string {
   return [
     match.tagName || '',
     match.text || '',
@@ -228,7 +235,13 @@ function fallbackSignature(match) {
   ].join('|')
 }
 
-function buildFallbackSnapshotRecords({ matches, epoch, route, startIndex = 1, scopeRef = null }) {
+function buildFallbackSnapshotRecords({ matches, epoch, route, startIndex = 1, scopeRef = null }: {
+  matches: Record<string, unknown>[]
+  epoch: number
+  route: string
+  startIndex?: number
+  scopeRef?: string | null
+}): { records: Record<string, unknown>[]; nextIndex: number } {
   const records = []
   const seen = new Set()
   let nextIndex = startIndex
@@ -265,36 +278,37 @@ function buildFallbackSnapshotRecords({ matches, epoch, route, startIndex = 1, s
   return { records, nextIndex }
 }
 
-function formatSnapshotLines(records, options: AnyRecord = {}) {
-  const recordsByRef = new Map((records || []).map((record) => [record.ref, record]))
-  const depthCache = new Map()
+function formatSnapshotLines(records: Record<string, unknown>[], options: Record<string, unknown> = {}): string[] {
+  const recordsByRef = new Map<string, Record<string, unknown>>((records || []).map((record: Record<string, unknown>) => [String(record.ref), record]))
+  const depthCache = new Map<string, number>()
 
-  function resolveDepth(record) {
+  function resolveDepth(record: Record<string, unknown>): number {
     if (!record || !record.parentRef) {
       return 0
     }
 
-    if (depthCache.has(record.ref)) {
-      return depthCache.get(record.ref)
+    if (depthCache.has(String(record.ref))) {
+      return depthCache.get(String(record.ref))!
     }
 
-    const parentDepth = resolveDepth(recordsByRef.get(record.parentRef)) + 1
-    depthCache.set(record.ref, parentDepth)
+    const parentDepth = resolveDepth(recordsByRef.get(String(record.parentRef)) ?? {}) + 1
+    depthCache.set(String(record.ref), parentDepth)
     return parentDepth
   }
 
-  function formatLayout(record) {
+  function formatLayout(record: Record<string, unknown>): string {
     if (!options.layout || !record || !record.rectPct) {
       return ''
     }
 
-    const { x, y, w, h } = record.rectPct
+    const rp = record.rectPct as Record<string, number>
+    const x = rp.x, y = rp.y, w = rp.w, h = rp.h
     return ` {x:${x},y:${y},w:${w},h:${h}}`
   }
 
   return (records || []).map((record) => {
     const indent = '  '.repeat(resolveDepth(record))
-    const prefix = `${record.ref} [${record.kind || 'custom'}]`
+    const prefix = `${String(record.ref)} [${String(record.kind || 'custom')}]`
     const text = String(record.text || '').trim()
     const base = text ? `${indent}${prefix} ${text}` : `${indent}${prefix}`
     return `${base}${formatLayout(record)}`

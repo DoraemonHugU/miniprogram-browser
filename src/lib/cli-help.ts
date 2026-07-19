@@ -55,7 +55,7 @@ function buildHelpText() {
   input                        fill 的别名
 
 常用选项:
-  --session <name>             session 名称；open/connect 首次绑定必须显式传
+  --session <name>             session 名称；省略时按项目自动生成/复用 {project}-xN
   --json                       以 JSON 输出
   --project <path>             当前 shell 可读的小程序项目根目录；可由当前 Git 工作树自动发现
   --fresh                      open 时强制请求新 runtime；失败不会静默降级为 attach
@@ -90,7 +90,7 @@ function getVersionText() {
  * @param {unknown} command
  * @returns {string}
  */
-function buildCommandHelpText(command) {
+function buildCommandHelpText(command: unknown): string {
   const normalized = String(command || '').trim()
   switch (normalized) {
     case 'open':
@@ -98,13 +98,15 @@ function buildCommandHelpText(command) {
       return `open/connect
 
 用法:
-  miniprogram-browser open --session <name> [--project <path>] [options]
+  miniprogram-browser open [--session <name>] [--project <path>] [options]
 
 作用:
   确保当前 session 绑定到一个可用的小程序 runtime。
 
 关键点:
-  - 首次绑定必须显式传 --session；--project 可由当前目录/Git 工作树自动发现
+  - 可省略 --session：按项目名自动生成/复用 {project}-xN（如 earlyriser-x1）；--fresh 且未显式 session 时分配下一个 xN
+  - 显式 --session 仍可用于并行工作台（work/debug 等）
+  - --project 可由当前目录/Git 工作树自动发现
   - fresh session 下 autoPort 默认自动分配；显式 --auto-port 只在 fresh 启动时生效，attach 到已有 runtime 时会沿用 owner autoPort
   - 不要把 devtoolsPort 当默认隔离边界；显式 --devtools-port 只用于高级诊断/逃逸
   - 默认优先 attach 到同项目唯一 live runtime；没有可复用 runtime 时才尝试启动新的
@@ -116,9 +118,8 @@ function buildCommandHelpText(command) {
   - DevTools debug 里的 ws connect <port> 是 CLI 自己的 /upgrade 长连接端口，不是 automation ws 端口
   - 同一 session 串行执行；不同 session 可以并发
   - 非标准安装路径 / WSL 场景下，可通过 WECHAT_DEVTOOLS_CLI 指定 CLI 路径
-  - WSL 下 --project 仍指向本地可读项目；/home 路径会自动创建受控 Windows 临时镜像
+  - WSL 下 --project 仍指向本地可读路径；优先 /mnt/<drive>，必要时 --devtools-project / --project-map
   - 正常情况下不用手动传端口、路径映射或信任类参数；CLI 会自动处理
-  - 自动镜像不可用时，再用高级选项兜底
 
 常用选项:
   --session <name>
@@ -135,9 +136,10 @@ function buildCommandHelpText(command) {
   --no-trust-project            显式关闭信任
 
 示例:
-  miniprogram-browser open --session demo
-  miniprogram-browser open --session demo --project /path/to/miniprogram-root
-  miniprogram-browser open --session demo --fresh
+  miniprogram-browser open
+  miniprogram-browser open --project /path/to/miniprogram-root
+  miniprogram-browser open --session work
+  miniprogram-browser open --fresh
 `
     case 'goto':
     case 'relaunch':
@@ -225,7 +227,7 @@ function buildCommandHelpText(command) {
   - 传 --project + --devtools-port 时，可预检一个已打开的 DevTools HTTP 服务是否能成功 bootstrap automation，而不落 session
   - 会先尝试启动/连接 DevTools 自动化
   - Tool.getInfo 成功但 App.* 超时，表示自动化服务已开但小程序运行态未就绪
-  - WSL /home 项目会沿用受控 Windows 临时镜像策略
+  - WSL /home 项目会沿用 WSL UNC 路径直传策略
 `
     case 'await':
       return `await
@@ -380,7 +382,7 @@ function buildCommandHelpText(command) {
 说明:
   - session list 默认只显示当前项目，状态包含 live/stale
   - 当前目录无法发现小程序项目时，默认返回空并提示；--all 才查看全局注册表
-  - session prune 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；会尝试关闭对应 DevTools 项目窗口并删除受控镜像
+  - session prune 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；会尝试关闭对应 DevTools 项目窗口
   - session kill/close <name> 会优先作用于当前项目，不会静默清理其他项目同名 session
   - attached session 默认只解绑自身并保留 owner runtime；需要关闭真实 runtime 时使用 owner session 或显式 --runtime
 `

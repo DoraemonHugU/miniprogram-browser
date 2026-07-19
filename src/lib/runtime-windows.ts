@@ -5,11 +5,9 @@
  * managed-mirror（rsync 复制到宿主机 temp）已删除；WSL UNC 路径直传 devtools auto。
  */
 
-const { spawnSync } = require('node:child_process')
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 
-type AnyRecord = Record<string, any>
-
-function toWindowsPath(inputPath) {
+function toWindowsPath(inputPath: string): string {
   const normalizedInput = String(inputPath || '').trim()
   if (!normalizedInput.startsWith('/')) {
     return normalizedInput
@@ -22,7 +20,7 @@ function toWindowsPath(inputPath) {
     return `${driveLetter.toUpperCase()}:\\${windowsRest}`
   }
 
-  const result = spawnSync('wslpath', ['-w', normalizedInput], { encoding: 'utf8' })
+  const result: SpawnSyncReturns<string> = spawnSync('wslpath', ['-w', normalizedInput], { encoding: 'utf8' })
   if (result.status !== 0) {
     throw new Error(`Failed to convert path with wslpath: ${normalizedInput}`)
   }
@@ -30,12 +28,12 @@ function toWindowsPath(inputPath) {
   return result.stdout.trim()
 }
 
-function isWslUncPath(inputPath) {
+function isWslUncPath(inputPath: string): boolean {
   const normalized = String(inputPath || '').trim().replace(/\//gu, '\\')
   return /^\\\\(?:wsl\.localhost|wsl\$)\\/iu.test(normalized)
 }
 
-function runWindowsCommand(script) {
+function runWindowsCommand(script: string): SpawnSyncReturns<string> {
   // cmd.exe 从 Windows 本地路径启动，避免 WSL 的 UNC 当前目录问题。
   return spawnSync('cmd.exe', ['/C', script], {
     cwd: '/mnt/c',
@@ -43,7 +41,7 @@ function runWindowsCommand(script) {
   })
 }
 
-function normalizeWindowsPathForCompare(inputPath) {
+function normalizeWindowsPathForCompare(inputPath: string): string {
   return String(inputPath || '').trim().replace(/\//gu, '\\').replace(/\\+$/u, '').toLowerCase()
 }
 

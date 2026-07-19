@@ -15,7 +15,73 @@ const {
   resolveRuntimeStableText,
 } = require('./runtime-core')
 
-type AnyRecord = Record<string, any>
+// ---- 快照本地类型 ----
+
+/** WXML 解析出的属性字典（值为字符串） */
+type WxmlAttributes = Record<string, string>
+
+/** 快照后处理选项（compact / depth / raw） */
+type SnapshotOptions = {
+  compact?: boolean
+  depth?: number
+  raw?: boolean
+}
+
+/** 节点匹配策略（与 ref record 的 strategy 对齐，字段均为可选） */
+interface SnapshotStrategy {
+  kind: string
+  value?: string | null
+  selector?: string | null
+  index?: number
+}
+
+/**
+ * 快照节点：精简模式与原始模式共用同一形状。
+ * 所有字段均为可选，以便上层用结构化对象或纯测试对象构造。
+ */
+interface SnapshotNode {
+  businessKey?: string | null
+  selector?: string | null
+  kind?: string
+  tagName?: string
+  identityText?: string
+  text?: string
+  strategy?: SnapshotStrategy
+  children?: SnapshotNode[]
+  canonicalPath?: string
+  parentKey?: string | null
+  order?: number
+  index?: number
+  outerWxml?: string
+  attributes?: WxmlAttributes
+  registryId?: string | null
+  testid?: string | null
+  scopeKey?: string | null
+  route?: string
+  stableKey?: string | null
+}
+
+/** 快照采集的元素句柄（自动化 API 的子集） */
+interface SnapshotElement {
+  tagName?: string
+  text(): Promise<string>
+  outerWxml(): Promise<string>
+}
+
+/** 快照采集的页面句柄（自动化 API 的子集） */
+interface SnapshotPage {
+  path?: string
+  query?: Record<string, unknown>
+  $$(selector: string): Promise<SnapshotElement[]>
+}
+
+/** ref record 的精简视图，仅取 subtreeForScope / matchesRecord 所需的字段 */
+interface RefRecordLike {
+  route?: string
+  stableKey?: string | null
+  businessKey?: string | null
+  strategy?: SnapshotStrategy
+}
 
 // ---- 快照种子标签 ----
 
@@ -71,10 +137,10 @@ const STRUCTURAL_RUNTIME_TAGS = new Set([
  * 从 outerWxml 中收集所有标签名。
  * 以种子标签为基线，扩展扫描到页面实际用到的额外标签。
  */
-function collectTagNamesFromWxml(wxml) {
+function collectTagNamesFromWxml(wxml: string): string[] {
   const tags = new Set(RUNTIME_SNAPSHOT_SEED_TAGS)
   const regex = /<([a-zA-Z][\w-]*)\b/gu
-  let match
+  let match: RegExpExecArray | null
 
   while ((match = regex.exec(wxml || '')) !== null) {
     tags.add(match[1])
@@ -87,15 +153,15 @@ function collectTagNamesFromWxml(wxml) {
  * 解析单个 WXML 标签的开始标记，提取标签名和属性字典。
  * 支持双引号、单引号、无引号属性值。
  */
-function parseOpeningTagAttributes(outerWxml) {
+function parseOpeningTagAttributes(outerWxml: string): { tagName: string; attributes: WxmlAttributes } {
   const match = String(outerWxml || '').match(/^<([a-zA-Z][\w-]*)([^>]*)>/u)
   if (!match) {
     return { tagName: '', attributes: {} }
   }
 
-  const attributes = {}
+  const attributes: WxmlAttributes = {}
   const attrRegex = /([:@a-zA-Z_][\w:.-]*)(?:=("([^"]*)"|'([^']*)'|([^\s>]+)))?/gu
-  let attrMatch
+  let attrMatch: RegExpExecArray | null
 
   while ((attrMatch = attrRegex.exec(match[2])) !== null) {
     const [, name, , doubleQuoted, singleQuoted, bareValue] = attrMatch
@@ -111,7 +177,7 @@ function parseOpeningTagAttributes(outerWxml) {
 // ---- 节点属性派生 ----
 
 /** 规范化运行时文本：合并空白、去前后空格 */
-function normalizeRuntimeText(value) {
+function normalizeRuntimeText(value: string): string {
   return String(value || '').replace(/\s+/gu, ' ').trim()
 }
 
@@ -119,7 +185,7 @@ function normalizeRuntimeText(value) {
  * 从 WXML 属性中推导业务键。
  * 优先级：data-sid > id。
  */
-function deriveRuntimeBusinessKey(attributes) {
+function deriveRuntimeBusinessKey(attributes: WxmlAttributes): string | null {
   if (attributes['data-sid']) {
     return `data-sid:${attributes['data-sid']}`
   }
@@ -132,7 +198,7 @@ function deriveRuntimeBusinessKey(attributes) {
 }
 
 /** 从标签名和属性推导用于 $$() 的选择器表达式 */
-function deriveRuntimeSelector(tagName, attributes) {
+function deriveRuntimeSelector(tagName: string, attributes: WxmlAttributes): string {
   if (attributes.id) {
     return `[id="${String(attributes.id).replace(/(["\\])/gu, '\\$1')}"]`
   }
@@ -148,7 +214,7 @@ function deriveRuntimeSelector(tagName, attributes) {
  * 推导节点语义类别（kind）。
  * 优先级：role 属性 > 交互性判断 > 标签名。
  */
-function deriveRuntimeKind(tagName, attributes) {
+function deriveRuntimeKind(tagName: string, attributes: WxmlAttributes): string {
   const role = normalizeRuntimeText(attributes.role)
   if (role) {
     return role
@@ -168,7 +234,7 @@ function deriveRuntimeKind(tagName, attributes) {
  * 推导需要保留的节点文本。
  * 仅对交互式/内容类标签保留文本，普通容器节点的文本不保留（避免冗余）。
  */
-function deriveRuntimeText(tagName, attributes, text) {
+function deriveRuntimeText(tagName: string, attributes: WxmlAttributes, text: string): string {
   const normalized = normalizeRuntimeText(text)
   if (!normalized) {
     return ''
@@ -192,35 +258,34 @@ function deriveRuntimeText(tagName, attributes, text) {
 // ---- 节点类型判定 ----
 
 /** 快照节点是否为可交互元素 */
-function isInteractiveRuntimeNode(node) {
-  return INTERACTIVE_RUNTIME_TAGS.has(node.kind)
-    || node.kind === 'button'
+function isInteractiveRuntimeNode(node: SnapshotNode): boolean {
+  return INTERACTIVE_RUNTIME_TAGS.has(node.kind || '') || node.kind === 'button'
 }
 
 /** 快照节点是否为纯内容元素 */
-function isContentRuntimeNode(node) {
-  return CONTENT_RUNTIME_TAGS.has(node.tagName) && Boolean(normalizeRuntimeText(node.text))
+function isContentRuntimeNode(node: SnapshotNode): boolean {
+  return CONTENT_RUNTIME_TAGS.has(node.tagName || '') && Boolean(normalizeRuntimeText(node.text || ''))
 }
 
 /** 快照节点是否为结构容器元素 */
-function isStructuralRuntimeNode(node) {
-  return STRUCTURAL_RUNTIME_TAGS.has(node.tagName)
+function isStructuralRuntimeNode(node: SnapshotNode): boolean {
+  return STRUCTURAL_RUNTIME_TAGS.has(node.tagName || '')
 }
 
 // ---- 节点转换 ----
 
 /** 将原始节点转换为语义化的精简快照节点 */
-function toSemanticRuntimeKind(node, childCount) {
+function toSemanticRuntimeKind(node: SnapshotNode, childCount: number): string {
   if (isInteractiveRuntimeNode(node)) {
-    return node.kind
+    return node.kind || 'custom'
   }
 
   if (isContentRuntimeNode(node)) {
-    return node.kind
+    return node.kind || 'custom'
   }
 
   if (isStructuralRuntimeNode(node)) {
-    return node.tagName
+    return node.tagName || 'view'
   }
 
   if (childCount > 0) {
@@ -231,28 +296,28 @@ function toSemanticRuntimeKind(node, childCount) {
 }
 
 /** 将原始节点转换为精简快照节点（给模型使用的语义化表示） */
-function toSnapshotNode(node, children = []) {
+function toSnapshotNode(node: SnapshotNode, children: SnapshotNode[] = []): SnapshotNode {
   return {
     businessKey: node.businessKey || undefined,
     selector: node.selector,
     kind: toSemanticRuntimeKind(node, children.length),
-    identityText: normalizeRuntimeText(node.text),
+    identityText: normalizeRuntimeText(node.text || ''),
     text: isInteractiveRuntimeNode(node) || isContentRuntimeNode(node)
-      ? normalizeRuntimeText(node.text)
+      ? normalizeRuntimeText(node.text || '')
       : '',
     children,
   }
 }
 
 /** 将原始节点转换为包含完整元数据的原始快照节点 */
-function toRawRuntimeNode(node, children = []) {
+function toRawRuntimeNode(node: SnapshotNode, children: SnapshotNode[] = []): SnapshotNode {
   return {
     businessKey: node.businessKey || undefined,
     selector: node.selector,
     kind: node.kind || node.tagName || 'view',
     tagName: node.tagName || 'view',
-    identityText: normalizeRuntimeText(node.text),
-    text: normalizeRuntimeText(node.text),
+    identityText: normalizeRuntimeText(node.text || ''),
+    text: normalizeRuntimeText(node.text || ''),
     strategy: {
       kind: 'selector',
       selector: node.selector,
@@ -265,14 +330,14 @@ function toRawRuntimeNode(node, children = []) {
 // ---- 树结构变换 ----
 
 /** 为快照节点继承上下文，将按钮文本与所在 section 标题拼接 */
-function enrichRuntimeNodeContext(nodes, inheritedSection = '') {
-  const nextNodes = []
+function enrichRuntimeNodeContext(nodes: SnapshotNode[], inheritedSection = ''): SnapshotNode[] {
+  const nextNodes: SnapshotNode[] = []
   let currentSection = inheritedSection
 
   for (const node of nodes || []) {
-    const text = normalizeRuntimeText(node.text)
+    const text = normalizeRuntimeText(node.text || '')
     const children = enrichRuntimeNodeContext(node.children || [], currentSection)
-    let nextNode = {
+    let nextNode: SnapshotNode = {
       ...node,
       children,
     }
@@ -295,7 +360,7 @@ function enrichRuntimeNodeContext(nodes, inheritedSection = '') {
 }
 
 /** 移除被可交互兄弟节点文本覆盖的冗余文本节点 */
-function collapseRedundantTextNodes(nodes) {
+function collapseRedundantTextNodes(nodes: SnapshotNode[]): SnapshotNode[] {
   const nextNodes = (nodes || []).map((node) => ({
     ...node,
     children: collapseRedundantTextNodes(node.children || []),
@@ -306,22 +371,22 @@ function collapseRedundantTextNodes(nodes) {
       return true
     }
 
-    const text = normalizeRuntimeText(node.text)
+    const text = normalizeRuntimeText(node.text || '')
     if (!text) {
       return false
     }
 
     const coveredByClickableSibling = nextNodes.some((sibling) => sibling !== node
       && sibling.kind === 'button'
-      && normalizeRuntimeText(sibling.text).includes(text))
+      && normalizeRuntimeText(sibling.text || '').includes(text))
 
     return !coveredByClickableSibling
   })
 }
 
 /** 展开节点组数组（支持嵌套数组和空值过滤） */
-function flattenNodeGroups(groups) {
-  const result = []
+function flattenNodeGroups(groups: (SnapshotNode | SnapshotNode[])[]): SnapshotNode[] {
+  const result: SnapshotNode[] = []
   for (const group of groups) {
     if (Array.isArray(group)) {
       result.push(...group)
@@ -335,7 +400,7 @@ function flattenNodeGroups(groups) {
 }
 
 /** 递归剪枝：仅保留交互/内容节点及其容器路径 */
-function pruneRuntimeNode(node, depth = 0) {
+function pruneRuntimeNode(node: SnapshotNode, depth = 0): SnapshotNode[] {
   if (isInteractiveRuntimeNode(node)) {
     return [toSnapshotNode(node)]
   }
@@ -358,7 +423,7 @@ function pruneRuntimeNode(node, depth = 0) {
 }
 
 /** 限制快照树最大深度（防止过深的 VDOM 展开） */
-function limitSnapshotDepth(nodes, maxDepth, currentDepth = 1) {
+function limitSnapshotDepth(nodes: SnapshotNode[], maxDepth: number, currentDepth = 1): SnapshotNode[] {
   if (!Number.isFinite(maxDepth) || maxDepth <= 0) {
     return nodes
   }
@@ -379,8 +444,8 @@ function limitSnapshotDepth(nodes, maxDepth, currentDepth = 1) {
 }
 
 /** 压缩快照树：移除无文本、无交互的纯容器节点（直接展开其子节点） */
-function compactSnapshotNodes(nodes) {
-  const compacted = []
+function compactSnapshotNodes(nodes: SnapshotNode[]): SnapshotNode[] {
+  const compacted: SnapshotNode[] = []
 
   for (const node of nodes || []) {
     const nextChildren = compactSnapshotNodes(node.children || [])
@@ -411,7 +476,7 @@ function compactSnapshotNodes(nodes) {
  * 为节点构建规范标识（canonical identity）。
  * 优先级：registryId > testid > businessKey > (kind+selector+text)。
  */
-function buildCanonicalIdentity(node) {
+function buildCanonicalIdentity(node: SnapshotNode): string | null {
   if (!node || typeof node !== 'object') {
     return null
   }
@@ -440,7 +505,7 @@ function buildCanonicalIdentity(node) {
 }
 
 /** 为节点树分配规范路径（/identity#occurrence 格式），便于稳定引用 */
-function assignCanonicalPaths(nodes, parentPath = '') {
+function assignCanonicalPaths(nodes: SnapshotNode[], parentPath = ''): SnapshotNode[] {
   const siblingOccurrences = new Map()
 
   return (nodes || []).map((node) => {
@@ -464,7 +529,7 @@ function assignCanonicalPaths(nodes, parentPath = '') {
 }
 
 /** 为节点构建跨页面引用的稳定键（pageKey|canonicalPath） */
-function buildNodeStableKey(pageKey, route, node) {
+function buildNodeStableKey(pageKey: string, route: string, node: SnapshotNode): string {
   if (!node || typeof node !== 'object') {
     return ''
   }
@@ -474,7 +539,7 @@ function buildNodeStableKey(pageKey, route, node) {
 }
 
 /** 构建节点记录的签名（用于后续 staleness 检测） */
-function buildRuntimeRecordSignature(node) {
+function buildRuntimeRecordSignature(node: SnapshotNode): string {
   if (!node || typeof node !== 'object') {
     return ''
   }
@@ -488,7 +553,7 @@ function buildRuntimeRecordSignature(node) {
 }
 
 /** 在节点树中按 stableKey 查找节点 */
-function findNodeByStableKey(nodes, pageKey, route, stableKey) {
+function findNodeByStableKey(nodes: SnapshotNode[], pageKey: string, route: string, stableKey: string): SnapshotNode | null {
   if (!stableKey) {
     return null
   }
@@ -496,7 +561,7 @@ function findNodeByStableKey(nodes, pageKey, route, stableKey) {
 }
 
 /** 计算目标节点在同 selector 节点列表中的索引 */
-function selectorIndexInSubtree(nodes, targetNode) {
+function selectorIndexInSubtree(nodes: SnapshotNode[], targetNode: SnapshotNode): number {
   if (!targetNode || !targetNode.selector) {
     return 0
   }
@@ -509,15 +574,15 @@ function selectorIndexInSubtree(nodes, targetNode) {
  * - compact：压缩空容器
  * - depth：限制树深度
  */
-function applySnapshotOptions(nodes, options: AnyRecord = {}) {
+function applySnapshotOptions(nodes: SnapshotNode[], options: SnapshotOptions = {}): SnapshotNode[] {
   let nextNodes = nodes || []
 
   if (options.compact) {
     nextNodes = compactSnapshotNodes(nextNodes)
   }
 
-  if (Number.isFinite(options.depth) && options.depth > 0) {
-    nextNodes = limitSnapshotDepth(nextNodes, options.depth)
+  if (Number.isFinite(options.depth) && (options.depth ?? 0) > 0) {
+    nextNodes = limitSnapshotDepth(nextNodes, options.depth ?? 0)
   }
 
   return nextNodes
@@ -526,7 +591,7 @@ function applySnapshotOptions(nodes, options: AnyRecord = {}) {
 // ---- 快照树构建 ----
 
 /** 根据 outerWxml 中业务键的出现位置推导数据顺序 */
-function deriveRuntimeOrder(rootWxml, item) {
+function deriveRuntimeOrder(rootWxml: string, item: SnapshotNode): number {
   if (item.businessKey) {
     const [attributeName, attributeValue] = item.businessKey.split(/:(.+)/u)
     const marker = `${attributeName}="${attributeValue}"`
@@ -542,9 +607,9 @@ function deriveRuntimeOrder(rootWxml, item) {
 }
 
 /** 采集指定标签名的所有元素并解析为快照项 */
-async function collectRuntimeSnapshotItems(page, tagName) {
+async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string): Promise<SnapshotNode[]> {
   const elements = await page.$$(tagName)
-  const items = []
+  const items: SnapshotNode[] = []
 
   for (let index = 0; index < elements.length; index += 1) {
     const element = elements[index]
@@ -575,7 +640,7 @@ async function collectRuntimeSnapshotItems(page, tagName) {
 }
 
 /** 通过 outerWxml 层级关系为快照项推导父子关系 */
-function attachRuntimeSnapshotParents(items, rootWxml) {
+function attachRuntimeSnapshotParents(items: SnapshotNode[], rootWxml: string): void {
   const withKeys = items.filter((item) => item.businessKey)
 
   for (const item of items) {
@@ -586,16 +651,18 @@ function attachRuntimeSnapshotParents(items, rootWxml) {
 
     const candidates = withKeys
       .filter((candidate) => {
-        if (candidate === item) {
+        if (candidate === item || !candidate.outerWxml || !item.businessKey) {
           return false
         }
 
-        return candidate.outerWxml.length > item.outerWxml.length
-          && candidate.outerWxml.includes(item.businessKey.startsWith('data-sid:')
-            ? `data-sid="${item.businessKey.slice('data-sid:'.length)}"`
-            : `id="${item.businessKey.slice('id:'.length)}"`)
+        return (candidate.outerWxml?.length ?? 0) > (item.outerWxml?.length ?? 0)
+          && (candidate.outerWxml?.includes(
+            item.businessKey.startsWith('data-sid:')
+              ? `data-sid="${item.businessKey.slice('data-sid:'.length)}"`
+              : `id="${item.businessKey.slice('id:'.length)}"`,
+          ) ?? false)
       })
-      .sort((left, right) => left.outerWxml.length - right.outerWxml.length)
+      .sort((left, right) => (left.outerWxml?.length ?? 0) - (right.outerWxml?.length ?? 0))
 
     item.parentKey = candidates[0] ? candidates[0].businessKey : null
   }
@@ -605,9 +672,9 @@ function attachRuntimeSnapshotParents(items, rootWxml) {
  * 将快照项列表构建为精简的语义化树。
  * 包括：排序、剪枝、去冗余、上下文拼接。
  */
-function buildRuntimeSnapshotTree(items) {
+function buildRuntimeSnapshotTree(items: SnapshotNode[]): SnapshotNode[] {
   const itemsByKey = new Map()
-  const roots = []
+  const roots: SnapshotNode[] = []
 
   for (const item of items) {
     item.children = []
@@ -618,16 +685,19 @@ function buildRuntimeSnapshotTree(items) {
 
   for (const item of items) {
     if (item.parentKey && itemsByKey.has(item.parentKey)) {
-      itemsByKey.get(item.parentKey).children.push(item)
-      continue
+      const parent = itemsByKey.get(item.parentKey)
+      if (parent) {
+        parent.children.push(item)
+        continue
+      }
     }
     roots.push(item)
   }
 
-  const sortNodes = (nodes) => {
-    nodes.sort((left, right) => left.order - right.order)
+  const sortNodes = (nodes: SnapshotNode[]): void => {
+    nodes.sort((left, right) => (Number(left.order) || 0) - (Number(right.order) || 0))
     for (const node of nodes) {
-      sortNodes(node.children)
+      sortNodes(node.children || [])
     }
   }
 
@@ -640,9 +710,9 @@ function buildRuntimeSnapshotTree(items) {
  * 将快照项列表构建为原始完整树。
  * 保留所有字段，不改写数据结构。
  */
-function buildRawRuntimeTree(items) {
+function buildRawRuntimeTree(items: SnapshotNode[]): SnapshotNode[] {
   const itemsByKey = new Map()
-  const roots = []
+  const roots: SnapshotNode[] = []
 
   for (const item of items) {
     item.children = []
@@ -653,21 +723,24 @@ function buildRawRuntimeTree(items) {
 
   for (const item of items) {
     if (item.parentKey && itemsByKey.has(item.parentKey)) {
-      itemsByKey.get(item.parentKey).children.push(item)
-      continue
+      const parent = itemsByKey.get(item.parentKey)
+      if (parent) {
+        parent.children.push(item)
+        continue
+      }
     }
     roots.push(item)
   }
 
-  const sortNodes = (nodes) => {
-    nodes.sort((left, right) => left.order - right.order)
+  const sortNodes = (nodes: SnapshotNode[]): void => {
+    nodes.sort((left, right) => (Number(left.order) || 0) - (Number(right.order) || 0))
     for (const node of nodes) {
-      sortNodes(node.children)
+      sortNodes(node.children || [])
     }
   }
   sortNodes(roots)
 
-  const convert = (nodes) => (nodes || []).map((node) => toRawRuntimeNode(node, convert(node.children || [])))
+  const convert = (nodes: SnapshotNode[]): SnapshotNode[] => (nodes || []).map((node) => toRawRuntimeNode(node, convert(node.children || [])))
   return convert(roots)
 }
 
@@ -680,20 +753,24 @@ function buildRawRuntimeTree(items) {
  * 3. 去重合并全部元素，推导父子关系
  * 4. 构建为语义化或原始树
  */
-async function readRuntimeTree(page, options: AnyRecord = {}) {
-  const seedItems = []
+async function readRuntimeTree(page: SnapshotPage, options: SnapshotOptions = {}): Promise<{ pageKey: string; nodes: SnapshotNode[] }> {
+  const seedItems: SnapshotNode[] = []
   for (const tagName of RUNTIME_SNAPSHOT_SEED_TAGS) {
     const items = await collectRuntimeSnapshotItems(page, tagName).catch(() => [])
     seedItems.push(...items)
   }
 
   if (!seedItems.length) {
-    return null
+    return { pageKey: buildDefaultPageKey(page), nodes: [] }
   }
 
-  const rootItem = [...seedItems].sort((left, right) => right.outerWxml.length - left.outerWxml.length)[0]
-  const tagNames = collectTagNamesFromWxml(rootItem.outerWxml)
-  const allItems = []
+  const rootItem = [...seedItems].sort((left, right) => (right.outerWxml?.length ?? 0) - (left.outerWxml?.length ?? 0))[0]
+  if (!rootItem) {
+    return { pageKey: buildDefaultPageKey(page), nodes: [] }
+  }
+
+  const tagNames = collectTagNamesFromWxml(rootItem.outerWxml || '')
+  const allItems: SnapshotNode[] = []
   const seenKeys = new Set()
 
   for (const tagName of tagNames) {
@@ -709,10 +786,10 @@ async function readRuntimeTree(page, options: AnyRecord = {}) {
   }
 
   if (!allItems.length) {
-    return null
+    return { pageKey: buildDefaultPageKey(page), nodes: [] }
   }
 
-  attachRuntimeSnapshotParents(allItems, rootItem.outerWxml)
+  attachRuntimeSnapshotParents(allItems, rootItem.outerWxml || '')
 
   return {
     pageKey: buildDefaultPageKey(page),
@@ -723,7 +800,7 @@ async function readRuntimeTree(page, options: AnyRecord = {}) {
 // ---- 节点搜索 ----
 
 /** 判定快照节点是否与记录匹配（基于 strategy 类型） */
-function matchesRecord(node, record) {
+function matchesRecord(node: SnapshotNode, record: RefRecordLike): boolean {
   if (!record || !record.strategy) {
     return false
   }
@@ -745,7 +822,7 @@ function matchesRecord(node, record) {
 }
 
 /** 在节点树中深度优先查找首个匹配 predicate 的节点 */
-function findFirstNode(nodes, predicate) {
+function findFirstNode(nodes: SnapshotNode[], predicate: (node: SnapshotNode) => boolean): SnapshotNode | null {
   for (const node of nodes || []) {
     if (predicate(node)) {
       return node
@@ -759,7 +836,7 @@ function findFirstNode(nodes, predicate) {
 }
 
 /** 在节点树中收集所有匹配 predicate 的节点 */
-function collectMatchingNodes(nodes, predicate, collected = []) {
+function collectMatchingNodes(nodes: SnapshotNode[], predicate: (node: SnapshotNode) => boolean, collected: SnapshotNode[] = []): SnapshotNode[] {
   for (const node of nodes || []) {
     if (predicate(node)) {
       collected.push(node)
@@ -773,13 +850,13 @@ function collectMatchingNodes(nodes, predicate, collected = []) {
  * 将快照树限定到 scope 记录指定的子树。
  * 先尝试 stableKey 匹配，fallback 到 records/selector 匹配。
  */
-function subtreeForScope(tree, scopeRecord, pageKey = '') {
+function subtreeForScope(tree: SnapshotNode[], scopeRecord: RefRecordLike | null, pageKey = ''): SnapshotNode[] {
   if (!scopeRecord) {
     return tree
   }
 
   if (scopeRecord.stableKey) {
-    const node = findNodeByStableKey(tree, pageKey, scopeRecord.route, scopeRecord.stableKey)
+    const node = findNodeByStableKey(tree, pageKey, scopeRecord.route || '', scopeRecord.stableKey)
     if (node) {
       return node.children || []
     }
@@ -790,8 +867,8 @@ function subtreeForScope(tree, scopeRecord, pageKey = '') {
 }
 
 /** 从 page 对象构建缺省 pageKey */
-function buildDefaultPageKey(page) {
-  const route = page && page.path ? page.path : ''
+function buildDefaultPageKey(page: SnapshotPage): string {
+  const route = page.path || ''
   const query = page && page.query && typeof page.query === 'object'
     ? Object.entries(page.query)
       .sort(([left], [right]) => left.localeCompare(right))
@@ -806,44 +883,46 @@ function buildDefaultPageKey(page) {
  * 递归统计快照树中的节点总数。
  * 支持两种 children 结构：{ children } 和 { nodes }。
  */
-function countRuntimeTreeNodes(value) {
+function countRuntimeTreeNodes(value: unknown): number {
   if (!value) {
     return 0
   }
 
   if (Array.isArray(value)) {
-    return value.reduce((sum, item) => sum + countRuntimeTreeNodes(item), 0)
+    return value.reduce<number>((sum, item) => sum + countRuntimeTreeNodes(item), 0)
   }
 
   if (typeof value !== 'object') {
     return 0
   }
 
-  const children = Array.isArray(value.children)
-    ? value.children
-    : Array.isArray(value.nodes)
-      ? value.nodes
+  const obj = value as { children?: unknown; nodes?: unknown }
+  const children = Array.isArray(obj.children)
+    ? obj.children
+    : Array.isArray(obj.nodes)
+      ? obj.nodes
       : []
-  return 1 + children.reduce((sum, item) => sum + countRuntimeTreeNodes(item), 0)
+  return 1 + children.reduce<number>((sum, item) => sum + countRuntimeTreeNodes(item), 0)
 }
 
 /**
  * 探测页面视图是否已渲染（通过读取快照树并检查节点数）。
  * 不抛异常，错误通过返回值体现。
  */
-async function probeRuntimeViewReady(page) {
+async function probeRuntimeViewReady(page: unknown): Promise<{ viewReady: boolean; viewNodeCount: number; viewError?: string }> {
   try {
-    const tree = await readRuntimeTree(page, { raw: true })
+    const tree = await readRuntimeTree(page as SnapshotPage, { raw: true })
     const nodeCount = countRuntimeTreeNodes(tree && tree.nodes)
     return {
       viewReady: nodeCount > 0,
       viewNodeCount: nodeCount,
     }
-  } catch (error) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? String(error.message) : String(error)
     return {
       viewReady: false,
       viewNodeCount: 0,
-      viewError: error && error.message ? String(error.message) : String(error),
+      viewError: message,
     }
   }
 }

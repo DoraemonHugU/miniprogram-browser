@@ -35,8 +35,48 @@ const {
   releaseSessionLock,
   runtimeLockName,
   selectAttachableRuntimeSession,
+  selectRuntimeLaunchForSession,
   shouldShutdownRuntimeOnClose,
+  projectSessionSlug,
+  isAutoProjectSessionName,
+  pickAutoProjectSessionName,
+  nextAutoProjectSessionName,
 } = require('../dist/lib/session-store.js')
+
+test('projectSessionSlug prefers parent when leaf is miniprogram/weapp', () => {
+  assert.equal(projectSessionSlug('/mnt/d/xuexi/projects/earlyRiser/apps/miniprogram'), 'earlyriser')
+  assert.equal(projectSessionSlug('/work/my-shop/weapp'), 'my-shop')
+  assert.equal(projectSessionSlug('/work/CoolApp'), 'coolapp')
+  assert.equal(projectSessionSlug('/work/My App!!'), 'my-app')
+  assert.equal(projectSessionSlug(''), 'project')
+})
+
+test('isAutoProjectSessionName matches slug-xN only', () => {
+  assert.equal(isAutoProjectSessionName('earlyriser-x1', 'earlyriser'), true)
+  assert.equal(isAutoProjectSessionName('earlyriser-x12', 'earlyriser'), true)
+  assert.equal(isAutoProjectSessionName('earlyriser-x0', 'earlyriser'), false)
+  assert.equal(isAutoProjectSessionName('earlyriser', 'earlyriser'), false)
+  assert.equal(isAutoProjectSessionName('work', 'earlyriser'), false)
+  assert.equal(isAutoProjectSessionName('earlyriser-x1', 'other'), false)
+})
+
+test('pickAutoProjectSessionName reuses highest existing auto index else x1', () => {
+  assert.equal(pickAutoProjectSessionName([], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x1')
+  assert.equal(pickAutoProjectSessionName(['work', 'debug'], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x1')
+  assert.equal(
+    pickAutoProjectSessionName(['earlyriser-x1', 'work', 'earlyriser-x3'], '/work/earlyRiser/apps/miniprogram'),
+    'earlyriser-x3',
+  )
+})
+
+test('nextAutoProjectSessionName allocates next free index', () => {
+  assert.equal(nextAutoProjectSessionName([], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x1')
+  assert.equal(nextAutoProjectSessionName(['earlyriser-x1'], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x2')
+  assert.equal(
+    nextAutoProjectSessionName(['earlyriser-x1', 'earlyriser-x2', 'work'], '/work/earlyRiser/apps/miniprogram'),
+    'earlyriser-x3',
+  )
+})
 
 test('nextRefName generates agent-browser style refs', () => {
   assert.equal(nextRefName(1), '@e1')
@@ -391,8 +431,9 @@ test('assertBindingConsistency rejects changing a bound session', () => {
     /already bound/i,
   )
 
-  assert.throws(
-    () => assertBindingConsistency(
+  // autoPort 不参与 session 身份绑定，override 时允许不同值
+  assert.doesNotThrow(() => {
+    assertBindingConsistency(
       {
         projectPath: '/worktree-a/apps/miniprogram',
         autoPort: '9422',
@@ -400,9 +441,8 @@ test('assertBindingConsistency rejects changing a bound session', () => {
       {
         autoPort: '9423',
       },
-    ),
-    /already bound/i,
-  )
+    )
+  })
 
   assert.doesNotThrow(() => {
     assertBindingConsistency(
@@ -791,6 +831,31 @@ test('selectAttachableRuntimeSession attaches only when there is one live same-p
   })
 })
 
+test('selectAttachableRuntimeSession prefers matching session name among multiple live runtimes', () => {
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'owner-a', status: 'live', autoPort: '9527' },
+    { name: 'work', status: 'live', autoPort: '9530' },
+  ], 'work'), {
+    mode: 'attach',
+    session: { name: 'work', status: 'live', autoPort: '9530' },
+  })
+})
+
+test('selectRuntimeLaunchForSession prefers same sessionName then unique live project runtime', () => {
+  const projectA = '/tmp/project-a'
+  const projectB = '/tmp/project-b'
+  const launches = [
+    { id: '1', sessionName: 'debug', projectPath: projectA, status: 'live', autoPort: '9516' },
+    { id: '2', sessionName: 'work', projectPath: projectA, status: 'live', autoPort: '9521' },
+    { id: '3', sessionName: 'other', projectPath: projectB, status: 'live', autoPort: '9530' },
+  ]
+
+  assert.equal(selectRuntimeLaunchForSession(launches, 'work', projectA).autoPort, '9521')
+  assert.equal(selectRuntimeLaunchForSession(launches, 'missing', projectB).autoPort, '9530')
+  assert.equal(selectRuntimeLaunchForSession(launches, 'missing', projectA), null)
+  assert.equal(selectRuntimeLaunchForSession(launches, 'work', ''), null)
+})
+
 test('shouldShutdownRuntimeOnClose keeps attached sessions from closing owner runtime by default', () => {
   assert.equal(shouldShutdownRuntimeOnClose({
     name: 'agent-task',
@@ -910,7 +975,7 @@ test('saveSessionState makes a fresh bound session resolvable before runtime wor
   }
 })
 
-test('ensureSessionPorts avoids autoPort used by another project-scoped session', async () => {
+test('ensureSessionPorts assigns ports without session-file port conflict', async () => {
   const projectA = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-a-'))
   const projectB = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-b-'))
   const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-ports.json`)
@@ -943,7 +1008,9 @@ test('ensureSessionPorts avoids autoPort used by another project-scoped session'
 
     const result = await ensureSessionPorts(state, async () => true)
     assert.equal(result.config.devtoolsPort, '')
-    assert.equal(result.config.autoPort, '9516')
+    // session 不再固化 autoPort，其他 session 的端口不保留到磁盘竞争
+    // fresh-project 分配的第一个可用端口是 9515
+    assert.equal(result.config.autoPort, '9515')
   } finally {
     await fs.promises.rm(projectA, { recursive: true, force: true })
     await fs.promises.rm(projectB, { recursive: true, force: true })

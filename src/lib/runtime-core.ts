@@ -10,8 +10,6 @@
  * 所有函数均为纯函数，不依赖外部状态或 IO。
  */
 
-type AnyRecord = Record<string, any>
-
 // ---- 通用序列化 ----
 
 /**
@@ -19,7 +17,7 @@ type AnyRecord = Record<string, any>
  * 处理 cyclic 引用（通过 WeakSet 检测），
  * Error、BigInt、Date 等特殊类型做针对性转换。
  */
-function toSerializable(value, seen = new WeakSet()) {
+function toSerializable(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
   if (value === null || value === undefined) {
     return value
   }
@@ -49,7 +47,7 @@ function toSerializable(value, seen = new WeakSet()) {
       return '[Circular]'
     }
     seen.add(value)
-    const result = {}
+    const result: Record<string, unknown> = {}
     for (const [key, item] of Object.entries(value)) {
       result[key] = toSerializable(item, seen)
     }
@@ -62,20 +60,18 @@ function toSerializable(value, seen = new WeakSet()) {
 
 // ---- 事件规范化 ----
 
-/** 规范化 DevTools console 事件 payload */
-function normalizeConsoleEvent(payload) {
-  const normalized = toSerializable(payload)
+function normalizeConsoleEvent(payload: unknown): { ts: number; type: string; args: unknown[]; raw: unknown } {
+  const normalized = toSerializable(payload) as Record<string, unknown>
   return {
     ts: Date.now(),
     type: normalized && normalized.type ? String(normalized.type) : 'log',
-    args: Array.isArray(normalized && normalized.args) ? normalized.args : [],
+    args: Array.isArray(normalized && normalized.args) ? (normalized.args as unknown[]) : [],
     raw: normalized,
   }
 }
 
-/** 规范化 DevTools exception 事件 payload */
-function normalizeExceptionEvent(payload) {
-  const normalized = toSerializable(payload)
+function normalizeExceptionEvent(payload: unknown): { ts: number; message: string; stack: string; raw: unknown } {
+  const normalized = toSerializable(payload) as Record<string, unknown>
   return {
     ts: Date.now(),
     message: normalized && normalized.message ? String(normalized.message) : '',
@@ -84,9 +80,8 @@ function normalizeExceptionEvent(payload) {
   }
 }
 
-/** 规范化路由时间线事件 payload */
-function normalizeRouteTimelineEvent(payload) {
-  const normalized = toSerializable(payload) || {}
+function normalizeRouteTimelineEvent(payload: unknown): { seq: number; ts: number; kind: string; from: string; to: string; openType: string; message: string } {
+  const normalized = (toSerializable(payload) || {}) as Record<string, unknown>
   const from = String(normalized.from || '').replace(/^\//u, '')
   const to = String(normalized.to || '').replace(/^\//u, '')
   const openType = String(normalized.openType || 'route')
@@ -106,14 +101,13 @@ function normalizeRouteTimelineEvent(payload) {
  * 规范化路由字符串：去掉前导 / 和查询参数。
  * 例如 "/pages/index/index?foo=bar" → "pages/index/index"
  */
-function normalizeRuntimeRoute(value) {
+function normalizeRuntimeRoute(value: string): string {
   return String(value || '').trim().replace(/^\//u, '').replace(/\?.*$/u, '')
 }
 
 // ---- 事件存储 ----
 
-/** 将采集到的事件追加到 state 中 */
-function appendRuntimeEvents(state, events) {
+function appendRuntimeEvents(state: { consoleEvents: unknown[]; exceptionEvents: unknown[] }, events: { consoleEvents?: unknown[]; exceptionEvents?: unknown[] }): void {
   state.consoleEvents = [
     ...(Array.isArray(state.consoleEvents) ? state.consoleEvents : []),
     ...(events.consoleEvents || []),
@@ -127,47 +121,48 @@ function appendRuntimeEvents(state, events) {
 // ---- 事件格式化 ----
 
 /** 将事件列表通过 formatter 映射为字符串行 */
-function formatRuntimeEventLines(events, formatter) {
+function formatRuntimeEventLines(events: unknown[], formatter: (event: unknown) => string): string[] {
   return (events || []).map(formatter)
 }
 
 /** 格式化 console 事件为单行文本 */
-function formatConsoleEventLine(event) {
-  const args = Array.isArray(event && event.args) ? event.args : []
+function formatConsoleEventLine(event: { type?: string; args?: unknown[] } | undefined): string {
+  const ev = event || {}
+  const args = Array.isArray(ev.args) ? ev.args : []
   const text = args.map((item) => {
     if (typeof item === 'string') {
       return item
     }
     return JSON.stringify(item)
   }).join(' ')
-  return `${event.type || 'log'} ${text}`.trim()
+  return `${ev.type || 'log'} ${text}`.trim()
 }
 
 /** 格式化 exception 事件为单行文本 */
-function formatExceptionEventLine(event) {
-  const message = String((event && event.message) || '').trim()
+function formatExceptionEventLine(event: { message?: string; raw?: unknown } | undefined): string {
+  const message = String(event?.message || '').trim()
   if (message) {
     return message
   }
 
-  return JSON.stringify((event && event.raw) || {})
+  return JSON.stringify(event?.raw || {})
 }
 
 /** 格式化路由时间线事件为单行文本 */
-function formatRouteTimelineLine(event) {
+function formatRouteTimelineLine(event: { message?: string } | undefined): string {
   return String((event && event.message) || '').trim()
 }
 
 // ---- 文本工具 ----
 
 /** 规范化运行时文本：合并空白、去前后空格、截断 80 字符 */
-function normalizeRuntimeIdentityText(value) {
+function normalizeRuntimeIdentityText(value: string): string {
   return String(value || '').replace(/\s+/gu, ' ').trim().slice(0, 80)
 }
 
 /** 从快照节点获取稳定的标识文本 */
-function resolveRuntimeStableText(node) {
-  return normalizeRuntimeIdentityText(node && typeof node === 'object' ? (node.identityText || node.text) : '')
+function resolveRuntimeStableText(node: Record<string, unknown> | null | undefined): string {
+  return normalizeRuntimeIdentityText(node && typeof node === 'object' ? (String(node.identityText || node.text || '')) : '')
 }
 
 // ---- 点击反馈 ----
@@ -178,7 +173,7 @@ function resolveRuntimeStableText(node) {
  * - 前后路径相同 → 提示可能弹窗
  * - 无事件且路径变化 → 空数组
  */
-function buildClickNotices({ pathBefore, pathAfter, routeEvents = [] }) {
+function buildClickNotices({ pathBefore, pathAfter, routeEvents = [] }: { pathBefore?: string; pathAfter?: string; routeEvents?: { message?: string }[] }): string[] {
   if ((routeEvents || []).length > 0) {
     return routeEvents.map(formatRouteTimelineLine)
   }

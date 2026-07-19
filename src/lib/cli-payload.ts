@@ -1,14 +1,14 @@
 /**
- * @param {Record<string, any>} payload
+ * @param {Record<string, unknown>} payload
  * @param {{ all?: boolean }} options
- * @returns {Record<string, any>}
+ * @returns {Record<string, unknown>}
  */
-function summarizeTimelinePayload(payload, options) {
+function summarizeTimelinePayload(payload: Record<string, unknown>, options: { all?: boolean }): Record<string, unknown> {
   if (options.all) {
     return payload
   }
 
-  const events = Array.isArray(payload.events) ? payload.events : []
+  const events = Array.isArray(payload.events) ? (payload.events as Record<string, unknown>[]) : []
   const latestEvents = events.slice(-5)
   return {
     count: events.length,
@@ -24,16 +24,16 @@ function summarizeTimelinePayload(payload, options) {
 }
 
 /**
- * @param {Record<string, any>} payload
+ * @param {Record<string, unknown>} payload
  * @param {{ all?: boolean }} options
- * @returns {Record<string, any>}
+ * @returns {Record<string, unknown>}
  */
-function summarizeSnapshotPayload(payload, options) {
+function summarizeSnapshotPayload(payload: Record<string, unknown>, options: { all?: boolean }): Record<string, unknown> {
   if (options.all) {
     return payload
   }
 
-  const records = Array.isArray(payload.records) ? payload.records.map((record) => ({
+  const records = Array.isArray(payload.records) ? (payload.records as Record<string, unknown>[]).map((record) => ({
     ref: record.ref,
     kind: record.kind,
     text: record.text,
@@ -41,8 +41,8 @@ function summarizeSnapshotPayload(payload, options) {
     ...(record.rectPct ? { rectPct: record.rectPct } : {}),
   })) : []
 
-  const summary: Record<string, any> = {
-    route: payload.state && payload.state.route ? payload.state.route : null,
+  const summary: Record<string, unknown> = {
+    route: payload.state && (payload.state as Record<string, unknown>).route ? (payload.state as Record<string, unknown>).route : null,
     count: records.length,
     records,
     lines: Array.isArray(payload.lines) ? payload.lines : [],

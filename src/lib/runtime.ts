@@ -17,6 +17,7 @@ const {
 } = require('./runtime-logs')
 const {
   formatAutomationCliError,
+  explainDevtoolsFailureRaw,
   parseAutomationCliFailure,
   detectAutomationCliProgressTimeout,
   parseResolvedIdePort,
@@ -141,6 +142,7 @@ module.exports = {
   formatExceptionEventLine,
   // ---- runtime-cli-shared ----
   formatAutomationCliError,
+  explainDevtoolsFailureRaw,
   parseAutomationCliFailure,
   detectAutomationCliProgressTimeout,
   parseResolvedIdePort,

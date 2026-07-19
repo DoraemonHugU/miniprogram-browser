@@ -14,12 +14,12 @@ const {
   detectAutomationCliProgressTimeout,
 } = require('./runtime-cli-shared')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
 type ErrorWithMeta = Error & AnyRecord
 
 // ---- 项目映射辅助函数 ----
 
-function normalizeProjectMapLinuxPrefix(prefix) {
+function normalizeProjectMapLinuxPrefix(prefix: string): string {
   const normalized = path.posix.normalize(String(prefix || '').trim().replace(/\\/gu, '/'))
   if (!normalized || normalized === '.' || !normalized.startsWith('/')) {
     throw new Error('Invalid project map. Use --project-map <linux=windows> or WECHAT_DEVTOOLS_PROJECT_MAP, for example /home/wang/xuexi/projects=P:\\projects.')
@@ -27,14 +27,14 @@ function normalizeProjectMapLinuxPrefix(prefix) {
   return normalized === '/' ? normalized : normalized.replace(/\/+$/u, '')
 }
 
-function normalizeProjectMapWindowsPrefix(prefix) {
+function normalizeProjectMapWindowsPrefix(prefix: string): string {
   let normalized = String(prefix || '').trim().replace(/\//gu, '\\').replace(/\\+$/u, '')
   normalized = normalized.replace(/^([a-z]):/iu, (_match, drive) => `${String(drive).toUpperCase()}:`)
   return normalized
 }
 
-function parseProjectMapEntries(rawMap) {
-  const entries = []
+function parseProjectMapEntries(rawMap: string): { linuxPrefix: string; windowsPrefix: string }[] {
+  const entries: { linuxPrefix: string; windowsPrefix: string }[] = []
   if (!rawMap) {
     return entries
   }
@@ -55,12 +55,12 @@ function parseProjectMapEntries(rawMap) {
   return entries
 }
 
-function matchesProjectMapPrefix(sourcePath, linuxPrefix) {
+function matchesProjectMapPrefix(sourcePath: string, linuxPrefix: string): boolean {
   const normalizedSource = path.posix.normalize(String(sourcePath || '').trim().replace(/\\/gu, '/'))
   return normalizedSource === linuxPrefix || normalizedSource.startsWith(`${linuxPrefix}/`)
 }
 
-function resolveMappedDevtoolsProjectPath(sourcePath, rawMap) {
+function resolveMappedDevtoolsProjectPath(sourcePath: string, rawMap: string): string {
   if (!sourcePath || !rawMap) {
     return ''
   }
@@ -82,7 +82,7 @@ function resolveMappedDevtoolsProjectPath(sourcePath, rawMap) {
 
 // ---- DevTools 项目路径解析 ----
 
-function resolveDevtoolsProjectPath(config, options: AnyRecord = {}) {
+function resolveDevtoolsProjectPath(config: AnyRecord, options: AnyRecord = {}): string {
   const converter = options.toWindowsPath || toWindowsPath
   const explicitPath = String((config && config.devtoolsProjectPath) || '').trim()
   const projectPath = String((config && config.projectPath) || '').trim()
@@ -97,7 +97,7 @@ function resolveDevtoolsProjectPath(config, options: AnyRecord = {}) {
 
   if (hasWindowsBundle) {
     if (!explicitPath) {
-      const mappedPath = resolveMappedDevtoolsProjectPath(projectPath, config && config.devtoolsProjectMap)
+      const mappedPath = resolveMappedDevtoolsProjectPath(projectPath, String((config && config.devtoolsProjectMap) || ''))
       if (mappedPath) {
         devtoolsProjectPath = mappedPath
       }
@@ -113,7 +113,7 @@ function resolveDevtoolsProjectPath(config, options: AnyRecord = {}) {
 
 // ---- 构建 CLI 参数 ----
 
-function buildAutomationArgs(config, options: AnyRecord = {}) {
+function buildAutomationArgs(config: AnyRecord, options: AnyRecord = {}): { hasWindowsBundle: boolean; args: string[]; devtoolsProjectPath: string; projectStrategy: string } {
   const explicitProjectPath = String((config && config.devtoolsProjectPath) || '').trim()
   const hasProjectMap = Boolean(String((config && config.devtoolsProjectMap) || '').trim())
   const devtoolsProjectPath = resolveDevtoolsProjectPath(config, options)
@@ -158,7 +158,7 @@ function buildAutomationArgs(config, options: AnyRecord = {}) {
   }
 }
 
-function buildDevtoolsOpenArgs(config, options: AnyRecord = {}) {
+function buildDevtoolsOpenArgs(config: AnyRecord, options: AnyRecord = {}): { args: string[]; devtoolsProjectPath: string; projectStrategy: string } {
   const automationArgs = buildAutomationArgs(config, options)
   const args = [
     'open',
@@ -179,7 +179,7 @@ function buildDevtoolsOpenArgs(config, options: AnyRecord = {}) {
 
 // ---- CLI 验证与运行 ----
 
-function normalizeCliPath(rawPath) {
+function normalizeCliPath(rawPath: string): string {
   const trimmed = String(rawPath || '').trim()
   if (!trimmed) {
     return ''
@@ -207,7 +207,7 @@ function normalizeCliPath(rawPath) {
   return trimmed
 }
 
-function validateAutomationCliConfig(config, options: AnyRecord = {}) {
+function validateAutomationCliConfig(config: AnyRecord, options: AnyRecord = {}): void {
   const rawPath = String((config && config.cliPath) || '').trim()
   if (!rawPath) {
     const error = new Error('Missing WeChat DevTools CLI path. Set WECHAT_DEVTOOLS_CLI or pass --cli-path <path>.') as ErrorWithMeta
@@ -259,15 +259,15 @@ function validateAutomationCliConfig(config, options: AnyRecord = {}) {
   }
 }
 
-function runDevtoolsCli(config, args, options: AnyRecord = {}) {
+function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = {}): AnyRecord {
   validateAutomationCliConfig(config, options)
-  const cliDirectory = path.dirname(config.cliPath)
+  const cliDirectory = path.dirname(String(config.cliPath || ''))
   const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
   const timeoutMs = Number(options.timeoutMs || 30000)
 
   // cliPath 经过 normalizeCliPath 已统一为 cli.js，但 Windows node.exe
   // 不认 /mnt/ 路径，需转成 Windows 格式。
-  const cliJsArg = hasWindowsBundle ? toWindowsPath(config.cliPath) : config.cliPath
+  const cliJsArg = hasWindowsBundle ? toWindowsPath(String(config.cliPath || '')) : String(config.cliPath || '')
 
   const result = hasWindowsBundle
     ? spawnSync(path.join(cliDirectory, 'node.exe'), [
@@ -278,7 +278,7 @@ function runDevtoolsCli(config, args, options: AnyRecord = {}) {
       encoding: 'utf8',
       timeout: timeoutMs,
     })
-    : spawnSync(config.cliPath, args, {
+    : spawnSync(String(config.cliPath || ''), args, {
       encoding: 'utf8',
       timeout: timeoutMs,
     })
@@ -289,12 +289,12 @@ function runDevtoolsCli(config, args, options: AnyRecord = {}) {
   }
 }
 
-function runAutomationCli(config, options: AnyRecord = {}) {
+function runAutomationCli(config: AnyRecord, options: AnyRecord = {}): AnyRecord {
   const { args } = buildAutomationArgs(config, options)
   return runDevtoolsCli(config, args, options)
 }
 
-function openDevtoolsProject(config, options: AnyRecord = {}) {
+function openDevtoolsProject(config: AnyRecord, options: AnyRecord = {}): AnyRecord {
   const { args, devtoolsProjectPath, projectStrategy } = buildDevtoolsOpenArgs(config, options)
   const result = runDevtoolsCli(config, args, { timeoutMs: Number(options.timeoutMs || 30000), ...options })
   const failure = parseAutomationCliFailure(result, config)
@@ -327,7 +327,7 @@ function openDevtoolsProject(config, options: AnyRecord = {}) {
   }
 }
 
-function resolveDevtoolsProjectPathForClose(config, options: AnyRecord = {}) {
+function resolveDevtoolsProjectPathForClose(config: AnyRecord, options: AnyRecord = {}): string {
   const explicitPath = String((config && config.devtoolsProjectPath) || '').trim()
   if (explicitPath) {
     return explicitPath
@@ -355,7 +355,7 @@ function resolveDevtoolsProjectPathForClose(config, options: AnyRecord = {}) {
   return isWslUncPath(windowsProjectPath) ? '' : windowsProjectPath
 }
 
-function closeDevtoolsProject(config, options: AnyRecord = {}) {
+function closeDevtoolsProject(config: AnyRecord, options: AnyRecord = {}): AnyRecord {
   const projectPath = resolveDevtoolsProjectPathForClose(config, options)
   if (!projectPath) {
     return {
@@ -389,16 +389,17 @@ function closeDevtoolsProject(config, options: AnyRecord = {}) {
       raw: result.raw,
     }
   } catch (error) {
+    const err = error as ErrorWithMeta
     return {
       attempted: true,
       ok: false,
       projectPath,
-      error: error && error.message ? String(error.message) : String(error),
+      error: err && err.message ? String(err.message) : String(err),
     }
   }
 }
 
-function enableAutomation(config, options: AnyRecord = {}) {
+function enableAutomation(config: AnyRecord, options: AnyRecord = {}): AnyRecord {
   // openPrefer 模式：先 open（GUI 项目打开）再 auto（自动化启用）。
   // 默认跳过 open 直接 auto，因为 devtools auto 已涵盖启动 IDE + 打开项目 + 自动化注册的全部流程，
   // 而 devtools open 在 WSL/UNC 路径下始终抛代码 17（QR_PATH_NOT_VALID_OR_NOT_EXIST），
@@ -407,7 +408,7 @@ function enableAutomation(config, options: AnyRecord = {}) {
   if (options.openFirst) {
     preOpen = openDevtoolsProject(config, options)
     if (preOpen && !preOpen.ok) {
-      const error = new Error(preOpen.error || 'Failed to open WeChat DevTools project before automation startup') as ErrorWithMeta
+      const error = new Error(String(preOpen.error || 'Failed to open WeChat DevTools project before automation startup')) as ErrorWithMeta
       error.code = preOpen.code || 'DEVTOOLS_CLI_ERROR'
       error.hint = preOpen.hint
       error.raw = preOpen.raw

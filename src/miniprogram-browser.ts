@@ -2,7 +2,48 @@
 
 const path = require('node:path')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
+
+/** CLI 配置对象（由调用方传入，字段开放给运行时补充）。 */
+interface CliConfig {
+  projectPath: string
+  autoPort?: string
+  devtoolsPort?: string
+  cliPath?: string
+  sessionDir?: string
+  screenshotDir?: string
+  tempScreenshotDir?: string
+  legacySessionDir?: string
+  devtoolsProjectPath?: string
+  devtoolsProjectMap?: string
+  devtoolsProjectAutoLink?: string
+  devtoolsProjectMirror?: string
+  interactiveSelectors?: string
+  repoRoot?: string
+  [key: string]: unknown
+}
+
+/** Session 状态对象。携带 config 与运行时字段。 */
+interface SessionState {
+  name: string
+  bound: boolean
+  config: CliConfig
+  route: string
+  runtimeAttached?: boolean
+  runtimeLaunchId?: string | null
+  runtimeOwnerSession?: string | null
+  runtimeAttachedAt?: number | string | null
+  runtimeLaunchStatus?: string
+  portResolution?: {
+    autoPortAssigned: boolean
+    devtoolsPortAssigned: boolean
+    [key: string]: unknown
+  } | null
+  routeEvents?: AnyRecord[]
+  lastVisualProbe?: unknown
+  pendingVisualAction?: unknown
+  [key: string]: unknown
+}
 
 const DEFAULT_OPEN_TIMEOUT_MS = 120000
 const DEFAULT_OPEN_STABLE_TIMEOUT_MS = 15000
@@ -75,6 +116,8 @@ const {
   runtimeLockName,
   selectAttachableRuntimeSession,
   shouldShutdownRuntimeOnClose,
+  pickAutoProjectSessionName,
+  nextAutoProjectSessionName,
 } = require('./lib/session-store')
 
 const {
@@ -132,29 +175,29 @@ const {
   captureVisualScreenshot,
 } = require('./lib/visual')
 
-function mergeRecordLayouts(records, rects) {
-  const identityOf = (item) => item && (item.ref || item.businessKey || item.selector || '')
-  const byRef = new Map((rects || []).map((item) => [identityOf(item), item.rectPct]))
-  return (records || []).map((record) => ({
+function mergeRecordLayouts(records: AnyRecord[], rects: AnyRecord[]) {
+  const identityOf = (item: AnyRecord) => item && (item.ref || item.businessKey || item.selector || '')
+  const byRef = new Map((rects || []).map((item: AnyRecord) => [identityOf(item), item.rectPct]))
+  return (records || []).map((record: AnyRecord) => ({
     ...record,
     ...(byRef.has(identityOf(record)) ? { rectPct: byRef.get(identityOf(record)) } : {}),
   }))
 }
 
-function flattenRuntimeNodes(nodes, parentRef = '') {
-  const flattened = []
+function flattenRuntimeNodes(nodes: AnyRecord[], parentRef: string = ''): AnyRecord[] {
+  const flattened: AnyRecord[] = []
   for (const node of nodes || []) {
-    const current = {
+    const current: AnyRecord = {
       ...node,
       parentRef,
     }
     flattened.push(current)
-    flattened.push(...flattenRuntimeNodes(node.children || [], current.ref || current.businessKey || ''))
+    flattened.push(...flattenRuntimeNodes((node.children as AnyRecord[]) || [], String(current.ref || current.businessKey || '')))
   }
   return flattened
 }
 
-function shouldEmitPreludeNotices(command) {
+function shouldEmitPreludeNotices(command: string) {
   return !['logs', 'exceptions', 'await', 'wait'].includes(String(command || ''))
 }
 
@@ -164,7 +207,7 @@ function shouldEmitPreludeNotices(command) {
  * @param {string|null} scopeRef
  * @param {any} [options]
  */
-function shouldAttemptVisualProbe(state, route, scopeRef = null, options) {
+function shouldAttemptVisualProbe(state: SessionState, route: string, scopeRef: string | null = null, options: AnyRecord = {}) {
   if (!options || !options.visual) {
     return false
   }
@@ -181,10 +224,10 @@ function shouldAttemptVisualProbe(state, route, scopeRef = null, options) {
     return true
   }
 
-  return state.lastVisualProbe.route !== route
+  return (state.lastVisualProbe as AnyRecord).route !== route
 }
 
-function markPendingVisualAction(state, action, route) {
+function markPendingVisualAction(state: SessionState, action: string, route: string) {
   state.pendingVisualAction = {
     action,
     route,
@@ -192,7 +235,7 @@ function markPendingVisualAction(state, action, route) {
   }
 }
 
-async function captureVisualProbeForSnapshot(miniProgram, page, state, records, screenshotPath) {
+async function captureVisualProbeForSnapshot(miniProgram: AnyRecord, page: AnyRecord, state: SessionState, records: AnyRecord[], screenshotPath: string) {
   try {
     return await createVisualProbe({
       miniProgram,
@@ -201,14 +244,14 @@ async function captureVisualProbeForSnapshot(miniProgram, page, state, records, 
       config: state.config,
       screenshotPath,
       cleanupScreenshot: Boolean(screenshotPath),
-      captureScreenshot: async (instance, targetPath) => captureScreenshotToPath(instance, targetPath, 2500),
+      captureScreenshot: async (instance: AnyRecord, targetPath: string) => captureScreenshotToPath(instance, targetPath, 2500),
     })
   } catch (_) {
     return null
   }
 }
 
-function maybeBuildImplicitVisualChange(state, currentProbe) {
+function maybeBuildImplicitVisualChange(state: SessionState, currentProbe: AnyRecord | null) {
   const pending = state.pendingVisualAction
   const previous = state.lastVisualProbe
   if (!pending || !previous || !currentProbe) {
@@ -217,9 +260,9 @@ function maybeBuildImplicitVisualChange(state, currentProbe) {
     return null
   }
 
-  let visual = null
-  if (pending.route === currentProbe.route && previous.route === currentProbe.route) {
-    visual = buildVisualDiffSummary(previous, currentProbe)
+  let visual: AnyRecord | null = null
+  if ((pending as AnyRecord).route === currentProbe.route && (previous as AnyRecord).route === currentProbe.route) {
+    visual = buildVisualDiffSummary(previous as AnyRecord, currentProbe)
   }
 
   state.lastVisualProbe = currentProbe
@@ -231,7 +274,7 @@ function printHelp() {
   console.log(buildHelpText())
 }
 
-function printCommandHelp(command) {
+function printCommandHelp(command: string) {
   const help = buildCommandHelpText(command)
   if (!help) {
     throw new Error(`Unknown help topic: ${command}`)
@@ -252,7 +295,7 @@ async function readStdin() {
   return content
 }
 
-function buildExplicitOverrides(options) {
+function buildExplicitOverrides(options: AnyRecord) {
   return {
     projectPath: options.project,
     devtoolsProjectPath: options.devtoolsProject,
@@ -264,7 +307,7 @@ function buildExplicitOverrides(options) {
   }
 }
 
-function withDiscoveredProjectScope(options, command) {
+function withDiscoveredProjectScope(options: AnyRecord, command: string): AnyRecord {
   if (options.project || options.all) {
     return options
   }
@@ -277,11 +320,52 @@ function withDiscoveredProjectScope(options, command) {
   return {
     ...options,
     project: currentProject.projectPath,
-    projectDiscovered: true,
   }
 }
 
-async function resolveSession(options) {
+/**
+ * 省略 --session 时：按项目生成/复用 {slug}-xN。
+ * - 默认复用已有最大序号自动 session
+ * - open --fresh 且未显式 session 时分配下一个 xN
+ * 不依赖 agent 名称。
+ */
+async function ensureImplicitSessionName(options: AnyRecord, command: string): Promise<AnyRecord> {
+  if (options.sessionProvided) {
+    return options
+  }
+
+  const projectPath = String(options.project || '').trim()
+  if (!projectPath) {
+    if (!options.session || options.session === 'default') {
+      return {
+        ...options,
+        session: '',
+      }
+    }
+    return options
+  }
+
+  const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
+  const states = await listSessionStates({
+    ...baseConfig,
+    projectPath,
+  })
+  const existingNames = states.map((item: AnyRecord) => String(item.name || '')).filter(Boolean)
+
+  const allocateFresh = (command === 'open' || command === 'connect') && Boolean(options.fresh)
+  const sessionName = allocateFresh
+    ? nextAutoProjectSessionName(existingNames, projectPath)
+    : pickAutoProjectSessionName(existingNames, projectPath)
+
+  return {
+    ...options,
+    session: sessionName,
+    sessionProvided: false,
+    sessionAutoAssigned: true,
+  }
+}
+
+async function resolveSession(options: AnyRecord) {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
   const explicitOverrides = buildExplicitOverrides(options)
   const initialConfig = mergeConfigOverrides(baseConfig, explicitOverrides)
@@ -295,11 +379,83 @@ async function resolveSession(options) {
     validateSessionPortConflicts(state.config, otherConfigs)
   }
 
+  // session 不固化 autoPort：后续命令先从 runtime 池按 sessionName 回绑，
+  // 避免 ensureSessionPorts 重新分配空闲端口导致连到错误 endpoint。
+  if (!explicitOverrides.autoPort && !options.fresh) {
+    await bindSessionRuntimeFromPool(state)
+  }
+
   await ensureSessionPorts(state)
   return state
 }
 
-async function resolveTransientDoctorState(options) {
+/**
+ * 从 RuntimeLaunchRecord 池为当前 session 回绑 autoPort（瞬态，不写回 session 文件）。
+ * 优先匹配同 sessionName 的 live launch；否则同项目唯一 live。
+ * 探测失败的 launch 标记为 stale，继续尝试同 session 的其他候选。
+ */
+async function bindSessionRuntimeFromPool(state: SessionState): Promise<boolean> {
+  const projectPath = String(state.config.projectPath || '').trim()
+  if (!projectPath) {
+    return false
+  }
+  if (String((state.config as AnyRecord).autoPort || '').trim()) {
+    return true
+  }
+
+  const launches = await listRuntimeLaunches({ ...state.config, projectPath })
+  const resolvedProject = path.resolve(projectPath)
+  const preferred = String(state.name || '').trim()
+  const candidates = launches.filter((item: AnyRecord) => {
+    if (!item || !item.autoPort || item.status !== 'live') {
+      return false
+    }
+    const itemProject = item.projectPath ? path.resolve(String(item.projectPath)) : ''
+    return itemProject === resolvedProject
+  })
+
+  // 同 sessionName 优先，保持 registry 的 updatedAt 降序
+  const ordered = [
+    ...candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred),
+    ...candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() !== preferred),
+  ]
+
+  // 无同名时仅允许唯一 live（与 selectRuntimeLaunchForSession 一致）
+  const own = ordered.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred)
+  const tryList = own.length > 0
+    ? own
+    : (candidates.length === 1 ? candidates : [])
+
+  for (const selected of tryList) {
+    const live = await isAutomationEndpointLive(
+      { ...state.config, autoPort: selected.autoPort },
+      { timeoutMs: 1000 },
+    ).catch(() => false)
+    if (!live) {
+      if (selected.id) {
+        await updateRuntimeLaunch(selected.id, state.config, { status: 'stale' }).catch(() => null)
+      }
+      continue
+    }
+
+    ;(state.config as AnyRecord).autoPort = String(selected.autoPort)
+    if (selected.devtoolsPort) {
+      ;(state.config as AnyRecord).devtoolsPort = String(selected.devtoolsPort)
+    }
+    if (selected.id) {
+      state.runtimeLaunchId = String(selected.id)
+    }
+    if (selected.sessionName && selected.sessionName !== state.name) {
+      state.runtimeAttached = true
+      state.runtimeOwnerSession = String(selected.sessionName)
+    }
+    return true
+  }
+
+  return false
+}
+
+async function resolveTransientDoctorState(options: AnyRecord) {
   const explicitOverrides = buildExplicitOverrides(options)
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), explicitOverrides)
   const state = createEmptySessionState({
@@ -311,24 +467,24 @@ async function resolveTransientDoctorState(options) {
   return state
 }
 
-function resolveOpenTimeoutMs(options) {
+function resolveOpenTimeoutMs(options: AnyRecord) {
   const value = Number(options.timeout || DEFAULT_OPEN_TIMEOUT_MS)
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_OPEN_TIMEOUT_MS
 }
 
-function resolveOpenStableTimeoutMs(options) {
+function resolveOpenStableTimeoutMs(options: AnyRecord) {
   const openTimeoutMs = resolveOpenTimeoutMs(options)
   return Math.max(1000, Math.min(DEFAULT_OPEN_STABLE_TIMEOUT_MS, Math.floor(openTimeoutMs / 2)))
 }
 
-function createOpenTimeoutError(timeoutMs) {
-  const error = new Error(`open timed out after ${timeoutMs}ms`) as AnyRecord
+function createOpenTimeoutError(timeoutMs: number) {
+  const error = new Error(`open timed out after ${timeoutMs}ms`) as unknown as AnyRecord
   error.code = 'OPEN_TIMEOUT'
   error.hint = `phase=open; timeoutMs=${timeoutMs}`
   return error
 }
 
-async function withOpenTimeout(task, timeoutMs) {
+async function withOpenTimeout(task: () => Promise<AnyRecord>, timeoutMs: number) {
   let timer
   try {
     return await Promise.race([
@@ -344,14 +500,14 @@ async function withOpenTimeout(task, timeoutMs) {
   }
 }
 
-async function cleanupStartedOpenRuntime(state) {
-  const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 })
+async function cleanupStartedOpenRuntime(state: SessionState) {
+  const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 }) as unknown as AnyRecord
   await waitAfterDevtoolsCloseRequest(closeResult)
   const cleanup = {
     projectClosed: Boolean(closeResult && closeResult.ok),
     closeVerified: false,
     closeAttempted: Boolean(closeResult && closeResult.attempted),
-  } as AnyRecord
+  } as unknown as AnyRecord
 
   if (closeResult && closeResult.reason) {
     cleanup.reason = closeResult.reason
@@ -385,13 +541,13 @@ async function cleanupStartedOpenRuntime(state) {
   return cleanup
 }
 
-async function waitAfterDevtoolsCloseRequest(closeResult) {
+async function waitAfterDevtoolsCloseRequest(closeResult: AnyRecord) {
   if (closeResult && closeResult.ok && DEVTOOLS_CLOSE_GRACE_MS > 0) {
     await sleep(DEVTOOLS_CLOSE_GRACE_MS)
   }
 }
 
-async function recordStartedRuntimeLaunch(state, metadata: AnyRecord = {}) {
+async function recordStartedRuntimeLaunch(state: SessionState, metadata: AnyRecord = {}) {
   const automationArgs = buildAutomationArgs(state.config)
   const id = `${state.name}-${Date.now()}-${process.pid}`
   const record = await recordRuntimeLaunch(state.name, state.config, {
@@ -408,15 +564,90 @@ async function recordStartedRuntimeLaunch(state, metadata: AnyRecord = {}) {
   return record
 }
 
-async function markStartedRuntimeLaunch(state, patch: AnyRecord = {}) {
+async function markStartedRuntimeLaunch(state: SessionState, patch: AnyRecord = {}) {
   if (!state || !state.runtimeLaunchId) {
     return null
   }
   return await updateRuntimeLaunch(state.runtimeLaunchId, state.config, patch).catch(() => null)
 }
 
-async function enrichOpenFailure(error, state, options) {
-  const openError = error || new Error('open failed')
+/**
+ * 成功 open/connect 后确保 runtime 池有一条 live 记录。
+ * connected/attached 模式原先不写 launch，导致后续命令无法按 session 回绑 autoPort。
+ */
+async function ensureLiveRuntimeLaunch(state: SessionState, metadata: AnyRecord = {}) {
+  const autoPort = String((state.config as AnyRecord).autoPort || metadata.autoPort || '').trim()
+  if (!autoPort || !state.config.projectPath) {
+    return null
+  }
+
+  const automationArgs = buildAutomationArgs(state.config)
+  const patch = {
+    ...metadata,
+    status: 'live',
+    autoPort,
+    projectStrategy: automationArgs.projectStrategy,
+    devtoolsProjectPath: automationArgs.devtoolsProjectPath,
+    devtoolsPort: String((state.config as AnyRecord).devtoolsPort || metadata.devtoolsPort || ''),
+    route: metadata.route || state.route || '',
+  } as AnyRecord
+
+  if (state.runtimeLaunchId) {
+    const updated = await updateRuntimeLaunch(state.runtimeLaunchId, state.config, patch).catch(() => null)
+    if (updated) {
+      state.runtimeLaunchStatus = 'live'
+      return updated
+    }
+  }
+
+  // 尝试复用同 session + 同 autoPort 的已有记录
+  const launches = await listRuntimeLaunches({ ...state.config, projectPath: state.config.projectPath })
+  const existing = launches.find((item: AnyRecord) => (
+    String(item.sessionName || '').trim() === state.name
+    && String(item.autoPort || '').trim() === autoPort
+  ))
+  if (existing && existing.id) {
+    const updated = await updateRuntimeLaunch(existing.id, state.config, patch).catch(() => null)
+    if (updated) {
+      state.runtimeLaunchId = String(existing.id)
+      state.runtimeLaunchStatus = 'live'
+      return updated
+    }
+  }
+
+  const record = await recordRuntimeLaunch(state.name, state.config, {
+    id: `${state.name}-${Date.now()}-${process.pid}`,
+    ...patch,
+  })
+  if (record && record.id) {
+    state.runtimeLaunchId = String(record.id)
+    state.runtimeLaunchStatus = 'live'
+  }
+
+  // 同 session 其他不同 autoPort 的 live 记录标 stale，避免后续回绑到死端口
+  try {
+    const launches = await listRuntimeLaunches({ ...state.config, projectPath: state.config.projectPath })
+    for (const item of launches) {
+      if (!item || !item.id || item.status !== 'live') {
+        continue
+      }
+      if (String(item.sessionName || '').trim() !== state.name) {
+        continue
+      }
+      if (String(item.autoPort || '').trim() === autoPort) {
+        continue
+      }
+      await updateRuntimeLaunch(item.id, state.config, { status: 'stale' }).catch(() => null)
+    }
+  } catch (_) {
+    // ignore cleanup failures
+  }
+
+  return record
+}
+
+async function enrichOpenFailure(error: AnyRecord, state: SessionState, options: AnyRecord) {
+  const openError: AnyRecord = error as AnyRecord || new Error('open failed') as unknown as AnyRecord
   const genericTimeoutHint = `phase=open; timeoutMs=${resolveOpenTimeoutMs(options)}`
   if (openError && openError.code === 'AUTOMATION_CONNECT_TIMEOUT') {
     const timeoutError = createOpenTimeoutError(resolveOpenTimeoutMs(options))
@@ -449,25 +680,25 @@ async function enrichOpenFailure(error, state, options) {
   return openError
 }
 
-function shouldCleanupStartedOpenRuntime(state, openOptions: AnyRecord = {}, error: AnyRecord = {}) {
+function shouldCleanupStartedOpenRuntime(state: SessionState, openOptions: AnyRecord = {}, error: AnyRecord = {}) {
   if (error && error.runtimeMayContinue) {
     return false
   }
   return openOptions.mode === 'started' && !state.runtimeAttached
 }
 
-function shouldClearFailedOpenSession(closeResult) {
+function shouldClearFailedOpenSession(closeResult: AnyRecord) {
   if (!closeResult || !closeResult.attempted) {
     return true
   }
   return Boolean(closeResult.ok)
 }
 
-async function openSessionWithDiagnostics(state, options, openOptions: AnyRecord = {}) {
+async function openSessionWithDiagnostics(state: SessionState, options: AnyRecord, openOptions: AnyRecord = {}) {
   try {
     return await connectOpenSession(state, options, openOptions)
-  } catch (error) {
-    const openError = await enrichOpenFailure(error, state, options)
+  } catch (error: unknown) {
+    const openError = await enrichOpenFailure(error as AnyRecord, state, options)
     if (shouldCleanupStartedOpenRuntime(state, openOptions, openError)) {
       const cleanup = await cleanupStartedOpenRuntime(state).catch((cleanupError) => ({
         projectClosed: false,
@@ -476,7 +707,7 @@ async function openSessionWithDiagnostics(state, options, openOptions: AnyRecord
         error: cleanupError && cleanupError.message ? String(cleanupError.message) : String(cleanupError),
       }))
       openError.diagnostics = {
-        ...(openError.diagnostics || {}),
+        ...((openError.diagnostics as AnyRecord) || {}),
         cleanup,
       }
     }
@@ -484,10 +715,7 @@ async function openSessionWithDiagnostics(state, options, openOptions: AnyRecord
   }
 }
 
-async function handleOpen(state, options) {
-  if (!options.sessionProvided) {
-    throw new Error('首次 open/connect 必须显式传 --session <name>。')
-  }
+async function handleOpen(state: SessionState, options: AnyRecord) {
   assertProjectPath(state.config)
 
   const currentEndpointLive = state.config.autoPort
@@ -496,17 +724,35 @@ async function handleOpen(state, options) {
   if (!currentEndpointLive && !options.fresh && !options.autoPort) {
     const attachResult = await resolveAttachableRuntime(state)
     if (attachResult.mode === 'attach') {
-      attachStateToRuntime(state, attachResult.ownerState)
-      await saveSessionState(state)
-      const attached = await openSessionWithDiagnostics(state, options, {
-        mode: 'attached',
-        attachedTo: attachResult.ownerState.name,
-      })
-      emitOpenResult(attached, options)
-      return
+      const sessionInfo = attachResult.session as AnyRecord
+      // 从 runtime 池获取 autoPort，不依赖 session 固化
+      const autoPort = sessionInfo.autoPort as string | undefined
+      if (autoPort) {
+        (state.config as AnyRecord).autoPort = autoPort
+      }
+      // 检查 endpoint 是否存活
+      const live = await isAutomationEndpointLive(state.config, { timeoutMs: 1000 }).catch(() => false)
+      if (!live) {
+        // runtime record 标记为 stale 但实际不可用，继续走 start 流程
+        delete (state.config as AnyRecord).autoPort
+      } else {
+        await saveSessionState(state)
+        const attached = await openSessionWithDiagnostics(state, options, {
+          mode: 'attached',
+          attachedTo: sessionInfo.name || '',
+        })
+        await ensureLiveRuntimeLaunch(state, {
+          route: attached.path || '',
+          autoPort: attached.autoPort || state.config.autoPort,
+          devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
+        })
+        await saveSessionState(state)
+        emitOpenResult(attached, options)
+        return
+      }
     }
     if (attachResult.mode === 'ambiguous') {
-      const error = new Error('同项目存在多个 live automation session，open 不会静默选择；请显式使用其中一个 --session，或传 --fresh 尝试启动新 runtime。') as AnyRecord
+      const error = new Error('同项目存在多个 live automation session，open 不会静默选择；请显式使用其中一个 --session，或传 --fresh 尝试启动新 runtime。') as unknown as AnyRecord
       error.code = 'SESSION_CONFLICT'
       error.hint = `liveSameProjectSessions=${attachResult.sessions.length}; explicitSessionRequired`
       error.diagnostics = {
@@ -536,16 +782,17 @@ async function handleOpen(state, options) {
         attachedTo: state.runtimeAttached ? state.runtimeOwnerSession : '',
       })
       break
-    } catch (error) {
-      if (!shouldRetryOpenWithAnotherAutoPort(state, options, openMode, error, attempt)) {
-        error.diagnostics = {
-          ...(error.diagnostics || {}),
+    } catch (error: unknown) {
+      const caughtError: AnyRecord = error as AnyRecord
+      if (!shouldRetryOpenWithAnotherAutoPort(state, options, openMode, caughtError, attempt)) {
+        caughtError.diagnostics = {
+          ...((caughtError.diagnostics as AnyRecord) || {}),
           attemptedAutoPorts: [...attemptedAutoPorts, state.config.autoPort].filter(Boolean),
         }
-        throw error
+        throw caughtError
       }
 
-      attemptedAutoPorts.push(state.config.autoPort)
+      attemptedAutoPorts.push(state.config.autoPort as string)
       await reassignOpenAutoPort(state, attemptedAutoPorts)
     }
   }
@@ -557,17 +804,17 @@ async function handleOpen(state, options) {
   if (attemptedAutoPorts.length) {
     result.attemptedAutoPorts = [...attemptedAutoPorts, result.autoPort].filter(Boolean)
   }
-  if (openMode === 'started') {
-    await markStartedRuntimeLaunch(state, {
-      status: 'live',
-      route: result.path || '',
-    })
-  }
+  // 任意成功模式都要把 autoPort 写回 runtime 池，后续 snapshot/click 才能回绑
+  await ensureLiveRuntimeLaunch(state, {
+    route: result.path || '',
+    autoPort: result.autoPort || state.config.autoPort,
+    devtoolsPort: result.devtoolsPort || state.config.devtoolsPort,
+  })
   await saveSessionState(state)
   emitOpenResult(result, options)
 }
 
-function shouldRetryOpenWithAnotherAutoPort(state, options, openMode, error: AnyRecord = {}, attempt = 1) {
+function shouldRetryOpenWithAnotherAutoPort(state: SessionState, options: AnyRecord, openMode: string, error: AnyRecord = {}, attempt: number = 1) {
   if (openMode !== 'started') {
     return false
   }
@@ -588,7 +835,8 @@ function shouldRetryOpenWithAnotherAutoPort(state, options, openMode, error: Any
   if (code === 'DEVTOOLS_AUTOMATION_SERVER_FAILED' || code === 'APP_LAUNCH_TIMEOUT' || code === 'WINDOWS_SOCKET_EXHAUSTED') {
     return false
   }
-  const startupHintCodes = new Set(((error.diagnostics && error.diagnostics.startupHints) || []).map((item) => item && item.code).filter(Boolean))
+  const startupHints = ((error.diagnostics as AnyRecord | undefined)?.startupHints as AnyRecord[] | undefined) || []
+  const startupHintCodes = new Set(startupHints.map((item: AnyRecord) => item && item.code).filter(Boolean) as string[])
   if (startupHintCodes.has('cli-server-start-error') || startupHintCodes.has('app-launch-timeout') || startupHintCodes.has('windows-socket-10055')) {
     return false
   }
@@ -601,11 +849,11 @@ function shouldRetryOpenWithAnotherAutoPort(state, options, openMode, error: Any
     return true
   }
 
-  const causeMessage = String(error && error.cause && error.cause.message ? error.cause.message : '')
+  const causeMessage = String(error && (error.cause as AnyRecord) && (error.cause as AnyRecord).message ? (error.cause as AnyRecord).message : '')
   return /Failed connecting to ws:\/\/127\.0\.0\.1:/iu.test(causeMessage)
 }
 
-async function reassignOpenAutoPort(state, attemptedAutoPorts = []) {
+async function reassignOpenAutoPort(state: SessionState, attemptedAutoPorts: string[] = []) {
   const otherConfigs = await loadOtherSessionConfigs(state.config, state.name)
   const retryReservations = (attemptedAutoPorts || [])
     .filter(Boolean)
@@ -617,7 +865,9 @@ async function reassignOpenAutoPort(state, attemptedAutoPorts = []) {
     devtoolsProjectMirror: '',
     devtoolsProjectAutoLink: '',
   }, [...otherConfigs, ...retryReservations])
-  state.portResolution.autoPortAssigned = true
+  if (state.portResolution) {
+    state.portResolution.autoPortAssigned = true
+  }
   return state.config.autoPort
 }
 
@@ -637,8 +887,8 @@ function normalizeOpenStableWaitError(error: AnyRecord = {}) {
   }
 }
 
-async function connectOpenSession(state, options, openOptions: AnyRecord = {}) {
-  return await withMiniProgram(state, async (miniProgram) => {
+async function connectOpenSession(state: SessionState, options: AnyRecord, openOptions: AnyRecord = {}) {
+  return await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const appReady = miniProgram.__mpbRuntimeReady !== false
     const runtimeProbe = miniProgram.__mpbRuntimeProbe || null
     if (!options.noAwait && appReady) {
@@ -651,8 +901,8 @@ async function connectOpenSession(state, options, openOptions: AnyRecord = {}) {
         stable = await waitForMiniProgramStable(miniProgram, {
           timeoutMs: resolveOpenStableTimeoutMs(options),
         })
-      } catch (error) {
-        const normalized = normalizeOpenStableWaitError(error)
+      } catch (error: unknown) {
+        const normalized = normalizeOpenStableWaitError(error as AnyRecord)
         stable = normalized.stable
         stableTimeout = normalized.stableTimeout
       }
@@ -667,7 +917,7 @@ async function connectOpenSession(state, options, openOptions: AnyRecord = {}) {
       path: page ? page.path : null,
       stable,
       stableTimeout: stableTimeout || undefined,
-      toolInfo: runtimeProbe && runtimeProbe.toolInfo ? runtimeProbe.toolInfo : undefined,
+      toolInfo: runtimeProbe && (runtimeProbe as AnyRecord).toolInfo ? (runtimeProbe as AnyRecord).toolInfo : undefined,
       projectPath: state.config.projectPath,
       devtoolsProjectPath: automationArgs.devtoolsProjectPath || automationArgs.args[2],
       projectStrategy: automationArgs.projectStrategy,
@@ -683,7 +933,7 @@ async function connectOpenSession(state, options, openOptions: AnyRecord = {}) {
   }, {
     allowRuntimeNotReady: true,
     connectTimeoutMs: resolveOpenTimeoutMs(options),
-    onProgress(phase) {
+    onProgress(phase: string) {
       if (phase === 'enable') {
         emitProgress('正在启动/连接 DevTools 自动化...', options)
         return
@@ -695,14 +945,18 @@ async function connectOpenSession(state, options, openOptions: AnyRecord = {}) {
   })
 }
 
-function emitOpenResult(result, options) {
+function emitOpenResult(result: AnyRecord, options: AnyRecord) {
   const pathLabel = result.path || (result.appReady === false ? '(warming up)' : '(no page)')
+  const sessionLabel = options.session ? ` session=${options.session}` : ''
+  const autoSessionLabel = options.sessionAutoAssigned ? ' (auto-session)' : ''
   emit({
-    message: `已连接 mode=${result.mode} path=${pathLabel} project=${result.projectPath} strategy=${result.projectStrategy} devtoolsProject=${result.devtoolsProjectPath} devtoolsPort=${result.devtoolsPort} autoPort=${result.autoPort}${result.attachedTo ? ` attachedTo=${result.attachedTo}` : ''}${result.autoPortAssigned ? ' (auto)' : ''}${result.appReady === false ? ' appReady=false' : ''}${result.stableTimeout ? ' stable=false' : ''}`,
+    message: `已连接 mode=${result.mode} path=${pathLabel} project=${result.projectPath} strategy=${result.projectStrategy} devtoolsProject=${result.devtoolsProjectPath} devtoolsPort=${result.devtoolsPort} autoPort=${result.autoPort}${sessionLabel}${autoSessionLabel}${result.attachedTo ? ` attachedTo=${result.attachedTo}` : ''}${result.autoPortAssigned ? ' (auto)' : ''}${result.appReady === false ? ' appReady=false' : ''}${result.stableTimeout ? ' stable=false' : ''}`,
     mode: result.mode,
     attachedTo: result.attachedTo,
     appReady: result.appReady,
     path: result.path,
+    session: options.session || undefined,
+    sessionAutoAssigned: Boolean(options.sessionAutoAssigned) || undefined,
     stable: result.stable || undefined,
     stableTimeout: result.stableTimeout || undefined,
     toolInfo: result.toolInfo || undefined,
@@ -719,44 +973,55 @@ function emitOpenResult(result, options) {
   }, options)
 }
 
-async function resolveAttachableRuntime(state) {
-  const sessions = await listSessionStates(createDefaultConfig())
+async function resolveAttachableRuntime(state: SessionState) {
   const projectPath = path.resolve(state.config.projectPath || '')
-  const sameProjectSessions = []
+  if (!projectPath) {
+    return { mode: 'none', sessions: [] }
+  }
 
-  for (const session of sessions) {
-    if (session.name === state.name) {
+  // RuntimeLaunchRecord 管理 DevTools 窗口连接信息，session 不再固化 autoPort
+  const launches = await listRuntimeLaunches({ ...state.config, projectPath })
+  const liveLaunches = launches.filter((item: AnyRecord) => item && item.status === 'live' && item.autoPort)
+  const sameProjectLaunches = []
+
+  for (const launch of liveLaunches) {
+    if (launch.projectPath && path.resolve(launch.projectPath) !== projectPath) {
       continue
     }
-    if (!session.autoPort || !session.projectPath || path.resolve(session.projectPath) !== projectPath) {
-      continue
-    }
-    const live = await isAutomationEndpointLive({ ...state.config, autoPort: session.autoPort }, { timeoutMs: 1000 }).catch(() => false)
-    sameProjectSessions.push({
-      ...session,
+    const live = await isAutomationEndpointLive({ ...state.config, autoPort: launch.autoPort }, { timeoutMs: 1000 }).catch(() => false)
+    sameProjectLaunches.push({
+      ...launch,
       status: live ? 'live' : 'stale',
     })
   }
 
-  const selected = selectAttachableRuntimeSession(sameProjectSessions)
+  // 同 sessionName 优先；否则同项目唯一 live
+  const attachableSessions = sameProjectLaunches.map((item: AnyRecord) => ({
+    name: item.sessionName || '',
+    projectPath: item.projectPath || '',
+    autoPort: item.autoPort || '',
+    devtoolsPort: item.devtoolsPort || '',
+    status: item.status || 'stale',
+    route: item.route || '',
+  }))
+  const selected = selectAttachableRuntimeSession(attachableSessions, state.name)
   if (selected.mode !== 'attach') {
     return selected
   }
 
-  const ownerConfig = await resolveSessionConfig(
-    selected.session.name,
-    mergeConfigOverrides(createDefaultConfig(), { projectPath: selected.session.projectPath }),
-  )
-  const ownerState = await loadSessionState(selected.session.name, ownerConfig)
   return {
     mode: 'attach',
-    ownerState,
     session: selected.session,
   }
 }
 
-function summarizeDevtoolsStartupHints(logPayload) {
+function summarizeDevtoolsStartupHints(logPayload: AnyRecord) {
   const rules = [
+    {
+      code: 'login-expired',
+      pattern: /INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|code:\s*10\b/iu,
+      message: 'DevTools 日志报告登录态失效（INVALID_LOGIN / access_token expired / 42001）；请在微信开发者工具中重新登录后再 open。',
+    },
     {
       code: 'appid-missing',
       pattern: /appid missing|41002/iu,
@@ -778,14 +1043,15 @@ function summarizeDevtoolsStartupHints(logPayload) {
       message: 'Windows socket 报 10055；通常表示本机网络/端口资源异常，可能影响 DevTools automation 端口启动。',
     },
   ]
-  const files = ((logPayload && logPayload.files) || []).map((item) => ({
+  const files = ((logPayload && logPayload.files) || []) as AnyRecord[]
+  const fileEntries: AnyRecord[] = files.map((item: AnyRecord) => ({
     path: String(item && item.path ? item.path : ''),
     lines: Array.isArray(item && item.lines) ? item.lines : [],
   }))
 
-  const collectFileHints = (file, seen) => {
-    const fileHints = []
-    for (const line of file.lines || []) {
+  const collectFileHints = (file: AnyRecord, seen: Set<string>) => {
+    const fileHints: AnyRecord[] = []
+    for (const line of (file.lines as unknown[]) || []) {
       const text = String(line || '').trim()
       if (!text) {
         continue
@@ -805,12 +1071,12 @@ function summarizeDevtoolsStartupHints(logPayload) {
     return fileHints
   }
 
-  const timestampedFiles = files.filter((file) => /(?:^|[\\/])logs[\\/].+\.log$/iu.test(file.path))
-  const fallbackFiles = files.filter((file) => !timestampedFiles.includes(file))
+  const timestampedFiles = fileEntries.filter((file: AnyRecord) => /(?:^|[\\/])logs[\\/].+\.log$/iu.test(String(file.path)))
+  const fallbackFiles = fileEntries.filter((file: AnyRecord) => !timestampedFiles.includes(file))
   const groups = timestampedFiles.length ? [timestampedFiles] : [fallbackFiles]
 
   for (const group of groups) {
-    const seen = new Set()
+    const seen = new Set<string>()
     for (const file of group) {
       const hints = collectFileHints(file, seen)
       if (hints.length) {
@@ -822,7 +1088,7 @@ function summarizeDevtoolsStartupHints(logPayload) {
   return []
 }
 
-function resolveStartupIssueMessage(hints = [], code = '') {
+function resolveStartupIssueMessage(hints: AnyRecord[] = [], code = '') {
   if (!code) {
     return ''
   }
@@ -850,7 +1116,7 @@ function resolveStartupIssueMessage(hints = [], code = '') {
   return match && match.message ? String(match.message) : ''
 }
 
-function resolveStartupIssueRaw(hints = [], code = '', summaryLine = '') {
+function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine = '') {
   const normalizedCode = String(code || '').trim()
   const normalizedSummaryLine = String(summaryLine || '').trim()
   const matchingHint = (hints || []).find((item) => {
@@ -878,7 +1144,7 @@ function resolveStartupIssueRaw(hints = [], code = '', summaryLine = '') {
   return normalizedSummaryLine
 }
 
-function classifyOpenFailureFromStartupHints(hints = [], options: AnyRecord = {}) {
+function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: AnyRecord = {}) {
   const summaryLine = String(options.summaryLine || '').trim()
   if (/routeTo appLaunch timeout|triggerAppRouteDone timeout/iu.test(summaryLine)) {
     return {
@@ -933,14 +1199,14 @@ function classifyOpenFailureFromStartupHints(hints = [], options: AnyRecord = {}
   return null
 }
 
-function compactStartupHints(hints = []) {
-  return (hints || []).slice(0, 3).map((item) => ({
+function compactStartupHints(hints: AnyRecord[] = []) {
+  return (hints || []).slice(0, 3).map((item: AnyRecord) => ({
     code: item.code,
     sample: String(item.sample || '').slice(0, 240),
   }))
 }
 
-async function collectDevtoolsStartupHints(state) {
+async function collectDevtoolsStartupHints(state: SessionState) {
   try {
     const payload = await collectDevtoolsLogs(state.config, {
       limit: 220,
@@ -953,7 +1219,7 @@ async function collectDevtoolsStartupHints(state) {
   }
 }
 
-async function collectDevtoolsLogContext(state, grep = '') {
+async function collectDevtoolsLogContext(state: SessionState, grep = '') {
   try {
     const payload = await collectDevtoolsLogs(state.config, {
       limit: 120,
@@ -968,12 +1234,12 @@ async function collectDevtoolsLogContext(state, grep = '') {
   }
 }
 
-function summarizeAutomationProbeHint(condition, probe) {
+function summarizeAutomationProbeHint(condition: AnyRecord, probe: AnyRecord) {
   if (!probe || !probe.connected) {
     return `phase=${condition.kind}; last=tool-connect`
   }
 
-  const failingProbe = (probe.probes || []).find((item) => !item.ok)
+  const failingProbe = ((probe.probes as AnyRecord[]) || []).find((item: AnyRecord) => !item.ok)
   if (failingProbe) {
     if (failingProbe.timeout) {
       return `phase=${condition.kind}; last=${failingProbe.method} timeout`
@@ -984,7 +1250,7 @@ function summarizeAutomationProbeHint(condition, probe) {
   return `phase=${condition.kind}`
 }
 
-function summarizeOpenResolution(options, liveSameProjectSessions = []) {
+function summarizeOpenResolution(options: AnyRecord, liveSameProjectSessions: AnyRecord[] = []) {
   const liveCount = Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions.length : 0
   if (liveCount > 1) {
     return 'ambiguous'
@@ -1001,7 +1267,7 @@ function summarizeOpenResolution(options, liveSameProjectSessions = []) {
   return 'start-required'
 }
 
-function resolveOpenFailureNextAction(options, liveSameProjectSessions = []) {
+function resolveOpenFailureNextAction(options: AnyRecord, liveSameProjectSessions: AnyRecord[] = []) {
   const liveCount = Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions.length : 0
   if (liveCount > 1) {
     return 'session list'
@@ -1018,18 +1284,18 @@ function resolveOpenFailureNextAction(options, liveSameProjectSessions = []) {
   return ''
 }
 
-async function waitForAutomationCondition(state, condition, options) {
+async function waitForAutomationCondition(state: SessionState, condition: AnyRecord, options: AnyRecord) {
   const timeoutMs = resolveAwaitTimeoutMs(condition, options.timeout)
   const pollMs = Math.max(200, Number(options.pollMs || 500))
   const startedAt = Date.now()
-  let lastProbe = null
+  let lastProbe: AnyRecord | null = null
 
   while (Date.now() - startedAt <= timeoutMs) {
     lastProbe = await probeAutomationRuntime(state.config, {
       timeoutMs: Number(options.probeTimeoutMs || Math.min(5000, pollMs * 4)),
     })
 
-    if (condition.kind === 'tool-ready' && lastProbe.connected) {
+    if (lastProbe && condition.kind === 'tool-ready' && lastProbe.connected) {
       return {
         ok: true,
         condition: condition.raw,
@@ -1038,7 +1304,7 @@ async function waitForAutomationCondition(state, condition, options) {
       }
     }
 
-    if (condition.kind === 'app-ready' && lastProbe.appReady) {
+    if (lastProbe && condition.kind === 'app-ready' && lastProbe.appReady) {
       return {
         ok: true,
         condition: condition.raw,
@@ -1051,9 +1317,9 @@ async function waitForAutomationCondition(state, condition, options) {
   }
 
   const logContext = await collectDevtoolsLogContext(state, 'error|fail|timeout|errcode|appid')
-  const error = new Error(`await ${condition.raw} timed out after ${timeoutMs}ms`) as AnyRecord
+  const error = new Error(`await ${condition.raw} timed out after ${timeoutMs}ms`) as unknown as AnyRecord
   error.code = 'AWAIT_TIMEOUT'
-  error.hint = summarizeAutomationProbeHint(condition, lastProbe)
+  error.hint = summarizeAutomationProbeHint(condition, lastProbe as AnyRecord)
   if (logContext.log) {
     error.log = logContext.log
     error.next = 'devtools logs'
@@ -1061,7 +1327,7 @@ async function waitForAutomationCondition(state, condition, options) {
   throw error
 }
 
-function resolveExplicitAwaitCondition(rawValue, command, options, context: AnyRecord = {}) {
+function resolveExplicitAwaitCondition(rawValue: unknown, command: string, options: AnyRecord, context: AnyRecord = {}) {
   if (options.noAwait) {
     return null
   }
@@ -1084,30 +1350,11 @@ function resolveExplicitAwaitCondition(rawValue, command, options, context: AnyR
   return normalizeAwaitCondition(raw)
 }
 
-function attachStateToRuntime(state, ownerState) {
-  const ownerConfig = ownerState.config || {}
-  state.config = {
-    ...state.config,
-    autoPort: ownerConfig.autoPort || state.config.autoPort,
-    devtoolsPort: ownerConfig.devtoolsPort || state.config.devtoolsPort,
-    devtoolsProjectPath: ownerConfig.devtoolsProjectPath || state.config.devtoolsProjectPath,
-    devtoolsProjectAutoLink: ownerConfig.devtoolsProjectAutoLink || undefined,
-    devtoolsProjectMirror: ownerConfig.devtoolsProjectMirror || undefined,
-  }
-  state.runtimeAttached = true
-  state.runtimeOwnerSession = ownerState.name
-  state.runtimeAttachedAt = new Date().toISOString()
-  state.portResolution = {
-    autoPortAssigned: false,
-    devtoolsPortAssigned: false,
-  }
-}
-
-async function buildOpenFailureDiagnostics(state, options) {
+async function buildOpenFailureDiagnostics(state: SessionState, options: AnyRecord) {
   const automationArgs = buildAutomationArgs(state.config)
   const sessions = await listSessionStates(createDefaultConfig())
   const projectPath = path.resolve(state.config.projectPath || '')
-  const liveSameProjectSessions = []
+  const liveSameProjectSessions: AnyRecord[] = []
   const logContext = await collectDevtoolsLogContext(state, 'error|fail|timeout|errcode|appid')
   const startupHints = await collectDevtoolsStartupHints(state)
   const startupClassification = classifyOpenFailureFromStartupHints(startupHints, {
@@ -1174,24 +1421,25 @@ async function buildOpenFailureDiagnostics(state, options) {
   }
 }
 
-async function handleDoctor(state, options) {
-  const persistSession = Boolean(options.sessionProvided) && !options.ephemeralSession
+async function handleDoctor(state: SessionState, options: AnyRecord) {
+  // 允许省略 --session：上游 ensureImplicitSessionName 已按项目分配/复用 slug-xN
+  const persistSession = !options.ephemeralSession
   if (!persistSession && !(options.ephemeralSession && options.project && options.devtoolsPort)) {
-    throw new Error('doctor 必须显式传 --session <name>。')
+    throw new Error('doctor 需要可解析的 session 或 ephemeral --project + --devtools-port。')
   }
   assertProjectPath(state.config)
-  if (persistSession) {
-    await saveSessionState(state)
-  }
 
-  let automationMetadata = null
-  let automationError = null
+  // 先执行 automation 诊断，成功后再保存 session。
+  // 避免因 DevTools 时序问题（如 appid 未就绪）导致 session 被污染。
+  let automationMetadata: AnyRecord | null = null
+  let automationError: AnyRecord | null = null
   try {
     automationMetadata = enableAutomation(state.config)
-  } catch (error) {
+  } catch (error: unknown) {
+    const caughtError = error as AnyRecord
     automationError = {
-      message: error && error.message ? String(error.message) : String(error),
-      raw: error && error.raw ? String(error.raw) : undefined,
+      message: caughtError && caughtError.message ? String(caughtError.message) : String(caughtError),
+      raw: caughtError && caughtError.raw ? String(caughtError.raw) : undefined,
     }
   }
 
@@ -1230,12 +1478,12 @@ async function handleDoctor(state, options) {
         }
         : null)
 
-  if (persistSession) {
+  if (persistSession && probe && probe.connected) {
     await saveSessionState(state)
   }
 
   const automationArgs = buildAutomationArgs(state.config)
-  const payload = {
+  const payload: AnyRecord = {
     ok: !automationError && Boolean(probe && probe.connected),
     projectPath: state.config.projectPath,
     devtoolsProjectPath: automationArgs.devtoolsProjectPath || automationArgs.args[2],
@@ -1270,9 +1518,10 @@ async function handleDoctor(state, options) {
   if (automationError) {
     lines.push(`automation=failed ${automationError.message}`)
   } else {
-    lines.push(`automation=${payload.automation.ok ? 'ok' : 'failed'}`)
-    if (payload.automation.startupIssue && payload.automation.startupIssue.code) {
-      lines.push(`startupIssue=${payload.automation.startupIssue.code}`)
+    lines.push(`automation=${(payload.automation as AnyRecord).ok ? 'ok' : 'failed'}`)
+    const automation = payload.automation as AnyRecord
+    if (automation.startupIssue && (automation.startupIssue as AnyRecord).code) {
+      lines.push(`startupIssue=${(automation.startupIssue as AnyRecord).code}`)
     }
   }
   if (probe) {
@@ -1289,7 +1538,7 @@ async function handleDoctor(state, options) {
   emit({ lines }, options)
 }
 
-function parseJsonArgument(rawValue, fallback) {
+function parseJsonArgument(rawValue: string, fallback: AnyRecord) {
   if (rawValue === undefined || rawValue === null || rawValue === '') {
     return fallback
   }
@@ -1300,12 +1549,9 @@ function parseJsonArgument(rawValue, fallback) {
   }
 }
 
-async function handleProtocol(state, method, rawParams, options) {
+async function handleProtocol(state: SessionState, method: string, rawParams: string, options: AnyRecord) {
   if (!method) {
     throw new Error('protocol requires a method, e.g. protocol Tool.getInfo')
-  }
-  if (!options.sessionProvided) {
-    throw new Error('protocol 必须显式传 --session <name>。')
   }
   assertProjectPath(state.config)
   await saveSessionState(state)
@@ -1323,7 +1569,7 @@ async function handleProtocol(state, method, rawParams, options) {
   }, options)
 }
 
-async function handleDevtools(state, rest, options) {
+async function handleDevtools(state: SessionState, rest: string[], options: AnyRecord) {
   const subcommand = rest[0]
   if (subcommand !== 'logs') {
     throw new Error(`Unknown devtools command: ${subcommand || '(empty)'}`)
@@ -1351,7 +1597,7 @@ async function handleDevtools(state, rest, options) {
   emit({ lines }, options)
 }
 
-async function handleSessionList(options) {
+async function handleSessionList(options: AnyRecord = {}) {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
   const sessions = await listSessionStates(baseConfig)
   let projectFilter = ''
@@ -1368,9 +1614,9 @@ async function handleSessionList(options) {
     }
   }
   const visibleSessions = projectFilter
-    ? sessions.filter((item) => path.resolve(item.projectPath || '') === projectFilter)
+    ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
     : (options.all ? sessions : [])
-  const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item) => {
+  const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
     const live = item.autoPort
       ? await isAutomationEndpointLive({ ...baseConfig, autoPort: item.autoPort }, { timeoutMs: 800 }).catch(() => false)
       : false
@@ -1403,7 +1649,7 @@ async function handleSessionList(options) {
   }, options)
 }
 
-async function shutdownOwnedRuntime(state) {
+async function shutdownOwnedRuntime(state: SessionState) {
   const result: AnyRecord = {
     runtimeShutdown: true,
     automationClosed: false,
@@ -1411,11 +1657,12 @@ async function shutdownOwnedRuntime(state) {
     closeAttempted: false,
   }
 
-  await withMiniProgram(state, async (miniProgram) => {
+  await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     await shutdownMiniProgram(miniProgram)
     result.automationClosed = true
-  }).catch((error) => {
-    result.automationError = error && error.message ? String(error.message) : String(error)
+  }).catch((error: unknown) => {
+    const caughtError = error as AnyRecord
+    result.automationError = caughtError && caughtError.message ? String(caughtError.message) : String(caughtError)
   })
 
   const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 })
@@ -1438,7 +1685,7 @@ async function shutdownOwnedRuntime(state) {
   return result
 }
 
-async function handleSessionPrune(options) {
+async function handleSessionPrune(options: AnyRecord) {
   if (options.all) {
     throw new Error('session prune 不支持全局清理；请在小程序项目目录执行，或显式传 --project <miniprogram-root>。')
   }
@@ -1452,8 +1699,8 @@ async function handleSessionPrune(options) {
   }
 
   const sessions = await listSessionStates(baseConfig)
-  const visibleSessions = sessions.filter((item) => path.resolve(item.projectPath || '') === projectFilter)
-  const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item) => {
+  const visibleSessions = sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
+  const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
     const live = item.autoPort
       ? await isAutomationEndpointLive({ ...baseConfig, autoPort: item.autoPort }, { timeoutMs: 800 }).catch(() => false)
       : false
@@ -1491,7 +1738,7 @@ async function handleSessionPrune(options) {
         projectClosed: Boolean(closeResult && closeResult.ok),
         closeVerified: false,
         closeAttempted: Boolean(closeResult && closeResult.attempted),
-      } as AnyRecord
+      } as unknown as AnyRecord
 
       if (closeResult && closeResult.reason) {
         summary.reason = closeResult.reason
@@ -1544,7 +1791,7 @@ async function handleSessionPrune(options) {
       projectClosed: Boolean(closeResult && closeResult.ok),
       closeVerified: false,
       closeAttempted: Boolean(closeResult && closeResult.attempted),
-    } as AnyRecord
+    } as unknown as AnyRecord
 
     if (closeResult && closeResult.reason) {
       summary.reason = closeResult.reason
@@ -1563,7 +1810,7 @@ async function handleSessionPrune(options) {
   }
 
   if (failed.length) {
-    const error = new Error(`session prune failed for ${failed.length} item(s)`) as AnyRecord
+    const error = new Error(`session prune failed for ${failed.length} item(s)`) as unknown as AnyRecord
     error.code = 'SESSION_PRUNE_FAILED'
     error.diagnostics = { projectPath: projectFilter, pruned, launchesPruned, failed, skipped }
     throw error
@@ -1578,8 +1825,8 @@ async function handleSessionPrune(options) {
   }, options)
 }
 
-async function handlePath(state, options) {
-  const pathValue = await withMiniProgram(state, async (miniProgram) => {
+async function handlePath(state: SessionState, options: AnyRecord) {
+  const pathValue = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     state.route = page.path
     return page.path
@@ -1589,22 +1836,22 @@ async function handlePath(state, options) {
   emit({ message: pathValue, path: pathValue }, options)
 }
 
-function isTabBarRoute(route, runtimeConfig) {
+function isTabBarRoute(route: string, runtimeConfig: AnyRecord) {
   const normalizedRoute = normalizeRoutePath(route)
-  const list = runtimeConfig && runtimeConfig.tabBar && Array.isArray(runtimeConfig.tabBar.list)
-    ? runtimeConfig.tabBar.list
+  const list = runtimeConfig && runtimeConfig.tabBar && Array.isArray((runtimeConfig.tabBar as AnyRecord).list)
+    ? ((runtimeConfig.tabBar as AnyRecord).list as AnyRecord[])
     : []
-  return list.some((item) => normalizeRoutePath(item && (item.pagePath || item.path)) === normalizedRoute)
+  return list.some((item: AnyRecord) => normalizeRoutePath(item && (item.pagePath || item.path)) === normalizedRoute)
 }
 
-async function handleRelaunch(state, route, options) {
+async function handleRelaunch(state: SessionState, route: string, options: AnyRecord) {
   if (!route) {
     throw new Error('goto/relaunch requires a route, e.g. goto /pages/index/index')
   }
   const waitMs = Number(options.wait || 1500)
   const targetPath = normalizeRoutePath(route)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'goto', options, { route: targetPath })
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const pageBefore = await getCurrentPage(miniProgram).catch(() => null)
     const pathBefore = pageBefore && pageBefore.path ? pageBefore.path : state.route || ''
     const runtimeConfig = await getRuntimeAppConfig(miniProgram).catch(() => ({ tabBar: { list: [] } }))
@@ -1613,16 +1860,20 @@ async function handleRelaunch(state, route, options) {
       : 'reLaunch'
 
     if (method === 'switchTab') {
-      await miniProgram.switchTab(route)
+      // DevTools automation 要求路由以 / 开头，否则视为相对路径拼接
+      const absoluteRoute = route.startsWith('/') ? route : `/${route}`
+      await (miniProgram.switchTab as (r: string) => Promise<unknown>)(absoluteRoute)
     } else {
-      await miniProgram.reLaunch(route)
+      // DevTools automation 要求路由以 / 开头，否则视为相对路径拼接
+      const absoluteRoute = route.startsWith('/') ? route : `/${route}`
+      await (miniProgram.reLaunch as (r: string) => Promise<unknown>)(absoluteRoute)
     }
     await sleep(waitMs)
-    const routeResult = awaitCondition
+    const routeResult: AnyRecord = awaitCondition
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
         pathBefore,
-      }).then((result) => ({
+      }).then((result: AnyRecord) => ({
         path: result.path,
         routeEvents: [],
         expectedPath: targetPath,
@@ -1641,10 +1892,10 @@ async function handleRelaunch(state, route, options) {
       throw new Error(`goto failed: expected ${targetPath}, but current page is ${actual}. If the target is a tabBar page, DevTools may have rejected the route; check page-stack/timeline/devtools logs.`)
     }
 
-    state.route = routeResult.path
+    state.route = String(routeResult.path)
     return {
-      message: routeResult.path,
-      path: routeResult.path,
+      message: String(routeResult.path),
+      path: String(routeResult.path),
       method,
     }
   })
@@ -1654,9 +1905,9 @@ async function handleRelaunch(state, route, options) {
   emit(payload, options)
 }
 
-async function handleSnapshot(state, options, scopeRef = null) {
+async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef: string | null = null) {
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'snapshot', options)
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     if (awaitCondition) {
       await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
@@ -1674,7 +1925,7 @@ async function handleSnapshot(state, options, scopeRef = null) {
 
     const wantMap = !Boolean(options.noMap)
     if (options.layout || wantMap) {
-      const systemInfo = await miniProgram.systemInfo()
+      const systemInfo = await (miniProgram.systemInfo as () => Promise<AnyRecord>)()
       const rects = await collectRecordRects(page, records, systemInfo)
       records = mergeRecordLayouts(records, rects)
       if (options.layout) {
@@ -1711,8 +1962,8 @@ async function handleSnapshot(state, options, scopeRef = null) {
   emit(summarizeSnapshotPayload(payload, options), options)
 }
 
-async function handleQuery(state, mode, value, options, scopeRef = null) {
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+async function handleQuery(state: SessionState, mode: string, value: string, options: AnyRecord, scopeRef: string | null = null) {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const result = await queryRecords(page, state, mode, value, scopeRef)
     Object.assign(state, result.state)
@@ -1723,21 +1974,21 @@ async function handleQuery(state, mode, value, options, scopeRef = null) {
   emit(payload, options)
 }
 
-async function handleTap(state, target, options, scopeRef = null) {
+async function handleTap(state: SessionState, target: string, options: AnyRecord, scopeRef: string | null = null) {
   const waitMs = Number(options.wait || 1200)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'click', options)
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
     const element = await resolveTarget(page, state, target, scopeRef)
     await element.tap()
     await sleep(waitMs)
-    const routeResult = awaitCondition
+    const routeResult: AnyRecord = awaitCondition
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
         pathBefore,
         scopeRef,
-      }).then(async (result) => ({
+      }).then(async (result: AnyRecord) => ({
         path: result.path,
         routeEvents: (await syncRouteTimelineEvents(miniProgram, state)).events,
       }))
@@ -1761,9 +2012,9 @@ async function handleTap(state, target, options, scopeRef = null) {
   emit(payload, options)
 }
 
-async function handleInput(state, target, value, options, scopeRef = null) {
+async function handleInput(state: SessionState, target: string, value: string, options: AnyRecord, scopeRef: string | null = null) {
   const waitMs = Number(options.wait || 500)
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
     const element = await resolveTarget(page, state, target, scopeRef)
@@ -1777,10 +2028,7 @@ async function handleInput(state, target, value, options, scopeRef = null) {
   emit(payload, options)
 }
 
-async function handleAwaitCommand(state, rawCondition, options, scopeRef = null) {
-  if (!options.sessionProvided) {
-    throw new Error('await 必须显式传 --session <name>。')
-  }
+async function handleAwaitCommand(state: SessionState, rawCondition: string, options: AnyRecord, scopeRef: string | null = null) {
   assertProjectPath(state.config)
   const condition = normalizeAwaitCondition(rawCondition)
 
@@ -1794,7 +2042,7 @@ async function handleAwaitCommand(state, rawCondition, options, scopeRef = null)
     return
   }
 
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     return await waitForMiniProgramCondition(miniProgram, state, condition, {
       timeout: options.timeout,
       wait: options.wait,
@@ -1809,10 +2057,10 @@ async function handleAwaitCommand(state, rawCondition, options, scopeRef = null)
   }, options)
 }
 
-async function handleWait(state, target, options, scopeRef = null) {
+async function handleWait(state: SessionState, target: string, options: AnyRecord, scopeRef: string | null = null) {
   const timeoutMs = Number(options.wait || 10000)
 
-  await withMiniProgram(state, async (miniProgram) => {
+  await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     if (/^\d+$/u.test(target)) {
       await sleep(Number(target))
@@ -1838,7 +2086,7 @@ async function handleWait(state, target, options, scopeRef = null) {
       await sleep(200)
     }
 
-    const error = new Error(`wait timeout: ${target}`) as AnyRecord
+    const error = new Error(`wait timeout: ${target}`) as unknown as AnyRecord
     error.code = 'WAIT_TIMEOUT'
     error.hint = `target=${target}`
     throw error
@@ -1848,8 +2096,8 @@ async function handleWait(state, target, options, scopeRef = null) {
   emit({ message: `等待完成 ${target}` }, options)
 }
 
-async function handleGet(state, what, target, detail, options, scopeRef = null) {
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+async function handleGet(state: SessionState, what: string, target: string, detail: string, options: AnyRecord, scopeRef: string | null = null) {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
 
     switch (what) {
@@ -1898,9 +2146,9 @@ async function handleGet(state, what, target, detail, options, scopeRef = null) 
   emit(payload, options)
 }
 
-async function handleEval(state, source, options) {
+async function handleEval(state: SessionState, source: string, options: AnyRecord) {
   const script = options.stdin ? await readStdin() : source
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const result = await evaluateInMiniProgram(miniProgram, script)
     return {
       result,
@@ -1912,21 +2160,21 @@ async function handleEval(state, source, options) {
   emit(payload, options)
 }
 
-async function handleNative(state, method, args, options) {
+async function handleNative(state: SessionState, method: string, args: string[], options: AnyRecord) {
   const waitMs = Number(options.wait || 800)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'native', options)
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
     const result = await callNativeMethod(miniProgram, method, args)
     if (waitMs > 0) {
       await sleep(waitMs)
     }
-    const routeResult = awaitCondition
+    const routeResult: AnyRecord = awaitCondition
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
         pathBefore,
-      }).then(async (awaitResult) => ({
+      }).then(async (awaitResult: AnyRecord) => ({
         path: awaitResult.path,
         routeEvents: (await syncRouteTimelineEvents(miniProgram, state)).events,
       }))
@@ -1950,8 +2198,8 @@ async function handleNative(state, method, args, options) {
   emit(payload, options)
 }
 
-async function handleSystemInfo(state, options) {
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+async function handleSystemInfo(state: SessionState, options: AnyRecord) {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const systemInfo = await getSystemInfo(miniProgram)
     return {
       systemInfo,
@@ -1963,12 +2211,12 @@ async function handleSystemInfo(state, options) {
   emit(payload, options)
 }
 
-async function handlePageStack(state, options) {
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+async function handlePageStack(state: SessionState, options: AnyRecord) {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const pages = await getPageStack(miniProgram)
     return {
       pages,
-      lines: pages.map((item, index) => `${index + 1}. ${item.path}`),
+      lines: pages.map((item: AnyRecord, index: number) => `${index + 1}. ${item.path}`),
     }
   })
 
@@ -1976,27 +2224,27 @@ async function handlePageStack(state, options) {
   emit(payload, options)
 }
 
-function buildObservedEdges(routeEvents) {
-  return (routeEvents || []).map((event) => ({
+function buildObservedEdges(routeEvents: AnyRecord[] | undefined) {
+  return (routeEvents || []).map((event: AnyRecord) => ({
     from: event.from,
     to: event.to,
     method: event.openType,
   }))
 }
 
-async function handleAppInspect(state, options) {
+async function handleAppInspect(state: SessionState, options: AnyRecord) {
   assertProjectPath(state.config)
   const sections = normalizeInspectSections(options)
   const recentRoutes = getStoredRouteTimeline(state, { limit: 10 })
   const observedEdges = buildObservedEdges(state.routeEvents)
-  let runtimeConfig = {}
+  let runtimeConfig: AnyRecord = {}
   let current = state.route || null
-  let pageStack = []
-  let runtimeWarning = null
+  let pageStack: AnyRecord[] = []
+  let runtimeWarning: AnyRecord | string | null = null
 
   if (state.bound) {
     try {
-      const live = await withMiniProgram(state, async (miniProgram) => {
+      const live = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
         const [nextRuntimeConfig, nextPageStack] = await Promise.all([
           getRuntimeAppConfig(miniProgram).catch(() => ({})),
           getPageStack(miniProgram).catch(() => []),
@@ -2008,11 +2256,12 @@ async function handleAppInspect(state, options) {
           current: currentPage && currentPage.path ? currentPage.path : '',
         }
       })
-      runtimeConfig = live.runtimeConfig || {}
-      pageStack = Array.isArray(live.pageStack) ? live.pageStack : []
+      runtimeConfig = (live.runtimeConfig as AnyRecord) || {}
+      pageStack = Array.isArray(live.pageStack) ? (live.pageStack as AnyRecord[]) : []
       current = live.current || (pageStack.length ? pageStack[pageStack.length - 1].path : current)
-    } catch (error) {
-      runtimeWarning = `runtime inspect skipped: ${error && error.message ? error.message : error}`
+    } catch (error: unknown) {
+      const caughtError = error as AnyRecord
+      runtimeWarning = `runtime inspect skipped: ${caughtError && caughtError.message ? caughtError.message : caughtError}`
     }
   }
 
@@ -2038,7 +2287,7 @@ async function handleAppInspect(state, options) {
   emit(payload, options)
 }
 
-async function handleTimeline(state, action, options) {
+async function handleTimeline(state: SessionState, action: string, options: AnyRecord) {
   if (action === 'clear') {
     clearStoredRouteTimeline(state)
     await saveSessionState(state)
@@ -2046,7 +2295,7 @@ async function handleTimeline(state, action, options) {
     return
   }
 
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     await syncRouteTimelineEvents(miniProgram, state)
     const events = getStoredRouteTimeline(state, { limit: options.limit })
     return {
@@ -2060,7 +2309,7 @@ async function handleTimeline(state, action, options) {
   emit(summarizeTimelinePayload(payload, options), options)
 }
 
-async function handleLogs(state, kind, action, options) {
+async function handleLogs(state: SessionState, kind: string, action: string, options: AnyRecord) {
   if (!state.bound) {
     throw new Error(`Session not found: ${state.name}. Run miniprogram-browser open --session ${state.name} --project <miniprogram-root> first.`)
   }
@@ -2092,7 +2341,7 @@ async function handleLogs(state, kind, action, options) {
   }, options)
 }
 
-async function syncRouteTimelinePrelude(state, options, command) {
+async function syncRouteTimelinePrelude(state: SessionState, options: AnyRecord, command: string) {
   if (!shouldEmitPreludeNotices(command)) {
     return
   }
@@ -2105,7 +2354,7 @@ async function syncRouteTimelinePrelude(state, options, command) {
     return
   }
 
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     return syncRouteTimelineEvents(miniProgram, state)
   })
 
@@ -2121,12 +2370,12 @@ async function syncRouteTimelinePrelude(state, options, command) {
   }
 }
 
-async function handleCall(state, target, method, args, options) {
+async function handleCall(state: SessionState, target: string, method: string, args: string[], options: AnyRecord) {
   if (!target || !method) {
     throw new Error('call requires target and method, e.g. call wx getSystemInfoSync')
   }
 
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = target === 'page' ? await getCurrentPage(miniProgram) : null
     if (target === 'wx') {
       const result = await callWxMethod(miniProgram, method, args)
@@ -2148,9 +2397,9 @@ async function handleCall(state, target, method, args, options) {
   emit(payload, options)
 }
 
-async function handleScreenshot(state, outputPath, options) {
+async function handleScreenshot(state: SessionState, outputPath: string, options: AnyRecord) {
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'screenshot', options)
-  const payload = await withMiniProgram(state, async (miniProgram) => {
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     if (awaitCondition) {
       await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
@@ -2169,7 +2418,7 @@ async function handleScreenshot(state, outputPath, options) {
       const page = await getCurrentPage(miniProgram)
       const snapshot = await snapshotInteractive(page, state, null, { compact: true })
       Object.assign(state, snapshot.state)
-      return collectRecordRects(page, snapshot.records, await miniProgram.systemInfo())
+      return collectRecordRects(page, snapshot.records, await (miniProgram.systemInfo as () => Promise<AnyRecord>)())
     }
 
     if (mode === 'visual') {
@@ -2178,7 +2427,7 @@ async function handleScreenshot(state, outputPath, options) {
         targetPath: name,
         config: state.config,
         timeoutMs,
-        pageCapture: async (targetPath, timeoutMs) => {
+        pageCapture: async (targetPath: string, timeoutMs: number) => {
           return captureScreenshotToPath(miniProgram, targetPath, timeoutMs)
         },
       })
@@ -2211,7 +2460,7 @@ async function handleScreenshot(state, outputPath, options) {
       await captureScreenshotToPath(miniProgram, name, timeoutMs)
       const snapshot = await snapshotInteractive(page, state, null, { compact: true })
       Object.assign(state, snapshot.state)
-      const refs = await collectRecordRects(page, snapshot.records, await miniProgram.systemInfo())
+      const refs = await collectRecordRects(page, snapshot.records, await (miniProgram.systemInfo as () => Promise<AnyRecord>)())
       const result = await captureAnnotatedScreenshot({
         miniProgram,
         targetPath: name,
@@ -2220,7 +2469,7 @@ async function handleScreenshot(state, outputPath, options) {
         focusRefs,
         noRef: Boolean(options.noRef),
         timeoutMs,
-        pageCapture: async (targetPath) => targetPath,
+        pageCapture: async (targetPath: string) => targetPath,
       })
 
       return {
@@ -2235,7 +2484,7 @@ async function handleScreenshot(state, outputPath, options) {
 
     if (mode === 'layout') {
       const page = await getCurrentPage(miniProgram)
-      const systemInfo = await miniProgram.systemInfo()
+      const systemInfo = await (miniProgram.systemInfo as () => Promise<AnyRecord>)()
       const snapshot = await snapshotInteractive(page, state, null, { compact: Boolean(options.compact) })
       Object.assign(state, snapshot.state)
       const semanticRecords = mergeRecordLayouts(snapshot.records, await collectRecordRects(page, snapshot.records, systemInfo))
@@ -2299,7 +2548,7 @@ async function handleScreenshot(state, outputPath, options) {
   emit(payload, options)
 }
 
-async function handleClose(state, options) {
+async function handleClose(state: SessionState, options: AnyRecord) {
   const baseConfig = createDefaultConfig()
   const resolvedConfig = options.project
     ? mergeConfigOverrides(baseConfig, { projectPath: options.project })
@@ -2321,7 +2570,7 @@ async function handleClose(state, options) {
   }, options)
 }
 
-async function dispatch(state, positional, options, context: AnyRecord = {}) {
+async function dispatch(state: SessionState, positional: string[], options: AnyRecord, context: AnyRecord = {}) {
   const [command, ...rest] = positional
 
   switch (command) {
@@ -2372,30 +2621,30 @@ async function dispatch(state, positional, options, context: AnyRecord = {}) {
       await handleRelaunch(state, rest[0], options)
       return
     case 'snapshot':
-      await handleSnapshot(state, options, context.scopeRef || null)
+      await handleSnapshot(state, options, (context.scopeRef as string | null) || null)
       return
     case 'query':
-      await handleQuery(state, rest[0], rest.slice(1).join(' '), options, context.scopeRef || null)
+      await handleQuery(state, rest[0], rest.slice(1).join(' '), options, (context.scopeRef as string | null) || null)
       return
     case 'await':
-      await handleAwaitCommand(state, rest[0], options, context.scopeRef || null)
+      await handleAwaitCommand(state, rest[0], options, (context.scopeRef as string | null) || null)
       return
     case 'within':
       await dispatch(state, rest.slice(1), options, { scopeRef: rest[0] })
       return
     case 'tap':
     case 'click':
-      await handleTap(state, rest[0], options, context.scopeRef || null)
+      await handleTap(state, rest[0], options, (context.scopeRef as string | null) || null)
       return
     case 'input':
     case 'fill':
-      await handleInput(state, rest[0], rest.slice(1).join(' '), options, context.scopeRef || null)
+      await handleInput(state, rest[0], rest.slice(1).join(' '), options, (context.scopeRef as string | null) || null)
       return
     case 'wait':
-      await handleWait(state, rest[0], options, context.scopeRef || null)
+      await handleWait(state, rest[0], options, (context.scopeRef as string | null) || null)
       return
     case 'get':
-      await handleGet(state, rest[0], rest[1], rest[2], options, context.scopeRef || null)
+      await handleGet(state, rest[0], rest[1], rest[2], options, (context.scopeRef as string | null) || null)
       return
     case 'system-info':
       await handleSystemInfo(state, options)
@@ -2429,18 +2678,18 @@ async function dispatch(state, positional, options, context: AnyRecord = {}) {
   }
 }
 
-function wantsJsonOutput(argv) {
+function wantsJsonOutput(argv: string[]) {
   return argv.includes('--json')
 }
 
-function shouldAcquireRuntimeLock(command, state) {
+function shouldAcquireRuntimeLock(command: string, state: SessionState) {
   if (command === undefined || command === 'help' || command === 'session' || command === 'open' || command === 'connect') {
     return false
   }
   return Boolean(runtimeLockName(state && state.config))
 }
 
-function buildCliErrorPayload(error) {
+function buildCliErrorPayload(error: AnyRecord) {
   const message = error && error.message ? String(error.message) : String(error || 'Unknown error')
   const raw = error && error.raw ? String(error.raw) : undefined
   const code = error && error.code ? String(error.code) : undefined
@@ -2455,30 +2704,31 @@ function buildCliErrorPayload(error) {
     ok: false,
     error: {
       message,
-    },
+    } as AnyRecord,
   }
+  const payloadError = payload.error as AnyRecord
   if (code) {
-    payload.error.code = code
+    payloadError.code = code
   }
   if (hint) {
-    payload.error.hint = hint
+    payloadError.hint = hint
   }
   if (log) {
-    payload.error.log = log
+    payloadError.log = log
   }
   if (next) {
-    payload.error.next = next
+    payloadError.next = next
   }
   if (raw) {
-    payload.error.raw = raw
+    payloadError.raw = raw
   }
   if (diagnostics) {
-    payload.error.diagnostics = diagnostics
+    payloadError.diagnostics = diagnostics
   }
   return payload
 }
 
-function emitCliError(error, json) {
+function emitCliError(error: AnyRecord, json: boolean) {
   const message = error && error.message ? String(error.message) : String(error || 'Unknown error')
 
   if (json) {
@@ -2489,6 +2739,13 @@ function emitCliError(error, json) {
   console.error(message)
   if (error && error.hint) {
     console.error(String(error.hint))
+  }
+  if (error && error.raw) {
+    const raw = String(error.raw).trim()
+    // 人话 message 与底层原文不同时，额外打印 raw，避免盖掉 DevTools/CLI 真因
+    if (raw && raw !== message.trim()) {
+      console.error(raw)
+    }
   }
   if (error && error.log) {
     console.error(String(error.log))
@@ -2580,20 +2837,25 @@ async function main(argv = process.argv.slice(2)) {
     return
   }
 
+  const resolvedOptions = await ensureImplicitSessionName(scopedOptions, command)
+  if (!resolvedOptions.session) {
+    throw new Error('无法解析 session：请传 --session <name>，或提供可发现的 --project 以便自动生成 {project}-xN。')
+  }
+
   const lockConfig = await resolveSessionConfig(
-    scopedOptions.session,
-    mergeConfigOverrides(baseConfig, buildExplicitOverrides(scopedOptions)),
+    resolvedOptions.session,
+    mergeConfigOverrides(baseConfig, buildExplicitOverrides(resolvedOptions)),
   )
-  const lock = await acquireSessionLock(scopedOptions.session, lockConfig, { command })
+  const lock = await acquireSessionLock(resolvedOptions.session, lockConfig, { command })
 
   let runtimeLock = null
   try {
-    const state = await resolveSession(scopedOptions)
+    const state = await resolveSession(resolvedOptions)
     if (shouldAcquireRuntimeLock(command, state)) {
       runtimeLock = await acquireSessionLock(runtimeLockName(state.config), state.config, { command: `runtime ${command}` })
     }
-    await syncRouteTimelinePrelude(state, scopedOptions, command)
-    await dispatch(state, positional, scopedOptions)
+    await syncRouteTimelinePrelude(state, resolvedOptions, command)
+    await dispatch(state, positional, resolvedOptions)
   } finally {
     if (runtimeLock) {
       await releaseSessionLock(runtimeLock)

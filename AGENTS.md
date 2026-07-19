@@ -11,10 +11,14 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 
 ## CLI Design Principles
 
+- Product rule: the tool absorbs dirty work. Users should reach the goal by the most direct action; trust, path conversion, port allocation, and runtime reuse are internal by default.
 - `open/connect` must make the DevTools automation path usable by default across macOS, Windows, and WSL.
+- Ideal success path: open a project directory and land on a connected DevTools automation session without asking users to manage internal machinery.
 - Non-business flags such as trust, path conversion, and port selection should be automatic by default.
 - Advanced flags are escape hatches, not the normal workflow.
-- When automation startup fails, report the real DevTools CLI or runtime issue before generic WebSocket errors.
+- On success, still surface necessary operational facts (including `autoPort`, mode, path, project). These are observability fields, not configuration burden.
+- When automation startup fails, explain the situation clearly and keep the real underlying DevTools CLI / runtime error visible. Do not replace root causes with generic project-wrapper exceptions.
+- Failures the tool cannot fix (login/token expiry, missing AppID, bad CLI path) need a clear human explanation plus the original error signal. Stable `code` / `next action` fields are optional helpers, not required product shape.
 - Same-project multi-session work is allowed, but each session must have explicit, visible session state and ports.
 - Default session views and destructive actions are project-scoped. `--all` is the explicit global escape hatch.
 
@@ -36,8 +40,8 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 
 ## WSL And Cleanup
 
-- WSL `/home/...` projects may be mirrored into a managed Windows temp directory for DevTools CLI compatibility.
-- Mirrors must be marker-backed and under the managed temp root before cleanup.
+- Prefer WSL projects under `/mnt/<drive>/...` so DevTools receives a normal Windows drive path.
+- Linux-home `/home/...` paths are not managed-mirrored anymore; use a Windows-drive project, `--devtools-project`, or `--project-map` when DevTools cannot consume the path directly.
 - Fresh runtime launches should be recorded in project-scoped state before calling DevTools so startup failures can be pruned later.
 - Never delete user project directories, Windows drive paths, arbitrary temp folders, or explicit `--devtools-project` paths.
 - Do not add background watchers or sync loops unless the user explicitly chooses that design.

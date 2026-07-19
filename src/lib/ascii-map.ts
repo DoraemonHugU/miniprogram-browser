@@ -15,7 +15,7 @@ const CONTAINER_KINDS = new Set([
   'page', 'root', 'swiper', 'swiper-item', 'form', 'cell-group', 'section',
 ])
 
-function isContainer(record: any): boolean {
+function isContainer(record: Record<string, unknown>): boolean {
   const kind = String((record && record.kind) || '').toLowerCase()
   return CONTAINER_KINDS.has(kind)
 }
@@ -38,12 +38,12 @@ function refDigits(ref: string): string {
   return '?'
 }
 
-function rectToCells(rectPct: any, gridH: number): { colL: number; colR: number; rowT: number; rowB: number } | null {
+function rectToCells(rectPct: Record<string, unknown>, gridH: number): { colL: number; colR: number; rowT: number; rowB: number } | null {
   const x = Number(rectPct && rectPct.x)
   const y = Number(rectPct && rectPct.y)
   const w = Number(rectPct && rectPct.w)
   const h = Number(rectPct && rectPct.h)
-  if ([x, y, w, h].some((v) => Number.isNaN(v))) return null
+  if ([x, y, w, h].some((v: number) => Number.isNaN(v))) return null
   const colL = Math.max(0, Math.min(GRID_W - 1, Math.floor((x / 100) * GRID_W)))
   const colR = Math.max(colL, Math.min(GRID_W - 1, Math.floor(((x + w) / 100) * GRID_W)))
   const rowT = Math.max(0, Math.min(gridH - 1, Math.floor((y / 100) * gridH)))
@@ -51,12 +51,13 @@ function rectToCells(rectPct: any, gridH: number): { colL: number; colR: number;
   return { colL, colR, rowT, rowB }
 }
 
-function renderAsciiMap(records: any[], options: any = {}): string {
+function renderAsciiMap(records: Record<string, unknown>[], options: Record<string, unknown> = {}): string {
   const list = Array.isArray(records) ? records : []
   const vp = options && options.viewport
-  const gridH = clampGridH(vp && vp.w, vp && vp.h)
+  const vpObj = vp as Record<string, number> | undefined
+  const gridH = clampGridH(Number(vpObj && vpObj.w), Number(vpObj && vpObj.h))
 
-  const withRect = list.filter((r) => r && r.rectPct)
+  const withRect = list.filter((r: Record<string, unknown>) => r && r.rectPct)
   if (withRect.length === 0) return ''
 
   const grid: Array<Array<{ b: string; l: string }>> = Array.from({ length: gridH }, () =>
@@ -65,7 +66,7 @@ function renderAsciiMap(records: any[], options: any = {}): string {
 
   for (const record of withRect) {
     if (!isContainer(record)) continue
-    const cells = rectToCells(record.rectPct, gridH)
+    const cells = rectToCells(record.rectPct as Record<string, unknown>, gridH)
     if (!cells) continue
     const { colL, colR, rowT, rowB } = cells
     for (let r = rowT; r <= rowB; r += 1) {
@@ -82,12 +83,12 @@ function renderAsciiMap(records: any[], options: any = {}): string {
 
   for (const record of withRect) {
     if (isContainer(record)) continue
-    const cells = rectToCells(record.rectPct, gridH)
+    const cells = rectToCells(record.rectPct as Record<string, unknown>, gridH)
     if (!cells) continue
     const { colL, colR, rowT, rowB } = cells
     const col = Math.round((colL + colR) / 2)
     const row = Math.round((rowT + rowB) / 2)
-    const marker = refDigits(record.ref)
+    const marker = refDigits(String(record.ref || ''))
     if (grid[row][col].l !== ' ') grid[row][col].l = '*'
     else grid[row][col].l = marker
   }
@@ -95,7 +96,7 @@ function renderAsciiMap(records: any[], options: any = {}): string {
   const rows: string[] = []
   for (let r = 0; r < gridH; r += 1) {
     const yPct = Math.round(((r + 0.5) / gridH) * 100)
-    const line = grid[r].map((cell) => (cell.l !== ' ' ? cell.l : cell.b)).join('')
+    const line = grid[r].map((cell: { b: string; l: string }) => (cell.l !== ' ' ? cell.l : cell.b)).join('')
     rows.push(`${String(yPct).padStart(4, ' ')}%│${line}`)
   }
 

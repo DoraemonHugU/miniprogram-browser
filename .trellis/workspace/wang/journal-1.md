@@ -160,3 +160,12 @@
 ### Next Steps
 
 - None - task complete
+
+## 2026-07-19 session-refactor E2E 闭环
+
+- goto 前导 `/` 修复 + session/runtime 解耦已落地
+- E2E 暴露两处闭环缺口并已修：
+  1. 后续命令需 `bindSessionRuntimeFromPool` 回绑 autoPort
+  2. `connectOrEnable` 必须优先复用 live endpoint，禁止重复 auto
+- 真实 DevTools：open/snapshot/get/goto/click 全通；session 文件无 autoPort
+- 测试基线维持 224 pass / 10 fail

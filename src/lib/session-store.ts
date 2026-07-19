@@ -5,7 +5,67 @@ const net = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
+
+/** 宽松的配置参数类型（函数内部使用，保留属性访问） */
+interface LaxConfig {
+  repoRoot?: string
+  cliPath?: string
+  devtoolsProjectPath?: string
+  devtoolsProjectMap?: string
+  trustProject?: boolean | string
+  devtoolsPort?: string
+  autoPort?: string
+  projectPath?: string
+  legacySessionDir?: string
+  sessionDir?: string
+  sessionRegistryFile?: string
+  screenshotDir?: string
+  tempScreenshotDir?: string
+  devtoolsProjectMirror?: string
+  devtoolsProjectAutoLink?: string
+  [key: string]: unknown
+}
+
+interface LockHandle {
+  path: string
+  heartbeatTimer?: ReturnType<typeof setInterval>
+}
+
+interface RuntimeLaunchRecord {
+  id: string
+  sessionName: string
+  projectPath: string
+  cliPath: string
+  devtoolsProjectPath: string
+  devtoolsProjectMirror: string
+  devtoolsProjectAutoLink: string
+  devtoolsPort: string
+  autoPort: string
+  projectStrategy: string
+  status: string
+  createdAt: string
+  updatedAt: string
+  pid?: number
+  [key: string]: unknown
+}
+
+interface SessionConfig {
+  repoRoot: string
+  cliPath: string
+  devtoolsProjectPath: string
+  devtoolsProjectMap: string
+  trustProject: boolean
+  devtoolsPort: string
+  autoPort: string
+  projectPath: string
+  legacySessionDir: string
+  sessionDir: string
+  sessionRegistryFile: string
+  screenshotDir: string
+  tempScreenshotDir: string
+  [key: string]: unknown
+}
 
 const DEVTOOLS_PORT_RANGE = { start: 39085, end: 39185 }
 const AUTO_PORT_RANGE = { start: 9515, end: 9615 }
@@ -14,12 +74,12 @@ const DEFAULT_MAX_RUNTIME_EVENTS = 200
 const DEFAULT_MAX_ROUTE_EVENTS = 200
 const DEFAULT_MAX_RUNTIME_LAUNCH_RECORDS = 100
 
-function detectRepoRoot() {
+function detectRepoRoot(): string {
   return path.resolve(__dirname, '../..')
 }
 
-function createDefaultConfig(repoRoot = detectRepoRoot()) {
-  const merged = { ...process.env }
+function createDefaultConfig(repoRoot: string = detectRepoRoot()): SessionConfig {
+  const merged: Record<string, string | undefined> = { ...process.env }
 
   let defaultCliPath = ''
   if (process.platform === 'darwin') {
@@ -45,7 +105,7 @@ function createDefaultConfig(repoRoot = detectRepoRoot()) {
   }
 }
 
-function normalizeProjectPath(projectPath) {
+function normalizeProjectPath(projectPath: unknown): string {
   if (!projectPath) {
     return ''
   }
@@ -53,7 +113,14 @@ function normalizeProjectPath(projectPath) {
   return path.resolve(String(projectPath).trim())
 }
 
-function resolveMiniProgramProjectInfo(projectPath) {
+interface MiniProgramProjectInfo {
+  projectPath: string
+  projectConfigPath: string
+  miniprogramRoot: string
+  appJsonPath: string
+}
+
+function resolveMiniProgramProjectInfo(projectPath: unknown): MiniProgramProjectInfo {
   const normalizedProjectPath = normalizeProjectPath(projectPath)
   if (!normalizedProjectPath) {
     throw new Error('Missing project path. Pass --project <miniprogram-root> on first open/session binding.')
@@ -68,11 +135,11 @@ function resolveMiniProgramProjectInfo(projectPath) {
     throw new Error(`Invalid mini program project: missing project.config.json under ${normalizedProjectPath}.`)
   }
 
-  let projectConfig
+  let projectConfig: AnyRecord
   try {
     projectConfig = JSON.parse(readFileSync(projectConfigPath, 'utf8'))
-  } catch (error) {
-    throw new Error(`Invalid mini program project: project.config.json is not valid JSON. ${error && error.message ? error.message : error}`)
+  } catch (error: unknown) {
+    throw new Error(`Invalid mini program project: project.config.json is not valid JSON. ${error && typeof error === 'object' && 'message' in error ? String((error as Error).message) : String(error)}`)
   }
 
   const miniprogramRoot = path.resolve(normalizedProjectPath, String(projectConfig.miniprogramRoot || '').trim() || '.')
@@ -93,15 +160,15 @@ function resolveMiniProgramProjectInfo(projectPath) {
   }
 }
 
-function tryResolveMiniProgramProjectInfo(projectPath) {
+function tryResolveMiniProgramProjectInfo(projectPath: unknown): MiniProgramProjectInfo | null {
   try {
     return resolveMiniProgramProjectInfo(projectPath)
-  } catch (_) {
+  } catch (_: unknown) {
     return null
   }
 }
 
-function findGitWorkTreeRoot(cwd) {
+function findGitWorkTreeRoot(cwd: unknown): string {
   let currentPath = normalizeProjectPath(cwd)
   while (currentPath) {
     if (existsSync(path.join(currentPath, '.git'))) {
@@ -118,10 +185,10 @@ function findGitWorkTreeRoot(cwd) {
   return ''
 }
 
-function discoverMiniProgramProjectFromCwd(cwd = process.cwd()) {
+function discoverMiniProgramProjectFromCwd(cwd: string = process.cwd()): MiniProgramProjectInfo | null {
   let currentPath = normalizeProjectPath(cwd)
   const gitWorkTreeRoot = findGitWorkTreeRoot(currentPath)
-  const seen = new Set()
+  const seen = new Set<string>()
   const childCandidates = ['apps/miniprogram', 'miniprogram']
 
   while (currentPath) {
@@ -130,7 +197,7 @@ function discoverMiniProgramProjectFromCwd(cwd = process.cwd()) {
       return direct
     }
 
-    const matches = []
+    const matches: MiniProgramProjectInfo[] = []
     for (const candidate of childCandidates) {
       const candidatePath = path.join(currentPath, candidate)
       if (seen.has(candidatePath)) {
@@ -160,7 +227,7 @@ function discoverMiniProgramProjectFromCwd(cwd = process.cwd()) {
   return null
 }
 
-function resolveGitDir(projectPath) {
+function resolveGitDir(projectPath: unknown): string {
   let currentPath = normalizeProjectPath(projectPath)
   if (!currentPath) {
     return ''
@@ -178,10 +245,10 @@ function resolveGitDir(projectPath) {
           const raw = readFileSync(dotGitPath, 'utf8')
           const match = raw.match(/^gitdir:\s*(.+)\s*$/imu)
           if (match) {
-            return path.resolve(currentPath, match[1])
+            return path.resolve(currentPath, match[1].trim())
           }
         }
-      } catch (_) {
+      } catch (_: unknown) {
       }
     }
 
@@ -195,7 +262,7 @@ function resolveGitDir(projectPath) {
   return ''
 }
 
-function projectStateRoot(config) {
+function projectStateRoot(config: AnyRecord = {}): string {
   const projectPath = normalizeProjectPath(config && config.projectPath)
   if (!projectPath) {
     const legacySessionDir = String((config && (config.legacySessionDir || config.sessionDir)) || '').trim()
@@ -216,7 +283,7 @@ function projectStateRoot(config) {
   return path.join(os.homedir(), '.miniprogram-browser', 'projects', projectKey)
 }
 
-function resolveSessionDir(config) {
+function resolveSessionDir(config: AnyRecord = {}): string {
   const projectPath = normalizeProjectPath(config && config.projectPath)
   if (!projectPath) {
     return String((config && (config.legacySessionDir || config.sessionDir)) || '').trim()
@@ -225,56 +292,141 @@ function resolveSessionDir(config) {
   return path.join(projectStateRoot(config), 'sessions')
 }
 
-function sessionRegistryFilePath(config) {
+function sessionRegistryFilePath(config: AnyRecord = {}): string {
   return String((config && config.sessionRegistryFile) || path.join(os.homedir(), '.miniprogram-browser', 'session-registry.json'))
 }
 
-function sessionIdentityKey(sessionName, projectPath) {
+function sessionIdentityKey(sessionName: string, projectPath: string): string {
   return `${sessionName}::${normalizeProjectPath(projectPath)}`
 }
 
-async function readSessionRegistry(config) {
+/**
+ * 从项目路径推导可读 session slug（不含 -xN）。
+ * leaf 为 miniprogram/weapp/apps 等泛名时向上取有意义的一段。
+ */
+function projectSessionSlug(projectPath: string): string {
+  const normalized = String(projectPath || '').trim().replace(/\\/gu, '/')
+  if (!normalized) {
+    return 'project'
+  }
+
+  const parts = normalized.split('/').filter(Boolean)
+  if (!parts.length) {
+    return 'project'
+  }
+
+  const genericLeaves = new Set(['miniprogram', 'weapp', 'miniapp', 'mp', 'src', 'app', 'apps', 'client', 'frontend'])
+  let leaf = parts[parts.length - 1]
+  if (genericLeaves.has(leaf.toLowerCase())) {
+    for (let index = parts.length - 2; index >= 0; index -= 1) {
+      const candidate = parts[index]
+      if (!genericLeaves.has(candidate.toLowerCase())) {
+        leaf = candidate
+        break
+      }
+    }
+  }
+
+  let slug = leaf
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+  if (!slug) {
+    slug = 'project'
+  }
+  if (slug.length > 32) {
+    slug = slug.slice(0, 32).replace(/-+$/gu, '') || 'project'
+  }
+  return slug
+}
+
+function isAutoProjectSessionName(sessionName: string, projectSlugOrPath: string): boolean {
+  const name = String(sessionName || '').trim()
+  const slug = String(projectSlugOrPath || '').includes('/') || String(projectSlugOrPath || '').includes('\\')
+    ? projectSessionSlug(projectSlugOrPath)
+    : String(projectSlugOrPath || '').trim().toLowerCase()
+  if (!name || !slug) {
+    return false
+  }
+  const escaped = slug.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return new RegExp(`^${escaped}-x([1-9]\\d*)$`, 'u').test(name)
+}
+
+function listAutoProjectSessionIndexes(existingNames: string[] = [], projectPath: string): number[] {
+  const slug = projectSessionSlug(projectPath)
+  const indexes: number[] = []
+  for (const name of existingNames || []) {
+    if (!isAutoProjectSessionName(name, slug)) {
+      continue
+    }
+    const match = String(name).match(/-x([1-9]\d*)$/u)
+    if (match) {
+      indexes.push(Number(match[1]))
+    }
+  }
+  return indexes.sort((left, right) => left - right)
+}
+
+/** 复用：已有自动 session 取最大序号；否则 project-x1 */
+function pickAutoProjectSessionName(existingNames: string[] = [], projectPath: string): string {
+  const slug = projectSessionSlug(projectPath)
+  const indexes = listAutoProjectSessionIndexes(existingNames, projectPath)
+  if (!indexes.length) {
+    return `${slug}-x1`
+  }
+  return `${slug}-x${indexes[indexes.length - 1]}`
+}
+
+/** 新开：下一个空闲 project-xN */
+function nextAutoProjectSessionName(existingNames: string[] = [], projectPath: string): string {
+  const slug = projectSessionSlug(projectPath)
+  const indexes = listAutoProjectSessionIndexes(existingNames, projectPath)
+  const next = indexes.length ? indexes[indexes.length - 1] + 1 : 1
+  return `${slug}-x${next}`
+}
+
+async function readSessionRegistry(config: AnyRecord = {}): Promise<{ sessions: Record<string, unknown[]> }> {
   const filePath = sessionRegistryFilePath(config)
 
   try {
     const raw = await readFile(filePath, 'utf8')
     const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' && parsed.sessions ? parsed : { sessions: {} }
-  } catch (_) {
+    return parsed && typeof parsed === 'object' && (parsed as AnyRecord).sessions ? parsed as { sessions: Record<string, unknown[]> } : { sessions: {} }
+  } catch (_: unknown) {
     return { sessions: {} }
   }
 }
 
-async function writeSessionRegistry(config, registry) {
+async function writeSessionRegistry(config: AnyRecord = {}, registry: { sessions: Record<string, unknown[]> }): Promise<void> {
   const filePath = sessionRegistryFilePath(config)
   await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, JSON.stringify(registry, null, 2))
 }
 
-async function registerSessionProject(sessionName, config) {
+async function registerSessionProject(sessionName: string, config: AnyRecord = {}): Promise<void> {
   const projectPath = normalizeProjectPath(config && config.projectPath)
   if (!projectPath) {
     return
   }
 
   const registry = await readSessionRegistry(config)
-  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] : []
+  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] as AnyRecord[] : []
   registry.sessions[sessionName] = [
-    ...entries.filter((item) => normalizeProjectPath(item && item.projectPath) !== projectPath),
+    ...entries.filter((item: AnyRecord) => normalizeProjectPath(item && item.projectPath) !== projectPath),
     { projectPath, updatedAt: new Date().toISOString() },
   ]
   await writeSessionRegistry(config, registry)
 }
 
-async function unregisterSessionProject(sessionName, config) {
+async function unregisterSessionProject(sessionName: string, config: AnyRecord = {}): Promise<void> {
   const projectPath = normalizeProjectPath(config && config.projectPath)
   if (!projectPath) {
     return
   }
 
   const registry = await readSessionRegistry(config)
-  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] : []
-  const nextEntries = entries.filter((item) => normalizeProjectPath(item && item.projectPath) !== projectPath)
+  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] as AnyRecord[] : []
+  const nextEntries = entries.filter((item: AnyRecord) => normalizeProjectPath(item && item.projectPath) !== projectPath)
   if (nextEntries.length) {
     registry.sessions[sessionName] = nextEntries
   } else {
@@ -283,19 +435,19 @@ async function unregisterSessionProject(sessionName, config) {
   await writeSessionRegistry(config, registry)
 }
 
-function runtimeLaunchRegistryFilePath(config) {
+function runtimeLaunchRegistryFilePath(config: AnyRecord = {}): string {
   return path.join(projectStateRoot(config), 'runtime-launches.json')
 }
 
-function normalizeRuntimeLaunchId(value) {
+function normalizeRuntimeLaunchId(value: unknown): string {
   return String(value || '')
     .trim()
     .replace(/[^\w.-]+/gu, '-')
     .slice(0, 120)
 }
 
-function normalizeRuntimeLaunchRecord(record) {
-  const normalized = {
+function normalizeRuntimeLaunchRecord(record: AnyRecord = {}): RuntimeLaunchRecord {
+  const normalized: RuntimeLaunchRecord = {
     ...(record || {}),
     id: normalizeRuntimeLaunchId(record && record.id),
     sessionName: String((record && record.sessionName) || '').trim(),
@@ -314,35 +466,35 @@ function normalizeRuntimeLaunchRecord(record) {
   return normalized
 }
 
-async function readRuntimeLaunchRegistry(config) {
+async function readRuntimeLaunchRegistry(config: AnyRecord = {}): Promise<{ launches: RuntimeLaunchRecord[] }> {
   const filePath = runtimeLaunchRegistryFilePath(config)
 
   try {
     const raw = await readFile(filePath, 'utf8')
     const parsed = JSON.parse(raw)
-    const launches = Array.isArray(parsed && parsed.launches) ? parsed.launches : []
+    const launches = Array.isArray(parsed && (parsed as AnyRecord).launches) ? (parsed as AnyRecord).launches as AnyRecord[] : []
     return {
       launches: launches
-        .map((item) => normalizeRuntimeLaunchRecord(item))
-        .filter((item) => item.id && item.projectPath),
+        .map((item: AnyRecord) => normalizeRuntimeLaunchRecord(item))
+        .filter((item: RuntimeLaunchRecord) => item.id && item.projectPath),
     }
-  } catch (_) {
+  } catch (_: unknown) {
     return { launches: [] }
   }
 }
 
-async function writeRuntimeLaunchRegistry(config, registry) {
+async function writeRuntimeLaunchRegistry(config: AnyRecord = {}, registry: { launches: RuntimeLaunchRecord[] }): Promise<void> {
   const filePath = runtimeLaunchRegistryFilePath(config)
   const launches = (Array.isArray(registry && registry.launches) ? registry.launches : [])
-    .map((item) => normalizeRuntimeLaunchRecord(item))
-    .filter((item) => item.id && item.projectPath)
-    .sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)))
+    .map((item: RuntimeLaunchRecord) => normalizeRuntimeLaunchRecord(item))
+    .filter((item: RuntimeLaunchRecord) => item.id && item.projectPath)
+    .sort((left: RuntimeLaunchRecord, right: RuntimeLaunchRecord) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)))
     .slice(0, DEFAULT_MAX_RUNTIME_LAUNCH_RECORDS)
   await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, JSON.stringify({ launches }, null, 2))
 }
 
-async function recordRuntimeLaunch(sessionName, config, metadata: AnyRecord = {}) {
+async function recordRuntimeLaunch(sessionName: string, config: AnyRecord = {}, metadata: AnyRecord = {}): Promise<RuntimeLaunchRecord | null> {
   const projectPath = normalizeProjectPath(config && config.projectPath)
   if (!projectPath) {
     return null
@@ -357,34 +509,34 @@ async function recordRuntimeLaunch(sessionName, config, metadata: AnyRecord = {}
     sessionName,
     projectPath,
     cliPath: config.cliPath || '',
-    devtoolsProjectPath: metadata.devtoolsProjectPath || config.devtoolsProjectPath || '',
-    devtoolsProjectMirror: metadata.devtoolsProjectMirror || config.devtoolsProjectMirror || '',
-    devtoolsProjectAutoLink: metadata.devtoolsProjectAutoLink || config.devtoolsProjectAutoLink || '',
-    devtoolsPort: metadata.devtoolsPort || config.devtoolsPort || '',
-    autoPort: metadata.autoPort || config.autoPort || '',
-    projectStrategy: metadata.projectStrategy || '',
-    status: metadata.status || 'starting',
-    createdAt: metadata.createdAt || now,
+    devtoolsProjectPath: (metadata.devtoolsProjectPath as string) || (config.devtoolsProjectPath as string) || '',
+    devtoolsProjectMirror: (metadata.devtoolsProjectMirror as string) || (config.devtoolsProjectMirror as string) || '',
+    devtoolsProjectAutoLink: (metadata.devtoolsProjectAutoLink as string) || (config.devtoolsProjectAutoLink as string) || '',
+    devtoolsPort: (metadata.devtoolsPort as string) || (config.devtoolsPort as string) || '',
+    autoPort: (metadata.autoPort as string) || (config.autoPort as string) || '',
+    projectStrategy: (metadata.projectStrategy as string) || '',
+    status: (metadata.status as string) || 'starting',
+    createdAt: (metadata.createdAt as string) || now,
     updatedAt: now,
     pid: process.pid,
   })
   registry.launches = [
     record,
-    ...registry.launches.filter((item) => item.id !== id),
+    ...registry.launches.filter((item: RuntimeLaunchRecord) => item.id !== id),
   ]
   await writeRuntimeLaunchRegistry(config, registry)
   return record
 }
 
-async function updateRuntimeLaunch(id, config, patch: AnyRecord = {}) {
+async function updateRuntimeLaunch(id: unknown, config: AnyRecord = {}, patch: AnyRecord = {}): Promise<RuntimeLaunchRecord | null> {
   const launchId = normalizeRuntimeLaunchId(id)
   if (!launchId) {
     return null
   }
 
   const registry = await readRuntimeLaunchRegistry(config)
-  let updatedRecord = null
-  registry.launches = registry.launches.map((item) => {
+  let updatedRecord: RuntimeLaunchRecord | null = null
+  registry.launches = registry.launches.map((item: RuntimeLaunchRecord) => {
     if (item.id !== launchId) {
       return item
     }
@@ -401,7 +553,7 @@ async function updateRuntimeLaunch(id, config, patch: AnyRecord = {}) {
   return updatedRecord
 }
 
-async function removeRuntimeLaunch(id, config) {
+async function removeRuntimeLaunch(id: unknown, config: AnyRecord = {}): Promise<boolean> {
   const launchId = normalizeRuntimeLaunchId(id)
   if (!launchId) {
     return false
@@ -409,17 +561,17 @@ async function removeRuntimeLaunch(id, config) {
 
   const registry = await readRuntimeLaunchRegistry(config)
   const before = registry.launches.length
-  registry.launches = registry.launches.filter((item) => item.id !== launchId)
+  registry.launches = registry.launches.filter((item: RuntimeLaunchRecord) => item.id !== launchId)
   await writeRuntimeLaunchRegistry(config, registry)
   return registry.launches.length !== before
 }
 
-async function listRuntimeLaunches(config) {
+async function listRuntimeLaunches(config: AnyRecord = {}): Promise<RuntimeLaunchRecord[]> {
   const registry = await readRuntimeLaunchRegistry(config)
   return registry.launches
 }
 
-async function resolveSessionConfig(sessionName, config) {
+async function resolveSessionConfig(sessionName: string, config: AnyRecord = {}): Promise<AnyRecord> {
   const explicitProjectPath = normalizeProjectPath(config && config.projectPath)
   if (explicitProjectPath) {
     return {
@@ -430,16 +582,16 @@ async function resolveSessionConfig(sessionName, config) {
   }
 
   const registry = await readSessionRegistry(config)
-  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] : []
+  const entries = Array.isArray(registry.sessions[sessionName]) ? registry.sessions[sessionName] as AnyRecord[] : []
   const candidates = entries
-    .map((item) => normalizeProjectPath(item && item.projectPath))
+    .map((item: AnyRecord) => normalizeProjectPath(item && item.projectPath))
     .filter(Boolean)
-    .map((projectPath) => ({
+    .map((projectPath: string) => ({
       ...config,
       projectPath,
       sessionDir: resolveSessionDir({ ...config, projectPath }),
     }))
-    .filter((candidate) => existsSync(path.join(candidate.sessionDir, `${sessionName}.json`)))
+    .filter((candidate: AnyRecord) => existsSync(path.join(candidate.sessionDir as string, `${sessionName}.json`)))
 
   if (candidates.length === 1) {
     return candidates[0]
@@ -455,12 +607,12 @@ async function resolveSessionConfig(sessionName, config) {
   }
 }
 
-function assertProjectPath(config) {
+function assertProjectPath(config: AnyRecord = {}): MiniProgramProjectInfo {
   return resolveMiniProgramProjectInfo(config && config.projectPath)
 }
 
-function mergeConfigOverrides(baseConfig, overrides: AnyRecord = {}) {
-  const merged = { ...(baseConfig || {}) }
+function mergeConfigOverrides(baseConfig: AnyRecord = {}, overrides: AnyRecord = {}): AnyRecord {
+  const merged: AnyRecord = { ...(baseConfig || {}) }
 
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined || value === null || value === '') {
@@ -472,8 +624,8 @@ function mergeConfigOverrides(baseConfig, overrides: AnyRecord = {}) {
   return merged
 }
 
-function assertBindingConsistency(existingConfig, overrides: AnyRecord = {}) {
-  const keys = ['projectPath', 'autoPort']
+function assertBindingConsistency(existingConfig: AnyRecord = {}, overrides: AnyRecord = {}): void {
+  const keys = ['projectPath']
 
   for (const key of keys) {
     const existingValue = String((existingConfig && existingConfig[key]) || '').trim()
@@ -489,11 +641,19 @@ function assertBindingConsistency(existingConfig, overrides: AnyRecord = {}) {
   }
 }
 
-function assertNoDevtoolsConflict(config, otherSessions = []) {
+function assertNoDevtoolsConflict(config: AnyRecord = {}, _otherSessions: AnyRecord[] = []): void {
   return
 }
 
-function validateSessionPortConflicts(config, otherSessions = []) {
+interface OtherSessionInfo {
+  name: string
+  route: string
+  epoch: number
+  config: AnyRecord
+  [key: string]: unknown
+}
+
+function validateSessionPortConflicts(config: AnyRecord = {}, otherSessions: AnyRecord[] = []): void {
   assertNoDevtoolsConflict(config, otherSessions)
 
   const currentAutoPort = String((config && config.autoPort) || '').trim()
@@ -502,7 +662,7 @@ function validateSessionPortConflicts(config, otherSessions = []) {
   }
 
   for (const item of otherSessions) {
-    const otherConfig = item && item.config ? item.config : item
+    const otherConfig = (item && item.config ? item.config : item) as AnyRecord
     const otherAutoPort = String((otherConfig && otherConfig.autoPort) || '').trim()
     if (!otherAutoPort || otherAutoPort !== currentAutoPort) {
       continue
@@ -512,7 +672,7 @@ function validateSessionPortConflicts(config, otherSessions = []) {
   }
 }
 
-function normalizePort(value) {
+function normalizePort(value: unknown): string {
   if (value === undefined || value === null || value === '') {
     return ''
   }
@@ -525,12 +685,12 @@ function normalizePort(value) {
   return String(number)
 }
 
-async function isPortAvailable(port) {
+async function isPortAvailable(port: number): Promise<boolean> {
   await new Promise<void>((resolve, reject) => {
     const server = net.createServer()
     server.once('error', reject)
     server.listen(port, '127.0.0.1', () => {
-      server.close((closeError) => {
+      server.close((closeError: unknown) => {
         if (closeError) {
           reject(closeError)
           return
@@ -543,25 +703,25 @@ async function isPortAvailable(port) {
   return true
 }
 
-async function loadOtherSessionConfigs(sessionDir, sessionName) {
-  const currentConfig = sessionDir
+async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionName: string): Promise<OtherSessionInfo[]> {
+  const currentConfig = sessionDirOrConfig
   const registry = await readSessionRegistry(currentConfig)
-  const configs = []
-  const seen = new Set()
+  const configs: OtherSessionInfo[] = []
+  const seen = new Set<string>()
 
   for (const [name, entries] of Object.entries(registry.sessions || {})) {
-    for (const entry of Array.isArray(entries) ? entries : []) {
+    for (const entry of Array.isArray(entries) ? entries as AnyRecord[] : []) {
       const projectPath = normalizeProjectPath(entry && entry.projectPath)
       if (!projectPath) {
         continue
       }
 
-      const candidateConfig = {
+      const candidateConfig: AnyRecord = {
         ...currentConfig,
         projectPath,
         sessionDir: resolveSessionDir({ ...currentConfig, projectPath }),
       }
-      const filePath = path.join(candidateConfig.sessionDir, `${name}.json`)
+      const filePath = path.join(candidateConfig.sessionDir as string, `${name}.json`)
       if (!existsSync(filePath)) {
         continue
       }
@@ -578,16 +738,16 @@ async function loadOtherSessionConfigs(sessionDir, sessionName) {
 
       try {
         const raw = await readFile(filePath, 'utf8')
-        const parsed = JSON.parse(raw)
+        const parsed = JSON.parse(raw) as AnyRecord
         if (parsed && parsed.config) {
           configs.push({
             name,
-            route: parsed.route || '',
+            route: (parsed.route as string) || '',
             epoch: Number(parsed.epoch || 0),
-            config: { ...candidateConfig, ...(parsed.config || {}) },
+            config: { ...candidateConfig, ...((parsed.config || {}) as AnyRecord) },
           })
         }
-      } catch (_) {
+      } catch (_: unknown) {
       }
     }
   }
@@ -609,22 +769,22 @@ async function loadOtherSessionConfigs(sessionDir, sessionName) {
       }
       try {
         const raw = await readFile(path.join(legacySessionDir, entry.name), 'utf8')
-        const parsed = JSON.parse(raw)
+        const parsed = JSON.parse(raw) as AnyRecord
         if (parsed && parsed.config) {
-          const parsedProjectPath = normalizeProjectPath(parsed.config.projectPath)
+          const parsedProjectPath = normalizeProjectPath((parsed.config as AnyRecord).projectPath)
           const currentProjectPath = normalizeProjectPath(currentConfig.projectPath)
           if (name === sessionName && (!parsedProjectPath || parsedProjectPath === currentProjectPath)) {
             continue
           }
           configs.push({
             name,
-            route: parsed.route || '',
+            route: (parsed.route as string) || '',
             epoch: Number(parsed.epoch || 0),
-            config: { ...currentConfig, ...(parsed.config || {}), sessionDir: legacySessionDir },
+            config: { ...currentConfig, ...((parsed.config || {}) as AnyRecord), sessionDir: legacySessionDir },
           })
           seen.add(identity)
         }
-      } catch (_) {
+      } catch (_: unknown) {
       }
     }
   }
@@ -632,7 +792,7 @@ async function loadOtherSessionConfigs(sessionDir, sessionName) {
   return configs
 }
 
-async function selectPort(preferredPort, range, reservedPorts, availabilityChecker) {
+async function selectPort(preferredPort: string, range: { start: number; end: number }, reservedPorts: Set<number>, availabilityChecker: (port: number) => Promise<boolean>): Promise<string> {
   const normalizedPreferred = normalizePort(preferredPort)
   if (normalizedPreferred) {
     return normalizedPreferred
@@ -649,19 +809,19 @@ async function selectPort(preferredPort, range, reservedPorts, availabilityCheck
         continue
       }
       return String(port)
-    } catch (_) {
+    } catch (_: unknown) {
     }
   }
 
   throw new Error(`No free port available in range ${range.start}-${range.end}`)
 }
 
-async function assignPorts(config, otherConfigs = [], availabilityChecker = isPortAvailable) {
+async function assignPorts(config: AnyRecord = {}, otherConfigs: AnyRecord[] = [], availabilityChecker: (port: number) => Promise<boolean> = isPortAvailable): Promise<AnyRecord> {
   validateSessionPortConflicts(config, otherConfigs)
 
-  const reservedAutoPorts = new Set()
+  const reservedAutoPorts = new Set<number>()
   for (const item of otherConfigs) {
-    const otherConfig = item && item.config ? item.config : item
+    const otherConfig = (item && item.config ? item.config : item) as AnyRecord
     const autoPort = Number(otherConfig && otherConfig.autoPort)
     if (autoPort) {
       reservedAutoPorts.add(autoPort)
@@ -672,43 +832,26 @@ async function assignPorts(config, otherConfigs = [], availabilityChecker = isPo
     }
   }
 
-  const nextConfig = { ...config }
+  const nextConfig: AnyRecord = { ...config }
   nextConfig.devtoolsPort = normalizePort(nextConfig.devtoolsPort)
   if (nextConfig.devtoolsPort) {
     reservedAutoPorts.add(Number(nextConfig.devtoolsPort))
   }
-  nextConfig.autoPort = await selectPort(nextConfig.autoPort, AUTO_PORT_RANGE, reservedAutoPorts, availabilityChecker)
+  nextConfig.autoPort = await selectPort(nextConfig.autoPort as string, AUTO_PORT_RANGE, reservedAutoPorts, availabilityChecker)
   return nextConfig
 }
 
-async function ensureSessionPorts(state, availabilityChecker = isPortAvailable) {
-  const needsAutoPort = !normalizePort(state.config.autoPort)
-
-  state.portResolution = {
-    autoPortAssigned: false,
-    devtoolsPortAssigned: false,
-  }
-
-  if (!state.config.legacySessionDir && state.config.sessionDir) {
-    state.config.legacySessionDir = state.config.sessionDir
-  }
-  state.config.projectPath = normalizeProjectPath(state.config.projectPath)
-  state.config.sessionDir = resolveSessionDir(state.config)
-
-  if (!needsAutoPort) {
-    state.config.devtoolsPort = normalizePort(state.config.devtoolsPort)
-    state.config.autoPort = normalizePort(state.config.autoPort)
-    return state
-  }
-
-  const otherConfigs = await loadOtherSessionConfigs(state.config, state.name)
-  state.config = await assignPorts(state.config, otherConfigs, availabilityChecker)
-  state.portResolution.devtoolsPortAssigned = false
-  state.portResolution.autoPortAssigned = needsAutoPort
-  return state
+interface PortResolution {
+  autoPortAssigned: boolean
+  devtoolsPortAssigned: boolean
 }
 
-function createEmptySessionState({ sessionName, config }) {
+interface CreateSessionStateInput {
+  sessionName: string
+  config: AnyRecord
+}
+
+function createEmptySessionState({ sessionName, config }: CreateSessionStateInput): AnyRecord {
   return {
     name: sessionName,
     bound: false,
@@ -728,11 +871,40 @@ function createEmptySessionState({ sessionName, config }) {
   }
 }
 
-function sessionFilePath(name, config) {
+async function ensureSessionPorts(state: AnyRecord, availabilityChecker: (port: number) => Promise<boolean> = isPortAvailable): Promise<AnyRecord> {
+  const stateConfig = state.config as AnyRecord
+  const needsAutoPort = !normalizePort(stateConfig.autoPort)
+
+  state.portResolution = {
+    autoPortAssigned: false,
+    devtoolsPortAssigned: false,
+  } as PortResolution
+
+  if (!stateConfig.legacySessionDir && stateConfig.sessionDir) {
+    stateConfig.legacySessionDir = stateConfig.sessionDir
+  }
+  stateConfig.projectPath = normalizeProjectPath(stateConfig.projectPath)
+  stateConfig.sessionDir = resolveSessionDir(stateConfig)
+
+  if (!needsAutoPort) {
+    stateConfig.devtoolsPort = normalizePort(stateConfig.devtoolsPort)
+    stateConfig.autoPort = normalizePort(stateConfig.autoPort)
+    return state
+  }
+
+  const otherConfigs = await loadOtherSessionConfigs(stateConfig, state.name as string)
+  state.config = await assignPorts(stateConfig, otherConfigs, availabilityChecker)
+  const portResolution = state.portResolution as PortResolution
+  portResolution.devtoolsPortAssigned = false
+  portResolution.autoPortAssigned = needsAutoPort
+  return state
+}
+
+function sessionFilePath(name: string, config: AnyRecord = {}): string {
   return path.join(resolveSessionDir(config), `${name}.json`)
 }
 
-function sessionLockRoot(config) {
+function sessionLockRoot(config: AnyRecord = {}): string {
   if (normalizeProjectPath(config && config.projectPath)) {
     return path.join(projectStateRoot(config), 'locks')
   }
@@ -743,11 +915,11 @@ function sessionLockRoot(config) {
   return path.join(os.tmpdir(), 'miniprogram-browser-locks', repoKey)
 }
 
-function sessionLockPath(name, config) {
+function sessionLockPath(name: string, config: AnyRecord = {}): string {
   return path.join(sessionLockRoot(config), `${name}.lock`)
 }
 
-function runtimeLockName(config) {
+function runtimeLockName(config: Record<string, unknown> = {}): string {
   const autoPort = normalizePort(config && config.autoPort)
   if (!autoPort) {
     return ''
@@ -755,8 +927,25 @@ function runtimeLockName(config) {
   return `__runtime_auto_${autoPort}`
 }
 
-function selectAttachableRuntimeSession(sessions = []) {
-  const liveSessions = (sessions || []).filter((item) => item && item.status === 'live' && item.autoPort)
+function selectAttachableRuntimeSession(
+  sessions: { status?: string; autoPort?: string; name?: string; sessionName?: string }[] = [],
+  preferredSessionName = '',
+): { mode: string; session?: AnyRecord; sessions?: AnyRecord[] } {
+  const liveSessions = (sessions || []).filter((item: AnyRecord) => item && item.status === 'live' && item.autoPort)
+  const preferred = String(preferredSessionName || '').trim()
+  if (preferred) {
+    const ownSessions = liveSessions.filter((item: AnyRecord) => {
+      const name = String(item.name || item.sessionName || '').trim()
+      return name === preferred
+    })
+    // 同名 session 的 live runtime 优先；同名多条时取列表首项（调用方应已按 updatedAt 降序）
+    if (ownSessions.length >= 1) {
+      return {
+        mode: 'attach',
+        session: ownSessions[0],
+      }
+    }
+  }
   if (liveSessions.length === 1) {
     return {
       mode: 'attach',
@@ -775,19 +964,57 @@ function selectAttachableRuntimeSession(sessions = []) {
   }
 }
 
-function shouldShutdownRuntimeOnClose(state, options: AnyRecord = {}) {
+/**
+ * 从 runtime 池为 session 选择应回绑的 live launch。
+ * 优先级：同 sessionName > 同项目唯一 live。
+ * 不负责探测 endpoint 是否可达（由调用方做）。
+ */
+function selectRuntimeLaunchForSession(
+  launches: AnyRecord[] = [],
+  sessionName = '',
+  projectPath = '',
+): AnyRecord | null {
+  const resolvedProject = projectPath ? path.resolve(projectPath) : ''
+  if (!resolvedProject) {
+    return null
+  }
+
+  const sameProjectLive = (launches || []).filter((item: AnyRecord) => {
+    if (!item || item.status !== 'live' || !item.autoPort) {
+      return false
+    }
+    const itemProject = item.projectPath ? path.resolve(String(item.projectPath)) : ''
+    return itemProject === resolvedProject
+  })
+
+  const preferred = String(sessionName || '').trim()
+  if (preferred) {
+    const own = sameProjectLive.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred)
+    if (own.length >= 1) {
+      return own[0]
+    }
+  }
+
+  if (sameProjectLive.length === 1) {
+    return sameProjectLive[0]
+  }
+
+  return null
+}
+
+function shouldShutdownRuntimeOnClose(state: AnyRecord, options: AnyRecord = {}): boolean {
   if (options.runtime) {
     return true
   }
   return !Boolean(state && state.runtimeAttached)
 }
 
-function sessionLockMetaPath(lockPath) {
+function sessionLockMetaPath(lockPath: string): string {
   return path.join(lockPath, 'meta.json')
 }
 
-function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) {
+function isProcessAlive(pid: unknown): boolean {
+  if (!Number.isInteger(pid) || (pid as number) <= 0) {
     return false
   }
 
@@ -796,26 +1023,26 @@ function isProcessAlive(pid) {
   }
 
   try {
-    process.kill(pid, 0)
+    process.kill(pid as number, 0)
     return true
-  } catch (error) {
-    return Boolean(error && error.code === 'EPERM')
+  } catch (error: unknown) {
+    return Boolean(error && (error as NodeJS.ErrnoException).code === 'EPERM')
   }
 }
 
-async function readLockMeta(lockPath) {
+async function readLockMeta(lockPath: string): Promise<AnyRecord | null> {
   try {
     return JSON.parse(await readFile(sessionLockMetaPath(lockPath), 'utf8'))
-  } catch (_) {
+  } catch (_: unknown) {
     return null
   }
 }
 
-async function writeLockMeta(lockPath, meta) {
+async function writeLockMeta(lockPath: string, meta: AnyRecord): Promise<void> {
   await writeFile(sessionLockMetaPath(lockPath), JSON.stringify(meta))
 }
 
-async function shouldReclaimStaleLock(lockPath, options: AnyRecord = {}) {
+async function shouldReclaimStaleLock(lockPath: string, options: AnyRecord = {}): Promise<boolean> {
   const staleHeartbeatMs = Number(options.staleHeartbeatMs || process.env.MINIPROGRAM_BROWSER_LOCK_STALE_MS || 15000)
   const meta = await readLockMeta(lockPath)
   const now = Date.now()
@@ -834,12 +1061,12 @@ async function shouldReclaimStaleLock(lockPath, options: AnyRecord = {}) {
   try {
     const info = await stat(lockPath)
     return now - info.mtimeMs > staleHeartbeatMs
-  } catch (_) {
+  } catch (_: unknown) {
     return false
   }
 }
 
-async function acquireSessionLock(sessionName, config, options: AnyRecord = {}) {
+async function acquireSessionLock(sessionName: string, config: AnyRecord = {}, options: AnyRecord = {}): Promise<LockHandle> {
   const timeoutMs = Number(options.timeoutMs || process.env.MINIPROGRAM_BROWSER_LOCK_TIMEOUT_MS || 120000)
   const pollMs = Number(options.pollMs || 100)
   const heartbeatMs = Number(options.heartbeatMs || 2000)
@@ -851,7 +1078,7 @@ async function acquireSessionLock(sessionName, config, options: AnyRecord = {}) 
   while (Date.now() - startedAt <= timeoutMs) {
     try {
       await mkdir(lockPath)
-      const meta = {
+      const meta: AnyRecord = {
         pid: process.pid,
         sessionName,
         command: options.command || '',
@@ -867,8 +1094,9 @@ async function acquireSessionLock(sessionName, config, options: AnyRecord = {}) 
       }, heartbeatMs)
       heartbeatTimer.unref?.()
       return { path: lockPath, heartbeatTimer }
-    } catch (error) {
-      if (!error || error.code !== 'EEXIST') {
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException
+      if (!error || err.code !== 'EEXIST') {
         throw error
       }
 
@@ -876,13 +1104,13 @@ async function acquireSessionLock(sessionName, config, options: AnyRecord = {}) 
         await rm(lockPath, { recursive: true, force: true })
         continue
       }
-      await new Promise((resolve) => setTimeout(resolve, pollMs))
+      await new Promise<void>((resolve) => setTimeout(resolve, pollMs))
     }
   }
 
   const meta = await readLockMeta(lockPath)
   if (meta) {
-    const parts = []
+    const parts: string[] = []
     if (meta.pid) {
       parts.push(`pid=${meta.pid}`)
     }
@@ -897,7 +1125,7 @@ async function acquireSessionLock(sessionName, config, options: AnyRecord = {}) 
   throw new Error(`Session is busy: ${sessionName}. 同一 session 只允许串行执行；请等待当前命令完成，或改用不同的 --session。`)
 }
 
-async function releaseSessionLock(lock) {
+async function releaseSessionLock(lock: LockHandle | null | undefined): Promise<void> {
   if (!lock || !lock.path) {
     return
   }
@@ -909,7 +1137,7 @@ async function releaseSessionLock(lock) {
   await rm(lock.path, { recursive: true, force: true })
 }
 
-async function loadSessionState(sessionName, config) {
+async function loadSessionState(sessionName: string, config: AnyRecord = {}): Promise<AnyRecord> {
   const resolvedConfig = await resolveSessionConfig(sessionName, config)
   const filePath = sessionFilePath(sessionName, resolvedConfig)
 
@@ -918,8 +1146,9 @@ async function loadSessionState(sessionName, config) {
   }
 
   const raw = await readFile(filePath, 'utf8')
-  const parsed = JSON.parse(raw)
-  const mergedConfig = { ...resolvedConfig, ...(parsed.config || {}) }
+  const parsed = JSON.parse(raw) as AnyRecord
+  // 忽略旧的 session 文件中残留的运行时字段，每次 open/connect 重新分配
+  const mergedConfig: AnyRecord = { ...resolvedConfig, ...stripRuntimeFields(parsed.config as AnyRecord || {}) }
   mergedConfig.projectPath = normalizeProjectPath(mergedConfig.projectPath)
   mergedConfig.sessionDir = resolveSessionDir(mergedConfig)
   delete mergedConfig.interactiveSelectors
@@ -929,60 +1158,76 @@ async function loadSessionState(sessionName, config) {
     name: sessionName,
     bound: true,
     config: mergedConfig,
-    refs: parsed.refs || {},
-    stableKeyToRef: parsed.stableKeyToRef || {},
-    lastSnapshot: parsed.lastSnapshot || [],
-    consoleEvents: parsed.consoleEvents || [],
-    exceptionEvents: parsed.exceptionEvents || [],
-    routeEvents: parsed.routeEvents || [],
+    refs: (parsed.refs as AnyRecord) || {},
+    stableKeyToRef: (parsed.stableKeyToRef as AnyRecord) || {},
+    lastSnapshot: Array.isArray(parsed.lastSnapshot) ? parsed.lastSnapshot : [],
+    consoleEvents: Array.isArray(parsed.consoleEvents) ? parsed.consoleEvents : [],
+    exceptionEvents: Array.isArray(parsed.exceptionEvents) ? parsed.exceptionEvents : [],
+    routeEvents: Array.isArray(parsed.routeEvents) ? parsed.routeEvents : [],
     lastRouteEventSeq: Number(parsed.lastRouteEventSeq || 0),
     lastVisualProbe: parsed.lastVisualProbe || null,
     pendingVisualAction: parsed.pendingVisualAction || null,
   }
 }
 
-async function saveSessionState(state) {
-  state.config.projectPath = normalizeProjectPath(state.config.projectPath)
-  state.config.sessionDir = resolveSessionDir(state.config)
-  await mkdir(state.config.sessionDir, { recursive: true })
+async function saveSessionState(state: AnyRecord): Promise<void> {
+  const stateConfig = state.config as AnyRecord
+  stateConfig.projectPath = normalizeProjectPath(stateConfig.projectPath)
+  stateConfig.sessionDir = resolveSessionDir(stateConfig)
+  await mkdir(stateConfig.sessionDir, { recursive: true })
   const prepared = prepareSessionStateForSave(state)
-  await writeFile(sessionFilePath(state.name, state.config), JSON.stringify(prepared, null, 2))
-  await registerSessionProject(state.name, state.config)
+  await writeFile(sessionFilePath(state.name as string, stateConfig), JSON.stringify(prepared, null, 2))
+  await registerSessionProject(state.name as string, stateConfig)
 }
 
-function prepareSessionStateForSave(state, options: AnyRecord = {}) {
+interface SaveOptions {
+  maxInactiveRefs?: number
+  maxRuntimeEvents?: number
+  maxRouteEvents?: number
+}
+
+function prepareSessionStateForSave(state: AnyRecord, options: SaveOptions = {}): AnyRecord {
   const maxInactiveRefs = Number(options.maxInactiveRefs || DEFAULT_MAX_INACTIVE_REFS)
   const maxRuntimeEvents = Number(options.maxRuntimeEvents || DEFAULT_MAX_RUNTIME_EVENTS)
   const maxRouteEvents = Number(options.maxRouteEvents || DEFAULT_MAX_ROUTE_EVENTS)
-  const refs: AnyRecord = { ...(state.refs || {}) }
-  const stableKeyToRef: AnyRecord = { ...(state.stableKeyToRef || {}) }
+  const refs: AnyRecord = { ...((state.refs as AnyRecord) || {}) }
+  const stableKeyToRef: AnyRecord = { ...((state.stableKeyToRef as AnyRecord) || {}) }
 
   const inactiveEntries = Object.entries(refs)
-    .filter(([, record]) => record && record.active === false)
-    .sort(([, left], [, right]) => Number((left && left.lastSeenEpoch) || 0) - Number((right && right.lastSeenEpoch) || 0))
+    .filter(([_, record]: [string, unknown]) => {
+      const rec = record as AnyRecord
+      return rec && rec.active === false
+    })
+    .sort(([_, left]: [string, unknown], [__, right]: [string, unknown]) => {
+      const l = left as AnyRecord
+      const r = right as AnyRecord
+      return Number((l && l.lastSeenEpoch) || 0) - Number((r && r.lastSeenEpoch) || 0)
+    })
 
   while (inactiveEntries.length > maxInactiveRefs) {
-    const [ref, record] = inactiveEntries.shift()
+    const [ref, record] = inactiveEntries.shift() as [string, AnyRecord]
     delete refs[ref]
-    if (record && record.stableKey && stableKeyToRef[record.stableKey] === ref) {
-      delete stableKeyToRef[record.stableKey]
+    const stableKey = record && (record.stableKey as string)
+    if (stableKey && stableKeyToRef[stableKey] === ref) {
+      delete stableKeyToRef[stableKey]
     }
   }
 
   const consoleEvents = Array.isArray(state.consoleEvents)
-    ? state.consoleEvents.slice(-maxRuntimeEvents)
+    ? (state.consoleEvents as unknown[]).slice(-maxRuntimeEvents)
     : []
   const exceptionEvents = Array.isArray(state.exceptionEvents)
-    ? state.exceptionEvents.slice(-maxRuntimeEvents)
+    ? (state.exceptionEvents as unknown[]).slice(-maxRuntimeEvents)
     : []
   const routeEvents = Array.isArray(state.routeEvents)
-    ? state.routeEvents.slice(-maxRouteEvents)
+    ? (state.routeEvents as unknown[]).slice(-maxRouteEvents)
     : []
 
   return {
     ...state,
     refs,
     stableKeyToRef,
+    config: stripRuntimeFields(state.config as AnyRecord),
     consoleEvents,
     exceptionEvents,
     routeEvents,
@@ -991,30 +1236,57 @@ function prepareSessionStateForSave(state, options: AnyRecord = {}) {
   }
 }
 
-async function listSessionStates(sessionDir) {
-  if (typeof sessionDir === 'object' && sessionDir) {
-    const otherConfigs = await loadOtherSessionConfigs(sessionDir, '')
+/**
+ * 移除 config 中运行时分配的资源字段，不持久化到 session 文件。
+ * 这些字段在每次 open/connect 时重新分配。
+ */
+function stripRuntimeFields(config: AnyRecord): AnyRecord {
+  const cleaned = { ...config }
+  delete cleaned.autoPort
+  delete cleaned.devtoolsPort
+  delete cleaned.devtoolsProjectAutoLink
+  delete cleaned.devtoolsProjectMirror
+  return cleaned
+}
+
+interface SessionListEntry {
+  name: string
+  projectPath: string
+  devtoolsProjectPath: string
+  devtoolsPort: string
+  autoPort: string
+  runtimeAttached: boolean
+  runtimeOwnerSession: string
+  route: string
+  epoch: number
+}
+
+async function listSessionStates(sessionDirOrConfig: AnyRecord | string): Promise<SessionListEntry[]> {
+  if (typeof sessionDirOrConfig === 'object' && sessionDirOrConfig) {
+    const otherConfigs = await loadOtherSessionConfigs(sessionDirOrConfig as AnyRecord, '')
     return otherConfigs
-      .map((item) => ({
+      .map((item: OtherSessionInfo) => ({
         name: item.name,
-        projectPath: item.config && item.config.projectPath ? item.config.projectPath : '',
-        devtoolsProjectPath: item.config && item.config.devtoolsProjectPath ? item.config.devtoolsProjectPath : '',
-        devtoolsPort: item.config && item.config.devtoolsPort ? item.config.devtoolsPort : '',
-        autoPort: item.config && item.config.autoPort ? item.config.autoPort : '',
+        projectPath: item.config && item.config.projectPath ? String(item.config.projectPath) : '',
+        devtoolsProjectPath: item.config && item.config.devtoolsProjectPath ? String(item.config.devtoolsProjectPath) : '',
+        devtoolsPort: item.config && item.config.devtoolsPort ? String(item.config.devtoolsPort) : '',
+        autoPort: item.config && item.config.autoPort ? String(item.config.autoPort) : '',
         runtimeAttached: Boolean(item.runtimeAttached),
-        runtimeOwnerSession: item.runtimeOwnerSession || '',
+        runtimeOwnerSession: (item.runtimeOwnerSession as string) || '',
         route: item.route || '',
         epoch: Number(item.epoch || 0),
       }))
-      .sort((left, right) => left.name.localeCompare(right.name))
+      .sort((left: SessionListEntry, right: SessionListEntry) => left.name.localeCompare(right.name))
   }
+
+  const sessionDir = String(sessionDirOrConfig)
 
   if (!existsSync(sessionDir)) {
     return []
   }
 
   const entries = await readdir(sessionDir, { withFileTypes: true })
-  const states = []
+  const states: SessionListEntry[] = []
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) {
@@ -1023,27 +1295,28 @@ async function listSessionStates(sessionDir) {
 
     try {
       const raw = await readFile(path.join(sessionDir, entry.name), 'utf8')
-      const parsed = JSON.parse(raw)
-      const name = parsed.name || entry.name.slice(0, -'.json'.length)
+      const parsed = JSON.parse(raw) as AnyRecord
+      const name = (parsed.name as string) || entry.name.slice(0, -'.json'.length)
+      const parsedConfig = (parsed.config || {}) as AnyRecord
       states.push({
         name,
-        projectPath: parsed.config && parsed.config.projectPath ? parsed.config.projectPath : '',
-        devtoolsProjectPath: parsed.config && parsed.config.devtoolsProjectPath ? parsed.config.devtoolsProjectPath : '',
-        devtoolsPort: parsed.config && parsed.config.devtoolsPort ? parsed.config.devtoolsPort : '',
-        autoPort: parsed.config && parsed.config.autoPort ? parsed.config.autoPort : '',
+        projectPath: parsedConfig.projectPath ? String(parsedConfig.projectPath) : '',
+        devtoolsProjectPath: parsedConfig.devtoolsProjectPath ? String(parsedConfig.devtoolsProjectPath) : '',
+        devtoolsPort: parsedConfig.devtoolsPort ? String(parsedConfig.devtoolsPort) : '',
+        autoPort: parsedConfig.autoPort ? String(parsedConfig.autoPort) : '',
         runtimeAttached: Boolean(parsed.runtimeAttached),
-        runtimeOwnerSession: parsed.runtimeOwnerSession || '',
-        route: parsed.route || '',
+        runtimeOwnerSession: (parsed.runtimeOwnerSession as string) || '',
+        route: (parsed.route as string) || '',
         epoch: Number(parsed.epoch || 0),
       })
-    } catch (_) {
+    } catch (_: unknown) {
     }
   }
 
-  return states.sort((left, right) => left.name.localeCompare(right.name))
+  return states.sort((left: SessionListEntry, right: SessionListEntry) => left.name.localeCompare(right.name))
 }
 
-async function clearSessionState(sessionName, config) {
+async function clearSessionState(sessionName: string, config: AnyRecord = {}): Promise<void> {
   const resolvedConfig = await resolveSessionConfig(sessionName, config)
   await rm(sessionFilePath(sessionName, resolvedConfig), { force: true })
   await unregisterSessionProject(sessionName, resolvedConfig)
@@ -1075,6 +1348,7 @@ module.exports = {
   updateRuntimeLaunch,
   removeRuntimeLaunch,
   selectAttachableRuntimeSession,
+  selectRuntimeLaunchForSession,
   shouldShutdownRuntimeOnClose,
   sessionLockRoot,
   sessionLockPath,
@@ -1082,4 +1356,8 @@ module.exports = {
   loadSessionState,
   saveSessionState,
   clearSessionState,
+  projectSessionSlug,
+  isAutoProjectSessionName,
+  pickAutoProjectSessionName,
+  nextAutoProjectSessionName,
 }

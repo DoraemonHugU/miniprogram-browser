@@ -7,9 +7,7 @@ const { spawnSync } = require('node:child_process')
 const { resolveEnvironment } = require('./platform')
 const { normalizeWindowsPathForCompare, toWindowsPath, runWindowsCommand } = require('./runtime-windows')
 
-type AnyRecord = Record<string, any>
-
-function windowsPathToWslPath(inputPath) {
+function windowsPathToWslPath(inputPath: string): string {
   const normalized = String(inputPath || '').trim()
   if (!normalized) {
     return ''
@@ -33,7 +31,7 @@ function resolveWindowsLocalAppData(runCommand = runWindowsCommand) {
   return lines.reverse().find((line) => /^[a-z]:\\/iu.test(line)) || ''
 }
 
-function resolveDevtoolsLogRoot(config, options: AnyRecord = {}) {
+function resolveDevtoolsLogRoot(config: Record<string, unknown>, options: Record<string, unknown> = {}) {
   const cliPath = String((config && config.cliPath) || '').trim()
   if (!cliPath) {
     throw new Error('Missing WeChat DevTools CLI path. Set WECHAT_DEVTOOLS_CLI or pass --cli-path <path>.')
@@ -42,14 +40,14 @@ function resolveDevtoolsLogRoot(config, options: AnyRecord = {}) {
   const cliDirectory = path.dirname(cliPath)
   const hasWindowsBundle = resolveEnvironment(config).devtoolsHost === 'win32'
   if (hasWindowsBundle) {
-    const installPath = (options.toWindowsPath || toWindowsPath)(cliDirectory)
+    const installPath = (options.toWindowsPath as (s: string) => string || toWindowsPath)(cliDirectory)
     const productHash = createHash('md5').update(installPath).digest('hex')
-    const localAppData = options.localAppData || resolveWindowsLocalAppData(options.runWindowsCommand || runWindowsCommand)
+    const localAppData = options.localAppData || resolveWindowsLocalAppData(runWindowsCommand)
     if (!localAppData) {
       throw new Error('Unable to resolve Windows LOCALAPPDATA for DevTools logs.')
     }
-    const logRootWin = path.win32.join(localAppData, '微信开发者工具', 'User Data', productHash, 'WeappLog')
-    const logRoot = process.platform === 'win32' ? logRootWin : (options.windowsPathToWslPath || windowsPathToWslPath)(logRootWin)
+    const logRootWin = path.win32.join(localAppData as string, '微信开发者工具', 'User Data', productHash, 'WeappLog')
+    const logRoot = process.platform === 'win32' ? logRootWin : (options.windowsPathToWslPath as (s: string) => string || windowsPathToWslPath)(logRootWin as string)
     if (!logRoot) {
       throw new Error(`Unable to convert DevTools log path: ${logRootWin}`)
     }
@@ -81,7 +79,7 @@ function resolveDevtoolsLogRoot(config, options: AnyRecord = {}) {
   )
 }
 
-async function discoverActiveDevtoolsLogRoot(rootInfo) {
+async function discoverActiveDevtoolsLogRoot(rootInfo: Record<string, unknown>): Promise<Record<string, unknown>> {
   const userDataRoot = rootInfo && rootInfo.userDataRoot
   const installPath = normalizeWindowsPathForCompare(rootInfo && rootInfo.installPath)
   if (!userDataRoot || !installPath) {
@@ -133,7 +131,7 @@ async function discoverActiveDevtoolsLogRoot(rootInfo) {
   }
 }
 
-async function listDevtoolsLogFiles(logRoot) {
+async function listDevtoolsLogFiles(logRoot: string): Promise<string[]> {
   const files: string[] = []
   const directNames = ['launch.log', 'stdout.log', 'stderr.log', 'report.log']
   for (const name of directNames) {
@@ -158,22 +156,22 @@ async function listDevtoolsLogFiles(logRoot) {
   return files
 }
 
-function tailLogLines(content, limit, grepPattern) {
+function tailLogLines(content: unknown, limit: unknown, grepPattern: unknown): string[] {
   let lines = String(content || '').split(/\r?\n/u).filter((line) => line.length > 0)
   if (grepPattern) {
-    const matcher = new RegExp(grepPattern, 'iu')
+    const matcher = new RegExp(String(grepPattern), 'iu')
     lines = lines.filter((line) => matcher.test(line))
   }
-  return lines.slice(Math.max(0, lines.length - limit))
+  return lines.slice(Math.max(0, lines.length - Number(limit)))
 }
 
-async function collectDevtoolsLogs(config, options: AnyRecord = {}) {
+async function collectDevtoolsLogs(config: Record<string, unknown>, options: Record<string, unknown> = {}) {
   const root = await discoverActiveDevtoolsLogRoot(resolveDevtoolsLogRoot(config, options))
   const lineLimit = Math.max(1, Number(options.limit || 80))
   const fileLimit = Math.max(1, Number(options.files || 4))
   const grepPattern = String(options.grep || '').trim()
   const files = []
-  for (const filePath of await listDevtoolsLogFiles(root.logRoot)) {
+  for (const filePath of await listDevtoolsLogFiles(String(root.logRoot))) {
     try {
       const info = await stat(filePath)
       files.push({

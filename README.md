@@ -79,38 +79,30 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 `miniprogram-browser` 会按当前平台自动处理传给微信开发者工具 CLI 的项目路径。正常情况下只传当前 shell 可读的 `--project`；如果当前目录或同 Git 工作树能唯一发现小程序项目，也可以省略：
 
-- macOS / Windows：直接使用项目根目录
-- WSL + Windows 盘挂载：`/mnt/f/...` 会自动转成 `F:\...`
-- WSL + Linux home 路径：只在显式 `open/doctor` 时，把项目一次性同步到 Windows `%TEMP%\miniprogram-browser\project-<hash>` 受控镜像，再把这个本地盘路径传给 DevTools
+- macOS / Windows：直接使用项目根目录（`projectStrategy=direct`）
+- WSL + Windows 盘挂载：`/mnt/d/...` 会自动转成 `D:\...`（`projectStrategy=wsl-mounted-drive`）
+- 显式指定 DevTools 侧路径：`--devtools-project`（`projectStrategy=explicit`）
+- 显式前缀映射：`--project-map` / `WECHAT_DEVTOOLS_PROJECT_MAP`（`projectStrategy=project-map`）
 
 ```bash
 miniprogram-browser open \
   --session demo \
-  --project /home/wang/work/demo/apps/miniprogram
+  --project /mnt/d/work/demo/apps/miniprogram
 
 miniprogram-browser open --session demo
 ```
 
-受控镜像的边界：
-
-- 不做后台循环，不做文件监听，不在普通 `path/snapshot/click/logs` 命令里刷新镜像
-- 只写入路径形如 `%TEMP%\miniprogram-browser\project-<hash>` 的受控目录
-- 受控目录内带 `.miniprogram-browser-managed` 标记文件；`close --session <name>` 只清理带标记且目标匹配的目录
-- 镜像排除 `node_modules` 和 `.git`，不会修改 Linux 源项目，也不会写用户全局配置
-- `open/doctor --json` 会输出 `projectStrategy=managed-mirror`、源项目路径和 DevTools 实际项目路径
-
-高级兜底只在自动镜像不可用时使用。可以显式指定 DevTools 侧路径：
+**推荐**：WSL 下把小程序项目放在 `/mnt/<drive>/...`（Windows 盘），路径转换最稳。  
+`/home/...` 等 Linux 侧路径不再走受控镜像复制；若 DevTools 无法直接消费该路径，请改用 Windows 盘项目，或：
 
 ```bash
+# 高级兜底：显式指定 DevTools 侧 Windows 路径
 miniprogram-browser open \
   --session demo \
   --project /home/wang/work/demo/apps/miniprogram \
   --devtools-project 'P:\work\demo\apps\miniprogram'
-```
 
-显式前缀映射也属于高级兜底。它只做字符串前缀替换，不创建 Windows 映射盘、不复制项目、不写用户目录配置：
-
-```bash
+# 高级兜底：前缀映射（只做字符串替换，不复制项目）
 miniprogram-browser open \
   --session demo \
   --project /home/wang/work/demo/apps/miniprogram \
@@ -123,6 +115,7 @@ miniprogram-browser open \
 export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tmp'
 ```
 
+`open/doctor` 成功时会回显 `project` / `devtoolsProject` / `strategy` / `autoPort` 等必要信息，便于确认实际连上的实例。
 ## 最短可运行示例
 
 ```bash
@@ -130,18 +123,18 @@ export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tm
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 # 已安装时
-# 在小程序项目目录或同 Git 工作树里，通常可以省略 --project
-miniprogram-browser open --session demo
-miniprogram-browser open --session demo --project /path/to/miniprogram-root
-miniprogram-browser app inspect --session demo
-miniprogram-browser doctor --session demo --json
-miniprogram-browser goto /pages/dashboard/index --session demo
-miniprogram-browser snapshot -i --session demo
-miniprogram-browser click @e1 --session demo
-miniprogram-browser timeline --session demo
-miniprogram-browser devtools logs --session demo --limit 40 --grep "appservice|simulator|error"
-miniprogram-browser screenshot --session demo --mode annotate
-miniprogram-browser screenshot --session demo --mode annotate --focus @e16,@e17
+# 在小程序项目目录或同 Git 工作树里，通常可以省略 --project 与 --session
+# 省略 --session 时自动生成/复用 {project}-xN（如 earlyriser-x1）
+miniprogram-browser open
+miniprogram-browser open --project /path/to/miniprogram-root
+miniprogram-browser snapshot -i
+miniprogram-browser click @e1
+miniprogram-browser open --session work   # 需要并行工作台时再显式命名
+miniprogram-browser doctor --json
+miniprogram-browser goto /pages/dashboard/index
+miniprogram-browser timeline
+miniprogram-browser devtools logs --limit 40 --grep "appservice|simulator|error"
+miniprogram-browser screenshot --mode annotate
 
 # 未安装时
 npx miniprogram-browser help
@@ -200,10 +193,11 @@ miniprogram-browser await stable --session demo
 
 - 运行时语义快照与 `@eNN` refs
 - 多 session 并发；同一 session 串行；默认 attach 同项目唯一 live runtime；`--fresh` 是显式新 runtime 逃逸点
+- **session 与 runtime 解耦**：session 存 route/refs 等用户上下文，不固化 `autoPort`；连接端口由 runtime 池管理，后续命令自动回绑
 - 默认项目级 session 管理；`session list --all` 是显式全局查看入口
-- 共享同一 `autoPort` 的 attached sessions 通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime
+- 共享同一 `autoPort` 的命令通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime
 - `open` 默认等待通用 `stable` 条件；底层启动/连接失败会自动收尾，已连接但稳定超时会保留 session 便于继续等待
-- `session prune` 可清理当前项目 stale sessions、本 CLI 记录的 orphan launches 和受控镜像
+- `session prune` 可清理当前项目 stale sessions 与 orphan runtime launch 记录
 - 应用结构摘要（`app inspect`）
 - 路由时间线、console、exception
 - 分层诊断（`doctor`）：区分 DevTools CLI、automation WebSocket 和 App runtime
@@ -213,6 +207,7 @@ miniprogram-browser await stable --session demo
 
 ## 已知边界
 
+- 必须已登录微信开发者工具；登录 token 过期时无法启用自动化（无游客模式绕过）。失败时会给出人话说明，并保留 DevTools 原始错误
 - fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` / `devtools logs` 判断是否真的失败
 - 如果 fresh 启动阶段已经看到页面显示，但 `open` 仍未成功，优先短等 5 到 10 秒，再重跑同一个 `open`；不要立刻再次 `--fresh`
 - `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳
@@ -224,9 +219,14 @@ miniprogram-browser await stable --session demo
 
 ## 已知问题（当前重点）
 
-### 1. WSL 项目路径下，DevTools CLI 不能直接使用 UNC
+### 1. WSL 项目路径：优先 Windows 盘
 
-目前在 `//wsl.localhost/...` / `\\wsl.localhost\...` 这类 WSL UNC 路径下，微信开发者工具 CLI 可能拒绝项目路径，并给出和二维码输出相关的误导性错误。`miniprogram-browser` 会优先创建受控 Windows 临时镜像；只有镜像不可用时，才会报出可操作提示。
+在 `//wsl.localhost/...` / `\\wsl.localhost\...` 这类 WSL UNC 路径下，微信开发者工具 CLI 可能拒绝项目路径，并给出和二维码输出相关的误导性错误。
+
+推荐做法：
+
+- 把项目放在 `/mnt/<drive>/...`，让 CLI 自动转成盘符路径
+- 或使用 `--devtools-project` / `--project-map` 显式给出 Windows 路径
 
 如果已经绕过 open 阶段，真实截图通道仍可能在 WSL 路径下偶发超时，表现为：
 
@@ -237,7 +237,7 @@ miniprogram-browser await stable --session demo
 
 当前建议：
 
-- WSL `/home/...` 项目默认走受控 Windows 临时镜像；如果镜像不可用，再通过 `--devtools-project` / `--project-map` 使用 Windows 映射盘路径
+- WSL 优先使用 `/mnt/<drive>/...` 项目路径；必要时再用 `--devtools-project` / `--project-map`
 - 鼓励在每次 `goto / click / fill / call / native` 之后适度 `wait`，避免操作链过快
 - 截图前先 `path` / `snapshot -i` 确认页面已经稳定，再执行 `screenshot`
 - 尽量不要把很多跳转、点击、截图压成一条过快的链式命令

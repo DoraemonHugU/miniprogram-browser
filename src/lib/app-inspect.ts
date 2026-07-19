@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
 
 const DEFAULT_INSPECT_SECTIONS = [
   'pagesSummary',
@@ -21,7 +21,7 @@ const ALL_INSPECT_SECTIONS = [
   'routeConstants',
 ]
 
-function normalizeRoutePath(value) {
+function normalizeRoutePath(value: unknown): string | null {
   const input = String(value || '').trim()
   if (!input) {
     return null
@@ -32,7 +32,7 @@ function normalizeRoutePath(value) {
   return normalized || null
 }
 
-function normalizeInspectSections(options: AnyRecord = {}) {
+function normalizeInspectSections(options: AnyRecord = {}): string[] {
   if (options.all) {
     return [...ALL_INSPECT_SECTIONS]
   }
@@ -44,20 +44,20 @@ function normalizeInspectSections(options: AnyRecord = {}) {
 
   return sections
     .split(',')
-    .map((item) => item.trim())
+    .map((item: string) => item.trim())
     .filter(Boolean)
 }
 
-function parseRouteConstantsFromSource(source) {
+function parseRouteConstantsFromSource(source: unknown): Record<string, string> {
   const input = String(source || '')
   const result: Record<string, string> = {}
   const objectRegex = /export\s+const\s+(\w+)\s*=\s*\{([\s\S]*?)\}/gu
-  let objectMatch
+  let objectMatch: RegExpExecArray | null
 
   while ((objectMatch = objectRegex.exec(input)) !== null) {
     const [, objectName, body] = objectMatch
     const entryRegex = /(\w+)\s*:\s*['"]([^'"]+)['"]/gu
-    let entryMatch
+    let entryMatch: RegExpExecArray | null
     while ((entryMatch = entryRegex.exec(body)) !== null) {
       const [, key, value] = entryMatch
       if (!/^\/?pages\//u.test(value.trim())) {
@@ -73,7 +73,7 @@ function parseRouteConstantsFromSource(source) {
   return result
 }
 
-function resolveRouteFromFile(filePath, srcRoot) {
+function resolveRouteFromFile(filePath: string, srcRoot: string): string | null {
   const relative = path.relative(srcRoot, filePath).replace(/\\/gu, '/')
   const match = relative.match(/^pages\/(.+)\/(index|main)\.[^.]+$/u)
   if (!match) {
@@ -83,24 +83,42 @@ function resolveRouteFromFile(filePath, srcRoot) {
   return `pages/${match[1]}/index`
 }
 
-function resolveFileLabel(filePath, srcRoot) {
+function resolveFileLabel(filePath: string, srcRoot: string): string {
   return path.relative(srcRoot, filePath).replace(/\\/gu, '/')
 }
 
-function parseStaticEdgesFromSource({ source, filePath, srcRoot, routeConstants = {} }) {
+interface StaticEdge {
+  from: string | null
+  to: string | null
+  method: string
+  source: string | null
+  file: string
+}
+
+function parseStaticEdgesFromSource({
+  source,
+  filePath,
+  srcRoot,
+  routeConstants = {},
+}: {
+  source: unknown
+  filePath: string
+  srcRoot: string
+  routeConstants: Record<string, string>
+}): StaticEdge[] {
   const input = String(source || '')
   const from = resolveRouteFromFile(filePath, srcRoot)
   const file = resolveFileLabel(filePath, srcRoot)
-  const edges = []
+  const edges: StaticEdge[] = []
   const routeMethods = ['navigateTo', 'reLaunch', 'redirectTo', 'switchTab']
 
   for (const method of routeMethods) {
     const regex = new RegExp(`${method}\\s*\\(\\s*\\{[\\s\\S]*?url\\s*:\\s*([^,}]+)`, 'gu')
-    let match
+    let match: RegExpExecArray | null
     while ((match = regex.exec(input)) !== null) {
       const rawValue = match[1].trim()
-      let to = null
-      let sourceValue = null
+      let to: string | null = null
+      let sourceValue: string | null = null
 
       const stringMatch = rawValue.match(/^['"]([^'"]+)['"]/u)
       if (stringMatch) {
@@ -138,7 +156,7 @@ function parseStaticEdgesFromSource({ source, filePath, srcRoot, routeConstants 
   return edges
 }
 
-function buildStaticSummary(staticEdges, routeConstants) {
+function buildStaticSummary(staticEdges: StaticEdge[] = [], routeConstants: Record<string, string> = {}): Record<string, unknown> {
   const methods = new Set((staticEdges || []).map((item) => item.method))
   return {
     staticEdgeCount: (staticEdges || []).length,
@@ -150,39 +168,39 @@ function buildStaticSummary(staticEdges, routeConstants) {
   }
 }
 
-function buildPagesSummary(runtimeConfig: AnyRecord = {}) {
+function buildPagesSummary(runtimeConfig: AnyRecord = {}): Record<string, unknown> {
   const pages = Array.isArray(runtimeConfig.pages) ? runtimeConfig.pages : []
   return {
     count: pages.length,
-    entryPagePath: runtimeConfig.entryPagePath || pages[0] || null,
+    entryPagePath: runtimeConfig.entryPagePath || (pages[0] as string | undefined) || null,
   }
 }
 
-function buildTabBarSummary(tabBar: AnyRecord = {}) {
+function buildTabBarSummary(tabBar: AnyRecord = {}): Record<string, unknown> {
   const list = Array.isArray(tabBar.list) ? tabBar.list : []
   return {
     count: list.length,
     pages: list
-      .map((item) => normalizeRoutePath(item.pagePath || item.path || ''))
+      .map((item: AnyRecord) => normalizeRoutePath(item.pagePath || item.path || ''))
       .filter(Boolean),
   }
 }
 
-function summarizeRecentRoutes(routeEvents, limit = 5) {
+function summarizeRecentRoutes(routeEvents: { message?: string }[] = [], limit = 5): string[] {
   return (routeEvents || [])
     .slice(-limit)
     .map((item) => String(item && item.message ? item.message : '').trim())
     .filter(Boolean)
 }
 
-function buildCurrentOutgoingEdges(current, staticEdges = [], observedEdges = []) {
+function buildCurrentOutgoingEdges(current: unknown, staticEdges: StaticEdge[] = [], observedEdges: StaticEdge[] = []): Record<string, unknown>[] {
   const currentPath = normalizeRoutePath(current)
   if (!currentPath) {
     return []
   }
 
   const observedSet = new Set((observedEdges || []).map((item) => `${item.from}|${item.to}|${item.method}`))
-  const grouped = new Map()
+  const grouped = new Map<string, Record<string, unknown>>()
 
   for (const edge of staticEdges || []) {
     if (normalizeRoutePath(edge.from) !== currentPath || !edge.to) {
@@ -195,11 +213,11 @@ function buildCurrentOutgoingEdges(current, staticEdges = [], observedEdges = []
 
     const entry = grouped.get(key) || {
       to: key,
-      methods: [],
+      methods: [] as string[],
       observed: false,
     }
-    if (!entry.methods.includes(edge.method)) {
-      entry.methods.push(edge.method)
+    if (!(entry.methods as string[]).includes(edge.method)) {
+      (entry.methods as string[]).push(edge.method)
     }
     if (observedSet.has(`${currentPath}|${key}|${edge.method}`)) {
       entry.observed = true
@@ -210,9 +228,9 @@ function buildCurrentOutgoingEdges(current, staticEdges = [], observedEdges = []
   return [...grouped.values()]
 }
 
-function dedupeStaticEdges(staticEdges = []) {
-  const seen = new Set()
-  const deduped = []
+function dedupeStaticEdges(staticEdges: StaticEdge[] = []): StaticEdge[] {
+  const seen = new Set<string>()
+  const deduped: StaticEdge[] = []
 
   for (const edge of staticEdges) {
     const key = [edge.from || '', edge.to || '', edge.method || '', edge.source || ''].join('|')
@@ -226,7 +244,7 @@ function dedupeStaticEdges(staticEdges = []) {
   return deduped
 }
 
-async function pathExists(targetPath) {
+async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath)
     return true
@@ -235,7 +253,7 @@ async function pathExists(targetPath) {
   }
 }
 
-async function collectFiles(rootDir, extensions, files = []) {
+async function collectFiles(rootDir: string, extensions: Set<string>, files: string[] = []): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true })
   for (const entry of entries) {
     const fullPath = path.join(rootDir, entry.name)
@@ -251,8 +269,8 @@ async function collectFiles(rootDir, extensions, files = []) {
   return files
 }
 
-async function resolveStaticRoots(projectPath) {
-  const scanRoots = []
+async function resolveStaticRoots(projectPath: string): Promise<{ sourceRoot: string | null; scanRoots: string[] }> {
+  const scanRoots: string[] = []
 
   const projectConfigPath = path.join(projectPath, 'project.config.json')
   if (await pathExists(projectConfigPath)) {
@@ -274,7 +292,7 @@ async function resolveStaticRoots(projectPath) {
   }
 }
 
-async function inspectStaticProject(projectPath) {
+async function inspectStaticProject(projectPath: string): Promise<Record<string, unknown>> {
   const { sourceRoot, scanRoots } = await resolveStaticRoots(projectPath)
   if (!sourceRoot || scanRoots.length === 0) {
     return {
@@ -287,7 +305,7 @@ async function inspectStaticProject(projectPath) {
     }
   }
 
-  let appConfig = {}
+  let appConfig: AnyRecord = {}
   const appJsonPath = path.join(sourceRoot, 'app.json')
   if (await pathExists(appJsonPath)) {
     try {
@@ -297,8 +315,8 @@ async function inspectStaticProject(projectPath) {
     }
   }
 
-  const codeFiles = []
-  const seenFiles = new Set()
+  const codeFiles: { filePath: string; rootDir: string }[] = []
+  const seenFiles = new Set<string>()
   for (const rootDir of scanRoots) {
     const files = await collectFiles(rootDir, new Set(['.ts', '.tsx', '.js', '.jsx', '.json']))
     for (const filePath of files) {
@@ -310,14 +328,14 @@ async function inspectStaticProject(projectPath) {
     }
   }
 
-  const routeConstants = {}
+  const routeConstants: Record<string, string> = {}
   for (const item of codeFiles) {
     const filePath = item.filePath
     const content = await fs.readFile(filePath, 'utf8')
     Object.assign(routeConstants, parseRouteConstantsFromSource(content))
   }
 
-  const staticEdges = []
+  const staticEdges: StaticEdge[] = []
   for (const item of codeFiles) {
     const filePath = item.filePath
     const content = await fs.readFile(filePath, 'utf8')
@@ -349,12 +367,20 @@ async function inspectProjectStructure({
   recentRoutes,
   observedEdges,
   sections,
-}) {
+}: {
+  projectPath: string
+  runtimeConfig?: AnyRecord
+  current?: string
+  pageStack?: { path: string }[]
+  recentRoutes?: { message?: string }[]
+  observedEdges?: StaticEdge[]
+  sections?: string[]
+}): Promise<Record<string, unknown>> {
   const normalizedSections = sections || normalizeInspectSections({})
   const staticInspection = await inspectStaticProject(projectPath)
   const effectiveRuntimeConfig = runtimeConfig && Object.keys(runtimeConfig).length
     ? runtimeConfig
-    : staticInspection.appConfig
+    : (staticInspection.appConfig as AnyRecord)
   const effectivePageStack = Array.isArray(pageStack) ? pageStack : []
   const stackCurrent = effectivePageStack.length
     ? effectivePageStack[effectivePageStack.length - 1].path
@@ -374,7 +400,7 @@ async function inspectProjectStructure({
     result.tabBar = effectiveRuntimeConfig && effectiveRuntimeConfig.tabBar ? effectiveRuntimeConfig.tabBar : { list: [] }
   }
   if (normalizedSections.includes('tabBarSummary')) {
-    result.tabBarSummary = buildTabBarSummary(effectiveRuntimeConfig && effectiveRuntimeConfig.tabBar ? effectiveRuntimeConfig.tabBar : { list: [] })
+    result.tabBarSummary = buildTabBarSummary((effectiveRuntimeConfig && effectiveRuntimeConfig.tabBar ? effectiveRuntimeConfig.tabBar : { list: [] }) as AnyRecord)
   }
   if (normalizedSections.includes('state')) {
     result.current = effectiveCurrent
@@ -387,7 +413,7 @@ async function inspectProjectStructure({
     result.observedEdges = Array.isArray(observedEdges) ? observedEdges : []
   }
   if (normalizedSections.includes('currentOutgoingEdges')) {
-    result.currentOutgoingEdges = buildCurrentOutgoingEdges(effectiveCurrent, staticInspection.staticEdges, observedEdges)
+    result.currentOutgoingEdges = buildCurrentOutgoingEdges(effectiveCurrent, staticInspection.staticEdges as StaticEdge[], observedEdges)
   }
   if (normalizedSections.includes('staticSummary')) {
     result.staticSummary = staticInspection.staticSummary
@@ -402,20 +428,22 @@ async function inspectProjectStructure({
   return result
 }
 
-function formatInspectLines(payload) {
-  const lines = []
+function formatInspectLines(payload: AnyRecord = {}): string[] {
+  const lines: string[] = []
 
   if (payload.pagesSummary) {
-    lines.push(`pages=${payload.pagesSummary.count}${payload.pagesSummary.entryPagePath ? ` entry=${payload.pagesSummary.entryPagePath}` : ''}`)
+    const ps = payload.pagesSummary as Record<string, unknown>
+    lines.push(`pages=${ps.count}${ps.entryPagePath ? ` entry=${ps.entryPagePath}` : ''}`)
   }
   if (payload.tabBarSummary) {
-    lines.push(`tabBar=${payload.tabBarSummary.count}`)
+    const ts = payload.tabBarSummary as Record<string, unknown>
+    lines.push(`tabBar=${ts.count}`)
   }
   if ('current' in payload) {
     lines.push(`current=${payload.current || '(none)'}`)
   }
   if (Array.isArray(payload.pageStack)) {
-    lines.push(`pageStack=${payload.pageStack.map((item) => item.path).join(' -> ') || '(empty)'}`)
+    lines.push(`pageStack=${payload.pageStack.map((item: AnyRecord) => item.path).join(' -> ') || '(empty)'}`)
   }
   if (Array.isArray(payload.recentRoutes)) {
     lines.push(`recentRoutes=${payload.recentRoutes.length}`)
@@ -423,12 +451,13 @@ function formatInspectLines(payload) {
   if (Array.isArray(payload.currentOutgoingEdges)) {
     lines.push(`currentOutgoing=${payload.currentOutgoingEdges.length}`)
     for (const edge of payload.currentOutgoingEdges) {
-      lines.push(`  ${edge.methods.join('|')} -> ${edge.to}${edge.observed ? ' [observed]' : ''}`)
+      lines.push(`  ${(edge.methods as string[]).join('|')} -> ${edge.to}${edge.observed ? ' [observed]' : ''}`)
     }
   }
   if (payload.staticSummary) {
-    lines.push(`staticEdges=${payload.staticSummary.staticEdgeCount}`)
-    lines.push(`staticMethods=navigateTo:${payload.staticSummary.hasNavigateTo ? 'yes' : 'no'} reLaunch:${payload.staticSummary.hasReLaunch ? 'yes' : 'no'} switchTab:${payload.staticSummary.hasSwitchTab ? 'yes' : 'no'} navigateBack:${payload.staticSummary.hasNavigateBack ? 'yes' : 'no'}`)
+    const ss = payload.staticSummary as Record<string, unknown>
+    lines.push(`staticEdges=${ss.staticEdgeCount}`)
+    lines.push(`staticMethods=navigateTo:${ss.hasNavigateTo ? 'yes' : 'no'} reLaunch:${ss.hasReLaunch ? 'yes' : 'no'} switchTab:${ss.hasSwitchTab ? 'yes' : 'no'} navigateBack:${ss.hasNavigateBack ? 'yes' : 'no'}`)
   }
 
   return lines

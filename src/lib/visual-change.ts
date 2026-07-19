@@ -1,9 +1,22 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
 
-function requireJimp(config) {
+interface RectPct {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+interface RegionEntry {
+  regionPct: RectPct
+  beforeRefs: { ref: unknown; kind: unknown; text: unknown }[]
+  afterRefs: { ref: unknown; kind: unknown; text: unknown }[]
+}
+
+function requireJimp(config: AnyRecord): AnyRecord {
   const jimp = require('jimp')
   if (jimp && typeof jimp.read === 'function') {
     return jimp
@@ -17,11 +30,19 @@ function requireJimp(config) {
   return jimp
 }
 
-function buildSemanticSignature(records = []) {
+function buildSemanticSignature(records: { kind?: string; text?: string }[] = []): string {
   return JSON.stringify((records || []).map((record) => [record.kind || '', record.text || '']))
 }
 
-function buildGridLayout(width, height, columns = 8) {
+interface GridLayout {
+  width: number
+  height: number
+  columns: number
+  rows: number
+  cellSize: number
+}
+
+function buildGridLayout(width: unknown, height: unknown, columns = 8): GridLayout {
   const safeWidth = Math.max(1, Number(width || 1))
   const safeHeight = Math.max(1, Number(height || 1))
   const safeColumns = Math.max(1, Number(columns || 8))
@@ -37,7 +58,13 @@ function buildGridLayout(width, height, columns = 8) {
   }
 }
 
-function computeCellGridFromBitmap(bitmap, columns = 8) {
+interface BitmapLike {
+  width: number
+  height: number
+  data: Buffer | Uint8Array | number[]
+}
+
+function computeCellGridFromBitmap(bitmap: BitmapLike, columns = 8): { layout: GridLayout; cells: number[] } {
   const layout = buildGridLayout(bitmap.width, bitmap.height, columns)
   const totals = new Array(layout.columns * layout.rows).fill(0)
   const counts = new Array(layout.columns * layout.rows).fill(0)
@@ -45,9 +72,9 @@ function computeCellGridFromBitmap(bitmap, columns = 8) {
   for (let y = 0; y < bitmap.height; y += 1) {
     for (let x = 0; x < bitmap.width; x += 1) {
       const index = (bitmap.width * y + x) << 2
-      const r = bitmap.data[index]
-      const g = bitmap.data[index + 1]
-      const b = bitmap.data[index + 2]
+      const r = bitmap.data[index] as number
+      const g = bitmap.data[index + 1] as number
+      const b = bitmap.data[index + 2] as number
       const cellX = Math.min(layout.columns - 1, Math.floor(x / layout.cellSize))
       const cellY = Math.min(layout.rows - 1, Math.floor(y / layout.cellSize))
       const cellIndex = cellY * layout.columns + cellX
@@ -68,6 +95,26 @@ function computeCellGridFromBitmap(bitmap, columns = 8) {
   }
 }
 
+interface MiniProgramLike {
+  screenshot(opts: { path: string }): Promise<void>
+  systemInfo(): Promise<Record<string, unknown>>
+  [key: string]: unknown
+}
+
+interface PageLike {
+  $$(selector: string): Promise<{ size(): Promise<{ width: number; height: number }>; offset(): Promise<{ left: number; top: number }> }[]>
+  path: string
+  [key: string]: unknown
+}
+
+interface RecordRefLike {
+  ref?: string
+  kind?: string
+  text?: string
+  businessKey?: string
+  strategy?: { selector?: string; index?: number }
+}
+
 async function createVisualProbe({
   miniProgram,
   page,
@@ -78,9 +125,19 @@ async function createVisualProbe({
   cleanupScreenshot = false,
   captureScreenshot,
   createImageAdapter,
-}) {
-  const targetPath = screenshotPath || path.join(config.tempScreenshotDir || '/tmp', `visual-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
-  const performCapture = captureScreenshot || (async (instance, outputPath) => {
+}: {
+  miniProgram: MiniProgramLike
+  page: PageLike & { screenshot?(opts: { path: string }): Promise<void> }
+  records: RecordRefLike[]
+  config: AnyRecord
+  columns?: number
+  screenshotPath?: string
+  cleanupScreenshot?: boolean
+  captureScreenshot?: (instance: MiniProgramLike, outputPath: string) => Promise<string>
+  createImageAdapter?: (targetPath: string) => Promise<{ bitmap: BitmapLike }>
+}): Promise<Record<string, unknown>> {
+  const targetPath = screenshotPath || path.join((config.tempScreenshotDir as string) || '/tmp', `visual-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+  const performCapture = captureScreenshot || (async (instance: MiniProgramLike, outputPath: string) => {
     await instance.screenshot({ path: outputPath })
     return outputPath
   })
@@ -89,9 +146,15 @@ async function createVisualProbe({
     await performCapture(miniProgram, targetPath)
   }
 
-  const Jimp = createImageAdapter ? null : requireJimp(config)
-  const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
-  const { layout, cells } = computeCellGridFromBitmap(image.bitmap, columns)
+  let rawImage: unknown
+  if (createImageAdapter) {
+    rawImage = await createImageAdapter(targetPath)
+  } else {
+    const Jimp = requireJimp(config)
+    rawImage = await (Jimp as { read: (p: string) => Promise<unknown> }).read(targetPath)
+  }
+  const image = rawImage as { bitmap: BitmapLike }
+  const { layout, cells } = computeCellGridFromBitmap(image.bitmap as BitmapLike, columns)
   const systemInfo = await miniProgram.systemInfo()
   const refs = await collectRecordRects(page, records, systemInfo)
 
@@ -108,8 +171,8 @@ async function createVisualProbe({
   }
 }
 
-async function collectRecordRects(page, records, systemInfo) {
-  const bySelector = new Map()
+async function collectRecordRects(page: PageLike, records: RecordRefLike[] = [], systemInfo: AnyRecord = {}): Promise<Record<string, unknown>[]> {
+  const bySelector = new Map<string, RecordRefLike[]>()
   for (const record of records || []) {
     const selector = record && record.strategy ? record.strategy.selector : null
     if (!selector) {
@@ -122,10 +185,10 @@ async function collectRecordRects(page, records, systemInfo) {
 
   const windowWidth = Number(systemInfo && systemInfo.windowWidth) || Number(systemInfo && systemInfo.screenWidth) || 375
   const windowHeight = Number(systemInfo && systemInfo.windowHeight) || Number(systemInfo && systemInfo.screenHeight) || 812
-  const refs = []
+  const refs: Record<string, unknown>[] = []
 
   for (const [selector, selectorRecords] of bySelector.entries()) {
-    let elements = []
+    let elements: { size(): Promise<{ width: number; height: number }>; offset(): Promise<{ left: number; top: number }> }[] = []
     try {
       elements = await page.$$(selector)
     } catch (_) {
@@ -133,7 +196,7 @@ async function collectRecordRects(page, records, systemInfo) {
     }
 
     for (const record of selectorRecords) {
-      const element = elements[Number(record.strategy.index || 0)]
+      const element = elements[Number(record.strategy ? record.strategy.index : 0)]
       if (!element) {
         continue
       }
@@ -164,11 +227,11 @@ async function collectRecordRects(page, records, systemInfo) {
   return refs
 }
 
-function roundPct(value) {
+function roundPct(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value * 10) / 10))
 }
 
-function rectsIntersect(regionPct, rectPct) {
+function rectsIntersect(regionPct: RectPct, rectPct: RectPct): boolean {
   const left = regionPct.x
   const right = regionPct.x + regionPct.w
   const top = regionPct.y
@@ -181,7 +244,15 @@ function rectsIntersect(regionPct, rectPct) {
   return !(rectLeft >= right || rectRight <= left || rectTop >= bottom || rectBottom <= top)
 }
 
-function buildVisualDiffSummary(beforeProbe, afterProbe, options: AnyRecord = {}) {
+interface VisualProbeResult {
+  route: string
+  semanticSignature: string
+  layout: GridLayout | null
+  cells: number[]
+  refs: { rectPct: RectPct; ref?: unknown; kind?: unknown; text?: unknown }[]
+}
+
+function buildVisualDiffSummary(beforeProbe: VisualProbeResult | null | undefined, afterProbe: VisualProbeResult | null | undefined, options: AnyRecord = {}): Record<string, unknown> | null {
   if (!beforeProbe || !afterProbe) {
     return null
   }
@@ -214,7 +285,7 @@ function buildVisualDiffSummary(beforeProbe, afterProbe, options: AnyRecord = {}
     return null
   }
 
-  const regions = []
+  const regions: RegionEntry[] = []
   const visited = new Set<number>()
   const { columns, rows } = afterLayout
   const neighbors = [
@@ -260,7 +331,7 @@ function buildVisualDiffSummary(beforeProbe, afterProbe, options: AnyRecord = {}
       }
     }
 
-    const regionPct = {
+    const regionPct: RectPct = {
       x: roundPct(minX / columns * 100),
       y: roundPct(minY / rows * 100),
       w: roundPct((maxX - minX + 1) / columns * 100),

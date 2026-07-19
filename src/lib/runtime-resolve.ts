@@ -34,7 +34,14 @@ const {
   resolveRuntimeStableText,
 } = require('./runtime-core')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
+
+/** 带查询方法的页面/元素句柄（仅用于本模块内部 $/$$ 调用） */
+interface PageHandle {
+  $(selector: string): Promise<unknown>
+  $$(selector: string): Promise<unknown[]>
+  [key: string]: unknown
+}
 
 /**
  * 根据 ref record 在页面中解析 DOM 元素。
@@ -45,7 +52,7 @@ type AnyRecord = Record<string, any>
  * 3. 如果匹配到节点但签名变化，报告 stale
  * 4. 最终通过 scope.$$(selector)[index] 获取元素
  */
-async function resolveRecord(page, state, record, seen = new Set()) {
+async function resolveRecord(page: AnyRecord, state: AnyRecord, record: AnyRecord, seen: Set<string> = new Set()): Promise<AnyRecord> {
   if (!record || !record.strategy) {
     throw new Error('Invalid ref record')
   }
@@ -54,65 +61,69 @@ async function resolveRecord(page, state, record, seen = new Set()) {
     throw new Error(`Ref route mismatch: ${record.ref} belongs to ${record.route}, current page is ${page.path}`)
   }
 
-  if (seen.has(record.ref)) {
-    throw new Error(`Cyclic ref dependency: ${record.ref}`)
+  const recordRef = String(record.ref || '')
+  if (seen.has(recordRef)) {
+    throw new Error(`Cyclic ref dependency: ${recordRef}`)
   }
 
-  seen.add(record.ref)
+  seen.add(recordRef)
 
   let scope = page
-  if (record.scopeRef) {
-    const scopeRecord = state.refs[record.scopeRef]
+  const recordScopeRef = record.scopeRef ? String(record.scopeRef) : null
+  if (recordScopeRef) {
+    const scopeRecord = (state.refs as Record<string, AnyRecord | undefined>)[recordScopeRef]
     if (!scopeRecord) {
-      throw new Error(`Missing scope ref: ${record.scopeRef}`)
+      throw new Error(`Missing scope ref: ${recordScopeRef}`)
     }
     scope = await resolveRecord(page, state, scopeRecord, seen)
   }
 
-  let selector = record.strategy.selector
-  let index = Number(record.strategy.index || 0)
-  let matchedNode = null
+  const strategy = record.strategy as AnyRecord
+  let selector = String(strategy.selector || '')
+  let index = Number(strategy.index || 0)
+  let matchedNode: AnyRecord | null = null
   const needsFreshTree = Boolean(record.stableKey)
     || !selector
-    || ['registry', 'testid', 'business', 'scope'].includes(record.strategy.kind)
+    || ['registry', 'testid', 'business', 'scope'].includes(String(strategy.kind))
 
   if (needsFreshTree) {
     const treeData = await readRuntimeTree(page)
     const canonicalTree = assignCanonicalPaths(treeData ? treeData.nodes : [])
     const pageKey = treeData ? treeData.pageKey : ''
-    const scopeTree = record.scopeRef
-      ? subtreeForScope(canonicalTree, state.refs[record.scopeRef], pageKey)
+    const scopeTree = recordScopeRef
+      ? subtreeForScope(canonicalTree, (state.refs as Record<string, AnyRecord | undefined>)[recordScopeRef], pageKey)
       : canonicalTree
 
-    matchedNode = findNodeByStableKey(scopeTree, pageKey, page.path, record.stableKey)
+    matchedNode = findNodeByStableKey(scopeTree, pageKey, String(page.path || ''), String(record.stableKey || ''))
     const matchedByStableKey = Boolean(matchedNode)
     if (!matchedNode) {
-      matchedNode = findFirstNode(scopeTree, (candidate) => matchesRecord(candidate, record))
+      matchedNode = findFirstNode(scopeTree, (candidate: AnyRecord) => matchesRecord(candidate, record))
     }
 
     if (!matchedNode) {
-      throw new Error(`Ref is stale or no longer resolvable: ${record.ref}; page likely changed, run snapshot -i again.`)
+      throw new Error(`Ref is stale or no longer resolvable: ${recordRef}; page likely changed, run snapshot -i again.`)
     }
 
     const currentSignature = buildRuntimeRecordSignature(matchedNode)
     if (!matchedByStableKey && record.signature && currentSignature && record.signature !== currentSignature) {
-      throw new Error(`Ref is stale: ${record.ref} no longer points to the same UI element; run snapshot -i again.`)
+      throw new Error(`Ref is stale: ${recordRef} no longer points to the same UI element; run snapshot -i again.`)
     }
 
-    selector = matchedNode.selector || selector
+    selector = String((matchedNode as AnyRecord).selector || selector)
     index = selectorIndexInSubtree(scopeTree, matchedNode)
   }
 
   if (!selector) {
-    throw new Error(`Ref is not resolvable without selector: ${record.ref}; run snapshot -i again.`)
+    throw new Error(`Ref is not resolvable without selector: ${recordRef}; run snapshot -i again.`)
   }
 
-  const elements = await scope.$$(selector)
+  const elements = await (scope as unknown as PageHandle).$$(selector) as AnyRecord[]
   if (matchedNode && elements.length > 1) {
     const stableText = resolveRuntimeStableText(matchedNode)
     if (stableText) {
       for (let candidateIndex = 0; candidateIndex < elements.length; candidateIndex += 1) {
-        const candidateText = resolveRuntimeStableText({ text: await elements[candidateIndex].text().catch(() => '') })
+        const elementText = await (elements[candidateIndex] as unknown as { text(): Promise<string> }).text().catch(() => '')
+        const candidateText = resolveRuntimeStableText({ text: elementText } as AnyRecord)
         if (candidateText === stableText) {
           index = candidateIndex
           break
@@ -132,9 +143,9 @@ async function resolveRecord(page, state, record, seen = new Set()) {
  * - @eN 格式的 token 按 ref 解析
  * - 其他直接作为 CSS selector 使用 scope.$(token)
  */
-async function resolveTarget(page, state, token, scopeRef = null) {
+async function resolveTarget(page: AnyRecord, state: AnyRecord, token: string, scopeRef: string | null = null): Promise<AnyRecord> {
   if (isRefToken(token)) {
-    const record = state.refs[token]
+    const record = (state.refs as Record<string, AnyRecord | undefined>)[token]
     if (!record) {
       throw new Error(`Unknown ref: ${token}`)
     }
@@ -143,14 +154,14 @@ async function resolveTarget(page, state, token, scopeRef = null) {
 
   let scope = page
   if (scopeRef) {
-    const scopeRecord = state.refs[scopeRef]
+    const scopeRecord = (state.refs as Record<string, AnyRecord | undefined>)[scopeRef]
     if (!scopeRecord) {
       throw new Error(`Unknown scope ref: ${scopeRef}`)
     }
     scope = await resolveRecord(page, state, scopeRecord)
   }
 
-  const element = await scope.$(token)
+  const element = await (scope as unknown as PageHandle).$(token) as AnyRecord | null
   if (!element) {
     throw new Error(`Selector not found: ${token}`)
   }
@@ -167,12 +178,12 @@ async function resolveTarget(page, state, token, scopeRef = null) {
  * 4. 更新 state refs 映射
  * 5. 可选应用 snapshotOptions（compact/depth）
  */
-async function snapshotInteractive(page, state, scopeRef = null, snapshotOptions: AnyRecord = {}) {
+async function snapshotInteractive(page: AnyRecord, state: AnyRecord, scopeRef: string | null = null, snapshotOptions: AnyRecord = {}): Promise<AnyRecord> {
   const treeData = await readRuntimeTree(page)
   if (!treeData) {
     throw new Error('No snapshot tree available for snapshot -i')
   }
-  const scopeRecord = scopeRef ? state.refs[scopeRef] : null
+  const scopeRecord = scopeRef ? (state.refs as Record<string, AnyRecord>)[scopeRef] : null
   const epoch = nextEpoch(state)
   const subtree = assignCanonicalPaths(subtreeForScope(treeData.nodes, scopeRecord))
 
@@ -223,19 +234,19 @@ async function snapshotInteractive(page, state, scopeRef = null, snapshotOptions
  * - text：按文本内容过滤（使用快照树文本匹配）
  * - business：按 businessKey 过滤
  */
-async function queryRecords(page, state, mode, value, scopeRef = null) {
-  const epoch = state.epoch || 0
+async function queryRecords(page: AnyRecord, state: AnyRecord, mode: string, value: string, scopeRef: string | null = null): Promise<AnyRecord> {
+  const epoch = Number(state.epoch || 0)
   const route = page.path
   const startIndex = state.nextRefIndex || 1
 
   if (mode === 'selector') {
-    const scope = scopeRef ? await resolveRecord(page, state, state.refs[scopeRef]) : page
-    const elements = await scope.$$(value)
-    const records = []
+    const scope = scopeRef ? await resolveRecord(page, state, (state.refs as Record<string, AnyRecord>)[scopeRef] || {}) : page
+    const elements = await (scope as unknown as PageHandle).$$(value) as AnyRecord[]
+    const records: AnyRecord[] = []
     for (let index = 0; index < elements.length; index += 1) {
-      const element = elements[index]
+      const element = elements[index] as AnyRecord
       records.push({
-        ref: `@e${startIndex + index}`,
+        ref: `@e${Number(startIndex) + index}`,
         epoch,
         route,
         parentRef: null,
@@ -249,8 +260,8 @@ async function queryRecords(page, state, mode, value, scopeRef = null) {
         registryId: null,
         testid: null,
         selector: value,
-        kind: element.tagName || 'custom',
-        text: await element.text().catch(() => ''),
+        kind: ((element as unknown as { tagName?: string }).tagName) || 'custom',
+        text: await (element as unknown as { text(): Promise<string> }).text().catch(() => ''),
       })
     }
 
@@ -270,9 +281,9 @@ async function queryRecords(page, state, mode, value, scopeRef = null) {
     throw new Error(`No snapshot tree available for query mode: ${mode}`)
   }
 
-  const scopeRecord = scopeRef ? state.refs[scopeRef] : null
+  const scopeRecord = scopeRef ? (state.refs as Record<string, AnyRecord>)[scopeRef] : null
   const subtree = subtreeForScope(treeData.nodes, scopeRecord)
-  const predicate = (node) => {
+  const predicate = (node: AnyRecord) => {
     if (mode === 'text') {
       return String(node.text || '').includes(value)
     }
@@ -295,7 +306,7 @@ async function queryRecords(page, state, mode, value, scopeRef = null) {
     },
   })
 
-  const records = built.records.filter((record) => {
+  const records = built.records.filter((record: AnyRecord) => {
     if (mode === 'text') {
       return String(record.text || '').includes(value)
     }

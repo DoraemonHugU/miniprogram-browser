@@ -934,6 +934,34 @@ test('buildClickNotices suggests checking modal when path stays unchanged', () =
   assert.match(notices[0], /登录弹窗|confirmModal|timeline/i)
 })
 
+test('formatAutomationCliError explains login token expiry and keeps raw', () => {
+  const raw = [
+    '[error] {',
+    "  code: 10,",
+    "  message: 'Error: × Error: INVALID_LOGIN,access_token expired [20260719 10:56:55][] (code 10)'",
+    '}',
+  ].join('\n')
+  const error = formatAutomationCliError(raw)
+  assert.match(error.message, /登录态失效|access_token|INVALID_LOGIN/i)
+  assert.match(error.raw, /INVALID_LOGIN,access_token expired/)
+})
+
+test('parseAutomationCliFailure explains INVALID_LOGIN from CLI output with raw preserved', () => {
+  const raw = [
+    '√ IDE server started successfully, listening on http://127.0.0.1:63870',
+    '- preparing',
+    '[error] {',
+    "  code: 10,",
+    "  message: 'Error: INVALID_LOGIN,access_token expired'",
+    '}',
+  ].join('\n')
+  const failure = parseAutomationCliFailure({ status: 1, raw }, { cliPath: '/mnt/f/Tools/wxwebtool/cli.js' })
+  assert.ok(failure)
+  assert.match(failure.message, /登录态失效|INVALID_LOGIN|access_token/i)
+  assert.match(failure.raw, /INVALID_LOGIN,access_token expired/)
+  assert.match(String(failure.hint || ''), /INVALID_LOGIN|access_token|code:\s*10/i)
+})
+
 test('formatAutomationCliError adds actionable hint for devtools port restart requirement', () => {
   const error = formatAutomationCliError(
     'IDE server has started on http://127.0.0.1:39085 and must be restarted on port 39100 first',

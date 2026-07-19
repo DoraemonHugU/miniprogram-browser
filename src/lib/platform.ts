@@ -1,6 +1,6 @@
 const { readFileSync } = require('node:fs')
 
-type AnyRecord = Record<string, any>
+type AnyRecord = Record<string, unknown>
 
 /**
  * CLI 进程运行的操作系统。裸 Linux 无 DevTools（DevTools 只装 win/mac），
@@ -10,7 +10,7 @@ type RuntimeOS = 'win32' | 'darwin' | 'linux'
 
 /**
  * DevTools 安装的操作系统。DevTools 本体只运行在 win32 / darwin。
- * WSL 场景里 runtime=linux 但 devtoolsHost=win32，需要做路径翻译与镜像桥接。
+ * WSL 场景里 runtime=linux 但 devtoolsHost=win32，需要做路径翻译与 UNC 桥接。
  *
  * devtoolsHost 由 runtime 推导（非 cliPath 扩展名）：linux 恒为 win32（WSL 桥接），
  * win32/darwin 与 runtime 同值。这比「cliPath 扩展名」更稳——Windows 上
@@ -23,7 +23,7 @@ interface Environment {
   devtoolsHost: DevtoolsHostOS
   /** runtime=linux 且存在 WSL 信号（/proc/version 含 microsoft 或 WSL_DISTRO_NAME） */
   isWsl: boolean
-  /** runtime=linux 且 devtoolsHost=win32，需要路径桥接/镜像 */
+  /** runtime=linux 且 devtoolsHost=win32，需要路径桥接/UNC 转换 */
   needsBridge: boolean
 }
 
@@ -47,7 +47,7 @@ function readProcVersion(): string {
  * versionText / wslDistroName / runtime 均可注入，便于单测不依赖真实文件系统或环境。
  */
 function detectWsl(versionText?: string, options: AnyRecord = {}): boolean {
-  if (detectRuntimeOS(options.runtime) !== 'linux') {
+  if (detectRuntimeOS(options.runtime as string | undefined) !== 'linux') {
     return false
   }
   const text = versionText !== undefined ? versionText : readProcVersion()
@@ -65,17 +65,17 @@ function detectDevtoolsHost(runtime: RuntimeOS): DevtoolsHostOS {
 }
 
 function resolveEnvironment(config: AnyRecord, options: AnyRecord = {}): Environment {
-  const runtime = detectRuntimeOS(options.runtime)
-  const isWsl = detectWsl(options.readProcVersion, {
+  const runtime = detectRuntimeOS(options.runtime as string | undefined)
+  const isWsl = detectWsl(options.readProcVersion as string | undefined, {
     runtime,
-    wslDistroName: options.wslDistroName,
+    wslDistroName: options.wslDistroName as string | undefined,
   })
   const devtoolsHost = detectDevtoolsHost(runtime)
   return {
     runtime,
     devtoolsHost,
     isWsl,
-    // 桥接（路径翻译 + 受控镜像）只发生在 WSL：裸 linux 无 DevTools 可达，无需桥接。
+    // 桥接（路径翻译 + UNC 直传）只发生在 WSL：裸 linux 无 DevTools 可达，无需桥接。
     needsBridge: isWsl,
   }
 }

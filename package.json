@@ -33,6 +33,8 @@
     "test:image-processing": "python scripts/run-image-processing-tests.py",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:strict": "tsc -p tsconfig.json --noEmit --strict",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
     "test": "npm run build && npm run test:node && npm run test:image-processing",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
@@ -51,6 +53,8 @@
   },
   "devDependencies": {
     "@types/node": "^18.19.130",
-    "typescript": "^6.0.3"
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0"
   }
 }

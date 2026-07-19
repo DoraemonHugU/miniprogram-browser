@@ -24,9 +24,62 @@ const {
   getCurrentPage,
   getPageStack,
 } = require('./runtime-bridge')
+const {
+  resolveTarget,
+} = require('./runtime')
 
-type AnyRecord = Record<string, any>
+import type { MiniProgram } from 'miniprogram-automator'
+import type { SessionState } from '../types/core'
+
+type AnyRecord = Record<string, unknown>
 type ErrorWithMeta = Error & AnyRecord
+
+/** await 条件对象（由 normalizeAwaitCondition 解析） */
+interface AwaitCondition {
+  kind: string
+  value: string
+  raw: string
+}
+
+/** 单个日志文件（诊断摘要输入） */
+interface LogPayloadFile {
+  lines?: unknown[]
+}
+
+/** 日志 payload（诊断摘要输入） */
+interface LogPayload {
+  files?: LogPayloadFile[]
+}
+
+/** 稳定采样结果 */
+interface StableSample {
+  page: unknown
+  path: string
+  pageStackDepth: number
+  signature: string
+}
+
+/** 等待结果（waitForMiniProgramStable / waitForMiniProgramCondition 共用） */
+interface WaitResult {
+  ok: boolean
+  condition: AwaitCondition | string
+  path: string
+  elapsedMs: number
+  count?: number
+  pageStackDepth?: number
+  stableMs?: number
+  viewReady?: boolean
+  viewNodeCount?: number
+  viewError?: string
+}
+
+/** 可见性检查的元素（仅需 size 方法） */
+interface VisibleElement {
+  size?: (...args: unknown[]) => Promise<unknown>
+}
+
+/** 睡眠函数签名 */
+type SleepFn = (ms: number) => Promise<void>
 
 // ---- 常量 ----
 
@@ -55,7 +108,7 @@ const DEFAULT_AWAIT_TIMEOUTS: Record<string, number> = {
  * - @e1（ref 引用）
  * - /pages/xxx（直接路由）
  */
-function normalizeAwaitCondition(rawValue) {
+function normalizeAwaitCondition(rawValue: unknown): AwaitCondition {
   const raw = String(rawValue || '').trim()
   if (!raw) {
     const error = new Error('await requires a condition, e.g. app-ready or route:/pages/index/index') as ErrorWithMeta
@@ -101,7 +154,7 @@ function normalizeAwaitCondition(rawValue) {
 // ---- 超时计算 ----
 
 /** 从条件和显式超时计算实际超时毫秒数 */
-function resolveAwaitTimeoutMs(condition, explicitTimeout) {
+function resolveAwaitTimeoutMs(condition: AwaitCondition, explicitTimeout: unknown): number {
   const numericTimeout = Number(explicitTimeout)
   if (Number.isFinite(numericTimeout) && numericTimeout > 0) {
     return numericTimeout
@@ -115,7 +168,7 @@ function resolveAwaitTimeoutMs(condition, explicitTimeout) {
  * 构造超时错误，附加 hint 和可选的 log/next 信息。
  * 用于 await 超时后的用户友好错误提示。
  */
-function buildAwaitTimeoutError(condition, timeoutMs, hint, details: AnyRecord = {}) {
+function buildAwaitTimeoutError(condition: AwaitCondition, timeoutMs: number, hint: unknown, details: AnyRecord = {}): ErrorWithMeta {
   const error = new Error(`await ${condition.raw} timed out after ${timeoutMs}ms`) as ErrorWithMeta
   error.code = 'AWAIT_TIMEOUT'
   if (hint) {
@@ -131,7 +184,7 @@ function buildAwaitTimeoutError(condition, timeoutMs, hint, details: AnyRecord =
 }
 
 /** 构造运行时不稳定的超时错误 */
-function buildRuntimeStableTimeoutError(timeoutMs, hint, details: AnyRecord = {}) {
+function buildRuntimeStableTimeoutError(timeoutMs: number, hint: unknown, details: AnyRecord = {}): ErrorWithMeta {
   const error = new Error(`runtime stable timed out after ${timeoutMs}ms`) as ErrorWithMeta
   error.code = 'RUNTIME_UNSTABLE'
   error.runtimeMayContinue = true
@@ -147,12 +200,12 @@ function buildRuntimeStableTimeoutError(timeoutMs, hint, details: AnyRecord = {}
  * 从 log payload 中提取最有用的一行摘要。
  * 优先匹配已知的 DevTools 错误模式，否则取首行。
  */
-function extractLogSummary(logPayload, options: AnyRecord = {}) {
+function extractLogSummary(logPayload: LogPayload, options: AnyRecord = {}): string {
   const maxLength = Math.max(40, Number(options.maxLength || 200))
   let fallback = ''
-  for (const file of (logPayload && logPayload.files) || []) {
-    const lines = []
-    for (const line of file.lines || []) {
+  for (const file of (logPayload.files || [])) {
+    const lines: string[] = []
+    for (const line of (file.lines || [])) {
       const text = String(line || '').trim()
       if (text) {
         lines.push(text)
@@ -174,16 +227,16 @@ function extractLogSummary(logPayload, options: AnyRecord = {}) {
 }
 
 /** 从日志行列表中按优先级选择最佳摘要行 */
-function selectLogSummaryLine(lines) {
+function selectLogSummaryLine(lines: unknown[]): string {
   const ranked = lines
-    .map((line, index) => ({ line, index, score: scoreLogSummaryLine(line) }))
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-  return ranked.length ? ranked[0].line : ''
+    .map((line: unknown, index: number) => ({ line, index, score: scoreLogSummaryLine(line) }))
+    .filter((item: { line: unknown; index: number; score: number }) => item.score > 0)
+    .sort((left: { line: unknown; index: number; score: number }, right: { line: unknown; index: number; score: number }) => right.score - left.score || left.index - right.index)
+  return ranked.length ? (ranked[0].line as string) : ''
 }
 
 /** 截断过长的日志行 */
-function truncateLogSummaryLine(line, maxLength) {
+function truncateLogSummaryLine(line: string, maxLength: number): string {
   if (line.length <= maxLength) {
     return line
   }
@@ -191,7 +244,7 @@ function truncateLogSummaryLine(line, maxLength) {
 }
 
 /** 为日志行打分（高优先级匹配已知错误模式） */
-function scoreLogSummaryLine(line) {
+function scoreLogSummaryLine(line: unknown): number {
   const text = String(line || '')
   if (/simulator launch catch error|MinTabbarCount|checkTabbar|checkAppJSON/iu.test(text)) {
     return 110
@@ -224,7 +277,7 @@ function scoreLogSummaryLine(line) {
  * - selector / visible / hidden：通过 $$ 查询
  * - ref：通过 resolveTarget 检查 ref 可解析
  */
-async function waitForMiniProgramCondition(miniProgram, state, condition, options: AnyRecord = {}) {
+async function waitForMiniProgramCondition(miniProgram: MiniProgram, state: SessionState, condition: AwaitCondition, options: AnyRecord = {}): Promise<WaitResult> {
   if (condition.kind === 'stable') {
     return await waitForMiniProgramStable(miniProgram, {
       timeoutMs: options.timeoutMs || options.timeout,
@@ -235,7 +288,7 @@ async function waitForMiniProgramCondition(miniProgram, state, condition, option
 
   const timeoutMs = resolveAwaitTimeoutMs(condition, options.timeoutMs || options.timeout)
   const pollMs = Math.max(1, Number(options.pollMs || 200))
-  const sleepFn = options.sleepFn || sleep
+  const sleepFn = (options.sleepFn as SleepFn) || sleep
   const initialRoute = normalizeRuntimeRoute(options.pathBefore || state.route || '')
   const startedAt = Date.now()
   let lastHint = `kind=${condition.kind}`
@@ -286,10 +339,9 @@ async function waitForMiniProgramCondition(miniProgram, state, condition, option
       lastHint = `kind=${condition.kind}; matches=${condition.kind === 'selector' ? matches.length : visibleCount}`
     } else if (condition.kind === 'ref') {
       try {
-        const { resolveTarget } = require('./runtime')
         await resolveTarget(page, state, condition.value, options.scopeRef || null)
         return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt }
-      } catch (_) {
+      } catch (_error: unknown) {
         lastHint = `kind=ref; target=${condition.value}`
       }
     } else {
@@ -307,12 +359,12 @@ async function waitForMiniProgramCondition(miniProgram, state, condition, option
 }
 
 /** 统计元素列表中可见元素数量（通过 size 检测） */
-async function countVisibleElements(elements) {
+async function countVisibleElements(elements: VisibleElement[]): Promise<number> {
   let visibleCount = 0
   for (const element of elements || []) {
     try {
       if (typeof element.size === 'function') {
-        const size = await element.size()
+        const size = (await element.size()) as { width?: unknown; height?: unknown }
         if (Number(size && size.width) > 0 || Number(size && size.height) > 0) {
           visibleCount += 1
           continue
@@ -321,7 +373,7 @@ async function countVisibleElements(elements) {
         visibleCount += 1
         continue
       }
-    } catch (_) {
+    } catch (_error: unknown) {
       visibleCount += 1
       continue
     }
@@ -332,13 +384,13 @@ async function countVisibleElements(elements) {
 // ---- 稳定等待 ----
 
 /** 采集当前页面栈的稳定快照样本 */
-async function readStableRuntimeSample(miniProgram) {
+async function readStableRuntimeSample(miniProgram: MiniProgram): Promise<StableSample> {
   const page = await getCurrentPage(miniProgram)
   const pathValue = normalizeRuntimeRoute(page && page.path ? page.path : '')
-  let stack = []
+  let stack: { path?: string; query?: Record<string, unknown> }[] = []
   try {
     stack = await getPageStack(miniProgram)
-  } catch (_) {
+  } catch (_error: unknown) {
     stack = pathValue ? [{ path: pathValue, query: {} }] : []
   }
 
@@ -357,15 +409,15 @@ async function readStableRuntimeSample(miniProgram) {
  * 轮询页面栈签名，在 quietMs 毫秒内无变化则视为稳定。
  * 可选进行视图预制探针检查。
  */
-async function waitForMiniProgramStable(miniProgram, options: AnyRecord = {}) {
+async function waitForMiniProgramStable(miniProgram: MiniProgram, options: AnyRecord = {}): Promise<WaitResult> {
   const timeoutMs = Math.max(1, Number(options.timeoutMs ?? options.timeout ?? DEFAULT_AWAIT_TIMEOUTS.stable))
   const quietMs = Math.max(0, Number(options.quietMs ?? 1200))
   const pollMs = Math.max(1, Number(options.pollMs ?? 300))
-  const sleepFn = options.sleepFn || sleep
+  const sleepFn = (options.sleepFn as SleepFn) || sleep
   const startedAt = Date.now()
   let lastSignature = ''
   let stableSince = 0
-  let lastSample = null
+  let lastSample: StableSample | null = null
   let lastHint = 'phase=stable'
 
   while (Date.now() - startedAt <= timeoutMs) {
@@ -391,8 +443,9 @@ async function waitForMiniProgramStable(miniProgram, options: AnyRecord = {}) {
           break
         }
       }
-    } catch (error) {
-      lastHint = `phase=stable; error=${error && error.message ? String(error.message) : String(error)}`
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      lastHint = `phase=stable; error=${message}`
       lastSignature = ''
       stableSince = 0
     }
@@ -430,9 +483,10 @@ async function waitForMiniProgramStable(miniProgram, options: AnyRecord = {}) {
  * 为 callNativeMethod 的返回值构建诊断消息。
  * 根据具体方法提供可操作 hint。
  */
-function buildNativeDiagnostic(method, result, context: AnyRecord = {}) {
-  const errorMessage = result && result.error && result.error.message
-  const routeNotices = (context.routeEvents || []).map(formatRouteTimelineLine)
+function buildNativeDiagnostic(method: string, result: unknown, context: AnyRecord = {}): AnyRecord {
+  const resultRecord = (result && typeof result === 'object' ? result : null) as { error?: { message?: unknown } } | null
+  const errorMessage = resultRecord && resultRecord.error ? resultRecord.error.message : undefined
+  const routeNotices = ((context.routeEvents as { message?: string }[] | undefined) || []).map(formatRouteTimelineLine)
   const diagnostic: AnyRecord = {
     result,
     path: context.pathAfter || context.pathBefore || '',
@@ -473,7 +527,7 @@ function buildNativeDiagnostic(method, result, context: AnyRecord = {}) {
 }
 
 // make sleep accessible
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 

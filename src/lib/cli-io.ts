@@ -1,4 +1,4 @@
-type CliOptions = Record<string, any> & {
+type CliOptions = Record<string, unknown> & {
   session: string
   sessionProvided: boolean
   json: boolean
@@ -15,18 +15,18 @@ type ParsedCliArgs = {
  * @param {string} key
  * @returns {string}
  */
-function toCamelOptionKey(key) {
-  return key.replace(/-([a-z])/gu, (_match, char) => String(char).toUpperCase())
+function toCamelOptionKey(key: string): string {
+  return key.replace(/-([a-z])/gu, (_match: string, char: string) => String(char).toUpperCase())
 }
 
 /**
  * @param {string[]} argv
  * @returns {ParsedCliArgs}
  */
-function parseArgs(argv) {
+function parseArgs(argv: string[]): ParsedCliArgs {
   const positional: string[] = []
   const options: CliOptions = {
-    session: 'default',
+    session: '',
     sessionProvided: false,
     json: false,
   }
@@ -50,7 +50,7 @@ function parseArgs(argv) {
     'visual',
   ])
 
-  function readOptionValue(flag, index) {
+  function readOptionValue(flag: string, index: number): string {
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('-')) {
       const error = new Error(`Option --${flag} requires a value.`) as Error & { code?: string }
@@ -123,11 +123,11 @@ function parseArgs(argv) {
 }
 
 /**
- * @param {Record<string, any>} payload
+ * @param {Record<string, unknown>} payload
  * @param {CliOptions} options
  * @returns {void}
  */
-function emit(payload, options) {
+function emit(payload: Record<string, unknown>, options: CliOptions): void {
   const notices = Array.isArray(options._notices) ? options._notices : []
 
   if (options.json) {
@@ -160,7 +160,7 @@ function emit(payload, options) {
  * @param {CliOptions} options
  * @returns {void}
  */
-function emitProgress(message, options) {
+function emitProgress(message: string, options: CliOptions): void {
   if (options.json || !message) {
     return
   }
@@ -171,7 +171,7 @@ function emitProgress(message, options) {
  * @param {unknown} value
  * @returns {string[]}
  */
-function parseFocusRefs(value) {
+function parseFocusRefs(value: unknown): string[] {
   if (!value) {
     return []
   }
