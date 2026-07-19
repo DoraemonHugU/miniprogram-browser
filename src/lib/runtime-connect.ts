@@ -599,8 +599,14 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
     automator: options.automator,
   })
   if (!becameLive && String(config.autoPort || '').trim()) {
+    // 冷启动未就绪：与热启动同一终点（port live）未达到；优先重试 open，勿立即 --fresh
     throw new Error(
-      `DevTools automation 在超时前未在 autoPort=${config.autoPort} 就绪（enable 已返回但 WebSocket 仍不可连）。可加大 --timeout 后重试 open；若页面已可见，可先 session list 再 open 复用。`,
+      [
+        `冷启动未完成：automation 端口 autoPort=${config.autoPort} 在超时前仍未就绪`,
+        '（devtools auto 已返回，但 WebSocket 尚不可连——常见于 DevTools 仍在编译/拉起 cli server）。',
+        '建议：1) 确认开发者工具已登录且项目窗可见；2) 加大 --timeout 后再次 open（不要立刻 --fresh）；',
+        '3) 若 session list 已显示其它 live，直接 open 复用；4) 仍失败再看 devtools logs / 重启开发者工具。',
+      ].join(''),
     )
   }
 

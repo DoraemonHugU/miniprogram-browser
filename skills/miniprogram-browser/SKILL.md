@@ -268,6 +268,13 @@ miniprogram-browser open --session agent-task-a --fresh
 
 不要假设一定有固定错误码字段；以可读说明 + 原始日志为准。
 
+**冷启动 vs 热启动（体验心智）**：
+
+- 热启动：已有 live automation → 直接连（快）
+- 冷启动：要先 `devtools auto`，再等到端口 live，再连（慢是正常的；进度里会出现「等待 automation 端口就绪」）
+- 冷启动超时：**先重试同一个 open**（可加大 `--timeout`），**不要立刻 `--fresh`**（容易双开/打坏已有窗）
+- 若提示端口未就绪但人已看到小程序页：短等后再 open 复用，或 `session list` 看是否已有 live
+
 ## 诊断与逃逸
 
 ### 推荐诊断

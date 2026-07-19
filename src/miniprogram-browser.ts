@@ -1101,11 +1101,15 @@ async function connectOpenSession(state: SessionState, options: AnyRecord, openO
     connectTimeoutMs: resolveOpenTimeoutMs(options),
     onProgress(phase: string) {
       if (phase === 'enable') {
-        emitProgress('正在启动/连接 DevTools 自动化...', options)
+        emitProgress('正在启用 DevTools 自动化（devtools auto）...', options)
+        return
+      }
+      if (phase === 'wait-live') {
+        emitProgress('正在等待 automation 端口就绪（冷启动常见，请稍候）...', options)
         return
       }
       if (phase === 'connect') {
-        emitProgress('正在等待小程序实例就绪...', options)
+        emitProgress('正在连接小程序实例...', options)
       }
     },
   })
@@ -1113,12 +1117,27 @@ async function connectOpenSession(state: SessionState, options: AnyRecord, openO
 
 function emitOpenResult(result: AnyRecord, options: AnyRecord) {
   const pathLabel = result.path || (result.appReady === false ? '(warming up)' : '(no page)')
-  const sessionLabel = options.session ? ` session=${options.session}` : ''
-  const autoSessionLabel = options.sessionAutoAssigned ? ' (auto-session)' : ''
+  const sessionName = options.session || ''
+  const mode = String(result.mode || 'connected')
+  // 文本首行：人/agent 先扫 mode/session/path/autoPort；细节仍在 JSON 字段
+  const parts = [
+    `已连接 mode=${mode}`,
+    `path=${pathLabel}`,
+    sessionName ? `session=${sessionName}` : '',
+    options.sessionAutoAssigned ? '(auto-session)' : '',
+    result.attachedTo ? `attachedTo=${result.attachedTo}` : '',
+    result.rescuedFromStartFailure ? 'rescued=1' : '',
+    `autoPort=${result.autoPort || '-'}`,
+    result.autoPortAssigned ? '(auto-port)' : '',
+    `project=${result.projectPath || '-'}`,
+    result.appReady === false ? 'appReady=false' : '',
+    result.stableTimeout ? 'stable=false' : '',
+  ].filter(Boolean)
   emit({
-    message: `已连接 mode=${result.mode} path=${pathLabel} project=${result.projectPath} strategy=${result.projectStrategy} devtoolsProject=${result.devtoolsProjectPath} devtoolsPort=${result.devtoolsPort} autoPort=${result.autoPort}${sessionLabel}${autoSessionLabel}${result.attachedTo ? ` attachedTo=${result.attachedTo}` : ''}${result.autoPortAssigned ? ' (auto)' : ''}${result.appReady === false ? ' appReady=false' : ''}${result.stableTimeout ? ' stable=false' : ''}`,
+    message: parts.join(' '),
     mode: result.mode,
     attachedTo: result.attachedTo,
+    rescuedFromStartFailure: result.rescuedFromStartFailure || undefined,
     appReady: result.appReady,
     path: result.path,
     session: options.session || undefined,
