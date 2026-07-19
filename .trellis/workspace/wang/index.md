@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-07-19
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~391 | Active |
+| `journal-1.md` | ~424 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-07-19 | L0 真机 E2E 分支覆盖 | `bee033d` | `feat/ascii-map-wireframe-v1` |
 | 10 | 2026-07-19 | 真机 open 门禁 | `a6eda1b` | `feat/ascii-map-wireframe-v1` |
 | 9 | 2026-07-19 | 冷启动自愈无需二次 open | `24c6b27` | `feat/ascii-map-wireframe-v1` |
 | 8 | 2026-07-19 | 项目 open 锁与 OPEN_TIMEOUT 救援 | `5219527` | `feat/ascii-map-wireframe-v1` |

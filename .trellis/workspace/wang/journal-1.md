@@ -389,3 +389,36 @@ scripts/real-open-gate.cjs + npm run test:real-open-gate；skip 单测绿；本�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: L0 真机 E2E 分支覆盖
+
+**Date**: 2026-07-19
+**Task**: L0 真机 E2E 分支覆盖
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+l0-e2e 15 cases：open/attach/goto/snapshot/click/session/logs；harness 复用；本机 PASS。可选 E2E_FRESH=1。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bee033d` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
