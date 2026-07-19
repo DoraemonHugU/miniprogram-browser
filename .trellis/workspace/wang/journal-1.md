@@ -356,3 +356,36 @@ waitUntilAutomationLive；共享 live 不误杀 close；auto-port attach；sessi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: 真机 open 门禁
+
+**Date**: 2026-07-19
+**Task**: 真机 open 门禁
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+scripts/real-open-gate.cjs + npm run test:real-open-gate；skip 单测绿；本机 DevTools 不健康时 exit 1 正确失败。健康环境需复跑求 exit 0。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a6eda1b` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
