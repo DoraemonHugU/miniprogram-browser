@@ -20,6 +20,25 @@ const {
 const repoRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(repoRoot, 'dist/miniprogram-browser.js')
 
+/**
+ * WSL 上 close 路径若落在 /tmp→UNC 会被产品侧跳过。
+ * 需要验证 close/auto 调用链的用例优先落在 /mnt/<drive>/...。
+ */
+function preferredProjectRoot() {
+  for (const candidate of ['/mnt/d/tmp/mpb-cli-behavior', '/mnt/c/tmp/mpb-cli-behavior']) {
+    try {
+      fs.mkdirSync(candidate, { recursive: true })
+      const probe = path.join(candidate, `.write-${process.pid}`)
+      fs.writeFileSync(probe, 'ok')
+      fs.unlinkSync(probe)
+      return candidate
+    } catch (_) {}
+  }
+  return os.tmpdir()
+}
+
+const PROJECT_ROOT = preferredProjectRoot()
+
 function runCli(args, env = {}, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: options.cwd || repoRoot,
@@ -40,14 +59,9 @@ function parseJsonOutput(result) {
   return JSON.parse(result.stdout)
 }
 
-function createMiniProgramProject() {
-  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-project-'))
-  const miniprogramRoot = path.join(projectDir, 'miniprogram')
-  fs.mkdirSync(path.join(miniprogramRoot, 'pages/index'), { recursive: true })
-  fs.writeFileSync(path.join(projectDir, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'miniprogram/' }))
-  fs.writeFileSync(path.join(miniprogramRoot, 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
-  fs.writeFileSync(path.join(miniprogramRoot, 'pages/index/index.js'), 'wx.navigateTo({ url: "/pages/detail/index" })')
-  return projectDir
+function createMiniProgramProject(baseDir = PROJECT_ROOT) {
+  const projectDir = fs.mkdtempSync(path.join(baseDir, 'mpb-project-'))
+  return createMiniProgramProjectAt(projectDir)
 }
 
 function createMiniProgramProjectAt(projectDir) {
@@ -57,6 +71,121 @@ function createMiniProgramProjectAt(projectDir) {
   fs.writeFileSync(path.join(miniprogramRoot, 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
   fs.writeFileSync(path.join(miniprogramRoot, 'pages/index/index.js'), 'wx.navigateTo({ url: "/pages/detail/index" })')
   return projectDir
+}
+
+/**
+ * 跨平台假 DevTools CLI：
+ * - 始终提供 cli.js（Node 实现，记录 calls.log）
+ * - 在 linux/WSL（devtoolsHost=win32）旁路 node.exe stub，满足 bundle 校验
+ * - cliPath 指向 cli.js，与生产 normalize 后形态一致
+ *
+ * @param {{ onAuto?: string, onOpen?: string, onClose?: string, alwaysExit?: number, extraJs?: string }} [options]
+ */
+function createFakeDevtoolsCli(options = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-'))
+  const callsPath = path.join(dir, 'calls.log')
+  const cliJsPath = path.join(dir, 'cli.js')
+  const onAuto = options.onAuto || '✔ IDE server has started, listening on http://127.0.0.1:38596'
+  const onOpen = options.onOpen || onAuto
+  const onClose = options.onClose || '✔ close'
+  const alwaysExit = Number.isInteger(options.alwaysExit) ? options.alwaysExit : 0
+  const extraJs = String(options.extraJs || '')
+
+  fs.writeFileSync(cliJsPath, `
+const fs = require('fs');
+const path = require('path');
+const callsPath = ${JSON.stringify(callsPath)};
+const args = process.argv.slice(2);
+fs.appendFileSync(callsPath, args.join(' ') + '\\n');
+const cmd = args[0] || '';
+${extraJs}
+if (cmd === 'auto') {
+  process.stdout.write(${JSON.stringify(onAuto)} + (String(${JSON.stringify(onAuto)}).endsWith('\\n') ? '' : '\\n'));
+} else if (cmd === 'open') {
+  process.stdout.write(${JSON.stringify(onOpen)} + (String(${JSON.stringify(onOpen)}).endsWith('\\n') ? '' : '\\n'));
+} else if (cmd === 'close') {
+  process.stdout.write(${JSON.stringify(onClose)} + (String(${JSON.stringify(onClose)}).endsWith('\\n') ? '' : '\\n'));
+}
+process.exit(${alwaysExit});
+`)
+
+  // win32 host 路径：spawn(node.exe, [cli.jsWin, ...args])
+  const nodeExePath = path.join(dir, 'node.exe')
+  fs.writeFileSync(nodeExePath, `#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# 丢弃 Windows 形态的 cli.js 参数，改用本地 cli.js
+shift
+exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
+`)
+  fs.chmodSync(nodeExePath, 0o755)
+
+  // 非 win32 host 直接执行 cliPath 时也可用
+  const shellCliPath = path.join(dir, 'cli')
+  fs.writeFileSync(shellCliPath, `#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
+`)
+  fs.chmodSync(shellCliPath, 0o755)
+
+  return {
+    dir,
+    callsPath,
+    /** 给 --cli-path：生产校验在 WSL 上认 cli.js + node.exe */
+    cliPath: cliJsPath,
+    readCalls() {
+      if (!fs.existsSync(callsPath)) {
+        return []
+      }
+      return fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean)
+    },
+  }
+}
+
+async function withHome(homeDir, fn) {
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    return await fn()
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
+}
+
+/** 不依赖 open 成功；写入可被 session list/kill 发现的 session 文件 */
+async function seedSession(homeDir, { name, projectPath, autoPort = '', devtoolsPort = '', cliPath: sessionCliPath = '', devtoolsProjectPath = '' }) {
+  return withHome(homeDir, async () => {
+    const state = createEmptySessionState({
+      sessionName: name,
+      config: {
+        ...createDefaultConfig(),
+        projectPath,
+        autoPort,
+        devtoolsPort,
+        cliPath: sessionCliPath,
+        devtoolsProjectPath,
+      },
+    })
+    await saveSessionState(state)
+    if (autoPort) {
+      await recordRuntimeLaunch(name, {
+        ...createDefaultConfig(),
+        projectPath,
+        autoPort,
+        devtoolsPort,
+        cliPath: sessionCliPath,
+        devtoolsProjectPath,
+      }, {
+        status: 'live',
+        autoPort,
+        devtoolsPort,
+      })
+    }
+    return state
+  })
 }
 
 test('CLI emits JSON errors when --json is present on argument errors', () => {
@@ -69,12 +198,12 @@ test('CLI emits JSON errors when --json is present on argument errors', () => {
   assert.match(payload.error.message, /--session.*value|--session.*值/i)
 })
 
-test('session list filters to the current mini program project unless --all is passed', () => {
+test('session list filters to the current mini program project unless --all is passed', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectA = createMiniProgramProject()
   const projectB = createMiniProgramProject()
-  runCli(['open', '--session', 'project-a', '--project', projectA, '--json'], { HOME: homeDir })
-  runCli(['open', '--session', 'project-b', '--project', projectB, '--json'], { HOME: homeDir })
+  await seedSession(homeDir, { name: 'project-a', projectPath: projectA })
+  await seedSession(homeDir, { name: 'project-b', projectPath: projectB })
 
   const currentProjectResult = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectA })
   const currentProjectPayload = parseJsonOutput(currentProjectResult)
@@ -87,13 +216,13 @@ test('session list filters to the current mini program project unless --all is p
   assert.deepEqual(allPayload.sessions.map((item) => item.name).sort(), ['project-a', 'project-b'])
 })
 
-test('session list does not leak global sessions outside a mini program project by default', () => {
+test('session list does not leak global sessions outside a mini program project by default', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectA = createMiniProgramProject()
   const projectB = createMiniProgramProject()
   const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-outside-'))
-  runCli(['open', '--session', 'project-a', '--project', projectA, '--json'], { HOME: homeDir })
-  runCli(['open', '--session', 'project-b', '--project', projectB, '--json'], { HOME: homeDir })
+  await seedSession(homeDir, { name: 'project-a', projectPath: projectA })
+  await seedSession(homeDir, { name: 'project-b', projectPath: projectB })
 
   const scopedResult = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: outsideDir })
   const scopedPayload = parseJsonOutput(scopedResult)
@@ -107,14 +236,12 @@ test('session list does not leak global sessions outside a mini program project 
   assert.deepEqual(allPayload.sessions.map((item) => item.name).sort(), ['project-a', 'project-b'])
 })
 
-test('session kill uses the current project when the same session name exists in multiple projects', () => {
+test('session kill uses the current project when the same session name exists in multiple projects', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectA = createMiniProgramProject()
   const projectB = createMiniProgramProject()
-  runCli(['open', '--session', 'shared', '--project', projectA, '--json'], { HOME: homeDir })
-  const secondOpenResult = runCli(['open', '--session', 'shared', '--project', projectB, '--json'], { HOME: homeDir })
-  const secondOpenPayload = parseJsonOutput(secondOpenResult)
-  assert.doesNotMatch(secondOpenPayload.error.message, /already bound/i)
+  await seedSession(homeDir, { name: 'shared', projectPath: projectA })
+  await seedSession(homeDir, { name: 'shared', projectPath: projectB })
 
   const killResult = runCli(['session', 'kill', 'shared', '--json'], { HOME: homeDir }, { cwd: projectA })
   const killPayload = parseJsonOutput(killResult)
@@ -133,20 +260,30 @@ test('session kill uses the current project when the same session name exists in
 test('session kill waits on the shared runtime lock before closing a runtime', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectDir = createMiniProgramProject()
-  const previousHome = process.env.HOME
   let runtimeLock = null
 
   try {
-    runCli(['open', '--session', 'owner', '--project', projectDir, '--json'], { HOME: homeDir })
-    process.env.HOME = homeDir
-    const ownerState = await loadSessionState(
-      'owner',
-      mergeConfigOverrides(createDefaultConfig(), { projectPath: projectDir }),
-    )
-    assert.ok(ownerState.config.autoPort)
-    runtimeLock = await acquireSessionLock(runtimeLockName(ownerState.config), ownerState.config, {
-      command: 'runtime path',
-      timeoutMs: 100,
+    await seedSession(homeDir, {
+      name: 'owner',
+      projectPath: projectDir,
+      autoPort: '19515',
+      devtoolsPort: '29515',
+    })
+
+    await withHome(homeDir, async () => {
+      const ownerState = await loadSessionState(
+        'owner',
+        mergeConfigOverrides(createDefaultConfig(), { projectPath: projectDir }),
+      )
+      // load 会 strip autoPort；从 launch 记录回填以测 runtime 锁
+      if (!ownerState.config.autoPort) {
+        ownerState.config.autoPort = '19515'
+      }
+      assert.ok(ownerState.config.autoPort)
+      runtimeLock = await acquireSessionLock(runtimeLockName(ownerState.config), ownerState.config, {
+        command: 'runtime path',
+        timeoutMs: 100,
+      })
     })
 
     const killResult = runCli(['session', 'kill', 'owner', '--json'], {
@@ -162,11 +299,6 @@ test('session kill waits on the shared runtime lock before closing a runtime', a
   } finally {
     if (runtimeLock) {
       await releaseSessionLock(runtimeLock)
-    }
-    if (previousHome === undefined) {
-      delete process.env.HOME
-    } else {
-      process.env.HOME = previousHome
     }
     runCli(['session', 'kill', 'owner', '--json'], { HOME: homeDir }, { cwd: projectDir })
   }
@@ -252,16 +384,15 @@ test('open reports invalid DevTools CLI paths clearly', () => {
 
 test('open treats DevTools code 17 output as fatal even when CLI exits zero', () => {
   const projectDir = createMiniProgramProject()
-  const fakeCliPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-cli-')), 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    'echo "× preparing"',
-    'echo "[error] code: 17"',
-    'echo "二维码输出路径无效或不存在"',
-    'echo "QR_PATH_NOT_VALID_OR_NOT_EXIST"',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({
+    onAuto: [
+      '× preparing',
+      '[error] code: 17',
+      '二维码输出路径无效或不存在',
+      'QR_PATH_NOT_VALID_OR_NOT_EXIST',
+    ].join('\n'),
+    alwaysExit: 0,
+  })
 
   const result = runCli([
     'open',
@@ -270,7 +401,7 @@ test('open treats DevTools code 17 output as fatal even when CLI exits zero', ()
     '--project',
     projectDir,
     '--cli-path',
-    fakeCliPath,
+    fake.cliPath,
     '--json',
   ])
   const payload = parseJsonOutput(result)
@@ -279,21 +410,17 @@ test('open treats DevTools code 17 output as fatal even when CLI exits zero', ()
   assert.equal(payload.ok, false)
   assert.equal(payload.error.code, 'DEVTOOLS_CLI_ERROR')
   assert.match(payload.error.message, /code 17|QR_PATH_NOT_VALID_OR_NOT_EXIST|--devtools-project/i)
-  assert.match(payload.error.hint, /code 17|QR_PATH_NOT_VALID_OR_NOT_EXIST|二维码/i)
-  assert.match(payload.error.raw, /二维码输出路径无效或不存在/)
+  assert.match(String(payload.error.hint || ''), /code 17|QR_PATH_NOT_VALID_OR_NOT_EXIST|二维码/i)
+  assert.match(String(payload.error.raw || ''), /二维码输出路径无效或不存在/)
   assert.doesNotMatch(payload.error.message, /ws:\/\/127\.0\.0\.1/i)
 })
 
 test('open bounds startup with --timeout and returns JSON diagnostics', () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectDir = createMiniProgramProject()
-  const fakeCliPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-slow-cli-')), 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    'echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({
+    onAuto: '✔ IDE server has started, listening on http://127.0.0.1:38596',
+  })
 
   const startedAt = Date.now()
   const result = runCli([
@@ -303,7 +430,7 @@ test('open bounds startup with --timeout and returns JSON diagnostics', () => {
     '--project',
     projectDir,
     '--cli-path',
-    fakeCliPath,
+    fake.cliPath,
     '--timeout',
     '200',
     '--json',
@@ -315,23 +442,16 @@ test('open bounds startup with --timeout and returns JSON diagnostics', () => {
   assert.equal(payload.ok, false)
   assert.equal(payload.error.code, 'OPEN_TIMEOUT')
   assert.match(payload.error.message, /open timed out after 200ms/i)
-  assert.match(payload.error.hint, /resolution=start-required/i)
+  assert.match(String(payload.error.hint || ''), /resolution=start-required/i)
   assert.ok(elapsedMs < 3000, `open timeout should not wait for full retry loop, elapsed=${elapsedMs}`)
 })
 
 test('open reports adopt/bootstrap resolution when reusing an explicit DevTools HTTP port', () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectDir = createMiniProgramProject()
-  const fakeCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-adopt-open-cli-'))
-  const callsPath = path.join(fakeCliDir, 'calls.log')
-  const fakeCliPath = path.join(fakeCliDir, 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
-    'if [ "$1" = "auto" ]; then echo "✔ IDE server has started, listening on http://127.0.0.1:23986"; fi',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({
+    onAuto: '✔ IDE server has started, listening on http://127.0.0.1:23986',
+  })
 
   const result = runCli([
     'open',
@@ -342,7 +462,7 @@ test('open reports adopt/bootstrap resolution when reusing an explicit DevTools 
     '--devtools-port',
     '23986',
     '--cli-path',
-    fakeCliPath,
+    fake.cliPath,
     '--timeout',
     '200',
     '--json',
@@ -351,24 +471,17 @@ test('open reports adopt/bootstrap resolution when reusing an explicit DevTools 
 
   assert.notEqual(result.status, 0)
   assert.equal(payload.ok, false)
-  assert.match(payload.error.hint, /resolution=adopt-via-devtools-port/i)
+  assert.match(String(payload.error.hint || ''), /resolution=adopt-via-devtools-port/i)
   assert.equal(payload.error.diagnostics.devtoolsPort, '23986')
   assert.equal(payload.error.diagnostics.cleanup.sessionCleared, true)
 })
 
 test('open closes a newly-started DevTools project when startup times out', () => {
   const projectDir = createMiniProgramProject()
-  const fakeCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-cleanup-cli-'))
-  const callsPath = path.join(fakeCliDir, 'calls.log')
-  const fakeCliPath = path.join(fakeCliDir, 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
-    'if [ "$1" = "auto" ]; then echo "✔ IDE server has started, listening on http://127.0.0.1:38596"; fi',
-    'if [ "$1" = "close" ]; then echo "✔ close"; fi',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({
+    onAuto: '✔ IDE server has started, listening on http://127.0.0.1:38596',
+    onClose: '✔ close',
+  })
 
   const result = runCli([
     'open',
@@ -377,13 +490,13 @@ test('open closes a newly-started DevTools project when startup times out', () =
     '--project',
     projectDir,
     '--cli-path',
-    fakeCliPath,
+    fake.cliPath,
     '--timeout',
     '200',
     '--json',
   ])
   const payload = parseJsonOutput(result)
-  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+  const calls = fake.readCalls()
 
   assert.notEqual(result.status, 0)
   assert.equal(payload.error.code, 'OPEN_TIMEOUT')
@@ -395,16 +508,9 @@ test('open closes a newly-started DevTools project when startup times out', () =
 test('doctor can probe a DevTools HTTP port without a prebound session and does not persist one', () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectDir = createMiniProgramProject()
-  const fakeCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-doctor-cli-'))
-  const callsPath = path.join(fakeCliDir, 'calls.log')
-  const fakeCliPath = path.join(fakeCliDir, 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
-    'if [ "$1" = "auto" ]; then echo "✔ IDE server has started, listening on http://127.0.0.1:23986"; fi',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({
+    onAuto: '✔ IDE server has started, listening on http://127.0.0.1:23986',
+  })
 
   const result = runCli([
     'doctor',
@@ -413,7 +519,7 @@ test('doctor can probe a DevTools HTTP port without a prebound session and does 
     '--devtools-port',
     '23986',
     '--cli-path',
-    fakeCliPath,
+    fake.cliPath,
     '--wait',
     '0',
     '--timeout',
@@ -421,13 +527,13 @@ test('doctor can probe a DevTools HTTP port without a prebound session and does 
     '--json',
   ], { HOME: homeDir })
   const payload = parseJsonOutput(result)
-  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+  const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
   assert.equal(payload.projectPath, projectDir)
   assert.equal(payload.devtoolsPort, '23986')
   assert.equal(payload.probe.connected, false)
-  assert.ok(calls.some((line) => /^open --project /u.test(line)), calls.join('\n'))
+  // doctor 默认 enableAutomation(openFirst=false)，只跑 auto，不强制 open
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
 
   const listResult = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectDir })
@@ -439,55 +545,28 @@ test('session prune closes and removes stale sessions only for the current proje
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectDir = createMiniProgramProject()
   const otherProjectDir = createMiniProgramProject()
-  const fakeCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-prune-cli-'))
-  const callsPath = path.join(fakeCliDir, 'calls.log')
-  const fakeCliPath = path.join(fakeCliDir, 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
-    'echo "✔ close"',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({ onClose: '✔ close' })
 
-  const previousHome = process.env.HOME
-  try {
-    process.env.HOME = homeDir
-    const staleState = createEmptySessionState({
-      sessionName: 'stale-owned',
-      config: {
-        ...createDefaultConfig(),
-        projectPath: projectDir,
-        cliPath: fakeCliPath,
-        autoPort: '18181',
-        devtoolsPort: '24880',
-        devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-stale-owned',
-      },
-    })
-    const otherState = createEmptySessionState({
-      sessionName: 'other-project-stale',
-      config: {
-        ...createDefaultConfig(),
-        projectPath: otherProjectDir,
-        cliPath: fakeCliPath,
-        autoPort: '18182',
-        devtoolsPort: '24880',
-        devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-other-stale',
-      },
-    })
-    await saveSessionState(staleState)
-    await saveSessionState(otherState)
-  } finally {
-    if (previousHome === undefined) {
-      delete process.env.HOME
-    } else {
-      process.env.HOME = previousHome
-    }
-  }
+  await seedSession(homeDir, {
+    name: 'stale-owned',
+    projectPath: projectDir,
+    cliPath: fake.cliPath,
+    autoPort: '18181',
+    devtoolsPort: '24880',
+    devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-stale-owned',
+  })
+  await seedSession(homeDir, {
+    name: 'other-project-stale',
+    projectPath: otherProjectDir,
+    cliPath: fake.cliPath,
+    autoPort: '18182',
+    devtoolsPort: '24880',
+    devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-other-stale',
+  })
 
   const result = runCli(['session', 'prune', '--json'], { HOME: homeDir }, { cwd: projectDir })
   const payload = parseJsonOutput(result)
-  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+  const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
   assert.deepEqual(payload.pruned.map((item) => item.name), ['stale-owned'])
@@ -504,24 +583,13 @@ test('session prune closes project-scoped orphan launch records', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectDir = createMiniProgramProject()
   const otherProjectDir = createMiniProgramProject()
-  const fakeCliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-launch-prune-cli-'))
-  const callsPath = path.join(fakeCliDir, 'calls.log')
-  const fakeCliPath = path.join(fakeCliDir, 'cli')
-  fs.writeFileSync(fakeCliPath, [
-    '#!/bin/sh',
-    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
-    'echo "✔ close"',
-    'exit 0',
-  ].join('\n'))
-  fs.chmodSync(fakeCliPath, 0o755)
+  const fake = createFakeDevtoolsCli({ onClose: '✔ close' })
 
-  const previousHome = process.env.HOME
-  try {
-    process.env.HOME = homeDir
+  await withHome(homeDir, async () => {
     await recordRuntimeLaunch('orphan-launch', {
       ...createDefaultConfig(),
       projectPath: projectDir,
-      cliPath: fakeCliPath,
+      cliPath: fake.cliPath,
       autoPort: '18183',
       devtoolsPort: '24880',
       devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-orphan-launch',
@@ -533,7 +601,7 @@ test('session prune closes project-scoped orphan launch records', async () => {
     await recordRuntimeLaunch('other-orphan-launch', {
       ...createDefaultConfig(),
       projectPath: otherProjectDir,
-      cliPath: fakeCliPath,
+      cliPath: fake.cliPath,
       autoPort: '18184',
       devtoolsPort: '24880',
       devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-other-orphan',
@@ -542,26 +610,18 @@ test('session prune closes project-scoped orphan launch records', async () => {
       projectStrategy: 'managed-mirror',
       status: 'starting',
     })
-  } finally {
-    if (previousHome === undefined) {
-      delete process.env.HOME
-    } else {
-      process.env.HOME = previousHome
-    }
-  }
+  })
 
   const result = runCli(['session', 'prune', '--json'], { HOME: homeDir }, { cwd: projectDir })
   const payload = parseJsonOutput(result)
-  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+  const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
   assert.deepEqual(payload.launchesPruned.map((item) => item.id), ['launch-orphan'])
   assert.ok(calls.some((line) => /project-orphan-launch/u.test(line)), calls.join('\n'))
   assert.ok(!calls.some((line) => /project-other-orphan/u.test(line)), calls.join('\n'))
 
-  const previousHomeForRead = process.env.HOME
-  try {
-    process.env.HOME = homeDir
+  await withHome(homeDir, async () => {
     assert.deepEqual(
       (await listRuntimeLaunches({ ...createDefaultConfig(), projectPath: projectDir })).map((item) => item.id),
       [],
@@ -570,11 +630,5 @@ test('session prune closes project-scoped orphan launch records', async () => {
       (await listRuntimeLaunches({ ...createDefaultConfig(), projectPath: otherProjectDir })).map((item) => item.id),
       ['launch-other-orphan'],
     )
-  } finally {
-    if (previousHomeForRead === undefined) {
-      delete process.env.HOME
-    } else {
-      process.env.HOME = previousHomeForRead
-    }
-  }
+  })
 })
