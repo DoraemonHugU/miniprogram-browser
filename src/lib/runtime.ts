@@ -19,6 +19,8 @@ const {
   formatAutomationCliError,
   explainDevtoolsFailureRaw,
   parseAutomationCliFailure,
+  summarizeDevtoolsCliRaw,
+  hasAutomationCliSuccessSignal,
   detectAutomationCliProgressTimeout,
   parseResolvedIdePort,
 } = require('./runtime-cli-shared')
@@ -144,6 +146,8 @@ module.exports = {
   formatAutomationCliError,
   explainDevtoolsFailureRaw,
   parseAutomationCliFailure,
+  summarizeDevtoolsCliRaw,
+  hasAutomationCliSuccessSignal,
   detectAutomationCliProgressTimeout,
   parseResolvedIdePort,
   // ---- runtime-cli ----

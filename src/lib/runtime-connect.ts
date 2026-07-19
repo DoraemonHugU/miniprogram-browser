@@ -480,7 +480,8 @@ async function sendAutomationProtocol(config: Record<string, unknown>, method: s
  *
  * 策略：
  * 1. 若已有 autoPort 且 endpoint live → 直接 connect（后续 snapshot/click/goto 路径）
- * 2. 否则 enable（devtools auto）→ 短暂等待 → connect（首次 open/doctor）
+ * 2. 否则在允许时 enable（devtools auto）→ 短暂等待 → connect（首次 open/doctor）
+ * 3. allowEnable=false（默认）且非 live → 明确要求先 open，避免 snapshot 等命令无脑全量 auto
  *
  * 必须优先复用 live endpoint：重复跑 auto 会重启小程序，把页面打回首页，
  * 并可能拖垮已建立的 automation 会话。
@@ -489,7 +490,11 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
   const configConnector = (overrides.connect as ConnectFn | undefined) || connectWithRetry
   const enable = (overrides.enable as EnableFn | undefined) || (await Promise.resolve().then(() => require('./runtime-cli'))).enableAutomation
   const sleepFn = overrides.sleepFn || sleep
+  const liveCheck = (overrides.isLive as ((cfg: Record<string, unknown>, opts?: Record<string, unknown>) => Promise<boolean>) | undefined)
+    || isAutomationEndpointLive
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null
+  // 默认不允许 enable：业务命令应复用 live endpoint；open/connect 显式 allowEnable=true
+  const allowEnable = options.allowEnable === true || options.forceEnable === true
 
   const overallDeadlineMs = Number(options.timeoutMs || options.connectTimeoutMs || DEFAULT_CONNECT_TIMEOUT_MS)
   const deadlineAt = Date.now() + overallDeadlineMs
@@ -498,7 +503,7 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
 
   // 1. live endpoint 直接 connect，避免重复 auto 重置运行态
   if (hasAutoPort && !options.forceEnable) {
-    const live = await isAutomationEndpointLive(config, {
+    const live = await liveCheck(config, {
       timeoutMs: Math.min(1500, Math.max(300, deadlineAt - Date.now())),
       automator: options.automator,
     }).catch(() => false)
@@ -513,6 +518,16 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
       miniProgram.__mpbRuntimeProbe = runtimeResult.probe || null
       return miniProgram
     }
+  }
+
+  if (!allowEnable) {
+    const portHint = hasAutoPort ? `（记录的 autoPort=${config.autoPort} 当前不可用）` : ''
+    const projectHint = String(config.projectPath || '').trim()
+      ? ` --project ${config.projectPath}`
+      : ''
+    throw new Error(
+      `自动化未连接${portHint}。请先执行 open${projectHint} 建立 DevTools 自动化会话，再重试当前命令。`,
+    )
   }
 
   // 2. enable: devtools auto
@@ -534,7 +549,7 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
       throw new Error('connect returned no miniProgram reference')
     }
   } catch (error: unknown) {
-    throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue)
+    throw wrapConnectErrorWithStartupIssue(error, metadata.startupIssue as { message: string; raw?: string } | null)
   }
 
   // 5. wait for App runtime ready
@@ -563,7 +578,7 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
 async function withMiniProgram(state: Record<string, unknown>, task: (miniProgram: MiniProgramRef) => Promise<unknown>, options: Record<string, unknown> = {}): Promise<unknown> {
   const stateConfig = state.config as Record<string, unknown> | undefined
   if (!stateConfig || !String(stateConfig.projectPath || '').trim()) {
-    throw new Error('Missing project path. Pass --project <miniprogram-root> on first open/session binding.')
+    throw new Error('Missing project path. 请在小程序项目目录执行，或传 --project <miniprogram-root> 后再 open/session 绑定。')
   }
   await mkdir((stateConfig.screenshotDir as string) || '', { recursive: true })
   await mkdir((stateConfig.tempScreenshotDir as string) || '', { recursive: true })
@@ -571,6 +586,9 @@ async function withMiniProgram(state: Record<string, unknown>, task: (miniProgra
   const miniProgram = await connect(stateConfig, {
     connectTimeoutMs: options.connectTimeoutMs || options.timeoutMs || options.timeout,
     allowRuntimeNotReady: Boolean(options.allowRuntimeNotReady),
+    // 默认 false：snapshot/click 等不得无脑 enable；open/connect 传 true
+    allowEnable: options.allowEnable === true || options.forceEnable === true,
+    forceEnable: Boolean(options.forceEnable),
     onProgress: options.onProgress,
   })
   const runtimeReady = miniProgram.__mpbRuntimeReady !== false

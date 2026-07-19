@@ -123,7 +123,7 @@ interface MiniProgramProjectInfo {
 function resolveMiniProgramProjectInfo(projectPath: unknown): MiniProgramProjectInfo {
   const normalizedProjectPath = normalizeProjectPath(projectPath)
   if (!normalizedProjectPath) {
-    throw new Error('Missing project path. Pass --project <miniprogram-root> on first open/session binding.')
+    throw new Error('Missing project path. 请在小程序项目目录执行，或传 --project <miniprogram-root> 后再 open/session 绑定。')
   }
 
   if (!existsSync(normalizedProjectPath) || !statSync(normalizedProjectPath).isDirectory()) {

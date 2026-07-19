@@ -99,6 +99,8 @@ miniprogram-browser open --session work --project /path/to/miniprogram-root
 miniprogram-browser open --session debug --project /path/to/miniprogram-root --fresh
 ```
 
+先 `open` 再操作：`snapshot` / `click` / `goto` 等会复用已建立的自动化连接；**不会**在未 open 时默默再跑一轮完整 `auto`。若提示「自动化未连接」，请先 `open`。
+
 `open` 已经默认等待 `stable`，常规流程不要再补一条 `await stable`。只有 `open` 返回 `RUNTIME_UNSTABLE`，或你明确看到开发者工具还在编译/刷新时，才继续：
 
 ```bash

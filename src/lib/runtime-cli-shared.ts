@@ -33,6 +33,91 @@ function detectAutomationStartupIssue(rawMessage: string): { message: string; ra
 }
 
 /**
+ * DevTools auto 成功时也会打印 `Fetching AppID () permissions`，
+ * 随后才有 `Using AppID: wx…` / `✔ auto`。不得把成功路径当 AppID 缺失。
+ */
+function hasAutomationCliSuccessSignal(rawMessage: string): boolean {
+  const message = String(rawMessage || '')
+  if (!message.trim()) {
+    return false
+  }
+  // 明确致命信号优先于成功外观（例如成功 Using 之后又 INVALID_LOGIN 极少见，但 41002 真失败更常见）
+  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|errcode\s*=\s*41002|\bappid missing\b/iu.test(message)) {
+    return false
+  }
+  return /Using AppID:\s*wx\w+/iu.test(message)
+    || /[✔√]\s*auto\b/iu.test(message)
+    || /long connection established/iu.test(message)
+}
+
+/**
+ * 文本模式展示用：保留真因行，避免 --debug 全文淹没。
+ * JSON 路径仍可保留完整 raw。
+ */
+function summarizeDevtoolsCliRaw(rawMessage: string, options: { maxLines?: number } = {}): string {
+  const raw = String(rawMessage || '').trim()
+  if (!raw) {
+    return ''
+  }
+
+  const maxLines = Math.max(4, Number(options.maxLines || 20))
+  const lines = raw.split(/\r?\n/u)
+  if (lines.length <= maxLines) {
+    return raw
+  }
+
+  const signalPattern = /\[error\]|INVALID_LOGIN|access_token|errcode\s*=|41002|42001|appid missing|Using AppID|start cli server error|QR_PATH|code:\s*1[07]\b|wait IDE port timeout|must be restarted|TypeError|Cannot read propert|long connection established|[✔√]\s*auto\b/iu
+  const signalLines: string[] = []
+  const otherLines: string[] = []
+  for (const line of lines) {
+    const text = String(line || '').trimEnd()
+    if (!text.trim()) {
+      continue
+    }
+    if (signalPattern.test(text)) {
+      signalLines.push(text)
+    } else {
+      otherLines.push(text)
+    }
+  }
+
+  const picked: string[] = []
+  for (const line of signalLines) {
+    if (picked.length >= maxLines) {
+      break
+    }
+    picked.push(line)
+  }
+  // 补一点上下文（首尾），仍不超过 maxLines
+  if (picked.length < maxLines) {
+    const head = otherLines.slice(0, Math.min(3, maxLines - picked.length))
+    for (const line of head) {
+      if (!picked.includes(line)) {
+        picked.push(line)
+      }
+    }
+  }
+  if (picked.length < maxLines) {
+    const tail = otherLines.slice(-(maxLines - picked.length))
+    for (const line of tail) {
+      if (!picked.includes(line)) {
+        picked.push(line)
+      }
+    }
+  }
+
+  if (!picked.length) {
+    return lines.slice(0, maxLines).join('\n')
+  }
+
+  const omitted = Math.max(0, lines.length - picked.length)
+  if (omitted > 0) {
+    picked.push(`…(${omitted} more lines omitted; full raw in JSON --json if needed)`)
+  }
+  return picked.join('\n')
+}
+
+/**
  * 从 DevTools CLI / 日志原文提取可理解的说明。
  * 返回 null 表示没有更高层解释，调用方应继续使用原文。
  */
@@ -42,11 +127,18 @@ function explainDevtoolsFailureRaw(rawMessage: string): string | null {
     return null
   }
 
+  // 成功信号：不要把正常 Fetching AppID 日志解释成失败
+  if (hasAutomationCliSuccessSignal(message)) {
+    return null
+  }
+
   if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|code:\s*10\b/iu.test(message)) {
     return '微信开发者工具登录态失效（access_token 过期 / INVALID_LOGIN）。自动化无法在未登录状态下启用；请在 DevTools 中重新登录后再 open/connect。底层原始错误见 raw。'
   }
 
-  if (/appid missing|errcode\s*=\s*41002|Fetching AppID \(\) permissions/iu.test(message) && /41002|appid missing|AppID \(\)/iu.test(message)) {
+  // 真 AppID 失败：必须有 41002 / appid missing 等明确失败信号；
+  // 仅有 `Fetching AppID () permissions` 是成功路径也会出现的进度日志。
+  if (/\bappid missing\b|errcode\s*=\s*41002/iu.test(message)) {
     return 'DevTools 未能读取到有效 AppID（常见 41002 / appid missing）。请确认项目 project.config 中 AppID 配置正确，并在开发者工具中能正常打开该项目。底层原始错误见 raw。'
   }
 
@@ -95,6 +187,11 @@ function formatAutomationCliError(rawMessage: string): { message: string; raw: s
 
 function parseAutomationCliFailure(result: { error?: Error; raw?: string; stdout?: string; stderr?: string; status?: number } | null, config: Record<string, unknown> = {}) {
   const raw = String((result && result.raw) || `${(result && result.stdout) || ''}${(result && result.stderr) || ''}`).trim()
+
+  // auto 已成功时，即使 exit status 非 0 / 夹杂进度日志，也不应当失败
+  if (raw && hasAutomationCliSuccessSignal(raw) && !result?.error) {
+    return null
+  }
 
   if (result && result.error) {
     const detail = result.error && result.error.message ? result.error.message : String(result.error)
@@ -190,6 +287,8 @@ function parseResolvedIdePort(rawMessage: string): string {
 
 module.exports = {
   detectAutomationStartupIssue,
+  hasAutomationCliSuccessSignal,
+  summarizeDevtoolsCliRaw,
   explainDevtoolsFailureRaw,
   formatAutomationCliError,
   parseAutomationCliFailure,

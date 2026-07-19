@@ -165,6 +165,7 @@ const {
   isRefToken,
   waitForMiniProgramStable,
   waitForMiniProgramCondition,
+  summarizeDevtoolsCliRaw,
 } = require('./lib/runtime')
 
 const {
@@ -932,6 +933,7 @@ async function connectOpenSession(state: SessionState, options: AnyRecord, openO
     }
   }, {
     allowRuntimeNotReady: true,
+    allowEnable: true,
     connectTimeoutMs: resolveOpenTimeoutMs(options),
     onProgress(phase: string) {
       if (phase === 'enable') {
@@ -1206,14 +1208,26 @@ function compactStartupHints(hints: AnyRecord[] = []) {
   }))
 }
 
-async function collectDevtoolsStartupHints(state: SessionState) {
+async function collectDevtoolsStartupHints(state: SessionState, options: AnyRecord = {}) {
   try {
+    // 默认只看最近改动的日志文件，避免整天前的 41002 误导本次 open
+    const maxAgeMs = Number(options.maxAgeMs || 10 * 60 * 1000)
+    const now = Date.now()
     const payload = await collectDevtoolsLogs(state.config, {
       limit: 220,
       files: 6,
-      grep: 'appid missing|41002|routeTo appLaunch timeout|triggerAppRouteDone timeout|start cli server error|10055',
+      grep: 'appid missing|41002|routeTo appLaunch timeout|triggerAppRouteDone timeout|start cli server error|10055|INVALID_LOGIN|access_token',
     })
-    return summarizeDevtoolsStartupHints(payload)
+    const files = Array.isArray(payload.files)
+      ? (payload.files as AnyRecord[]).filter((file: AnyRecord) => {
+        const mtimeMs = Number(file.mtimeMs || 0)
+        if (!mtimeMs) {
+          return true
+        }
+        return (now - mtimeMs) <= maxAgeMs
+      })
+      : []
+    return summarizeDevtoolsStartupHints({ ...payload, files })
   } catch (_) {
     return []
   }
@@ -2738,13 +2752,17 @@ function emitCliError(error: AnyRecord, json: boolean) {
 
   console.error(message)
   if (error && error.hint) {
-    console.error(String(error.hint))
+    const hint = String(error.hint).trim()
+    if (hint && hint !== message.trim()) {
+      console.error(hint)
+    }
   }
   if (error && error.raw) {
     const raw = String(error.raw).trim()
-    // 人话 message 与底层原文不同时，额外打印 raw，避免盖掉 DevTools/CLI 真因
+    // 人话 message 与底层原文不同时，额外打印 raw 摘录，避免盖掉 DevTools/CLI 真因
+    // 同时截断 --debug 洪水（完整 raw 仍在 JSON / error.raw 字段）
     if (raw && raw !== message.trim()) {
-      console.error(raw)
+      console.error(summarizeDevtoolsCliRaw(raw, { maxLines: 20 }))
     }
   }
   if (error && error.log) {
@@ -2839,7 +2857,9 @@ async function main(argv = process.argv.slice(2)) {
 
   const resolvedOptions = await ensureImplicitSessionName(scopedOptions, command)
   if (!resolvedOptions.session) {
-    throw new Error('无法解析 session：请传 --session <name>，或提供可发现的 --project 以便自动生成 {project}-xN。')
+    throw new Error(
+      '无法解析 session：请在小程序项目目录执行，或传 --project <小程序根>；也可显式传 --session <name>。CLI 会按项目自动生成/复用 {project}-xN。',
+    )
   }
 
   const lockConfig = await resolveSessionConfig(

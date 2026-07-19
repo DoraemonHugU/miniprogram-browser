@@ -34,6 +34,8 @@ const {
   confirmRouteAfterAction,
   formatAutomationCliError,
   parseAutomationCliFailure,
+  explainDevtoolsFailureRaw,
+  summarizeDevtoolsCliRaw,
   detectAutomationCliProgressTimeout,
   validateAutomationCliConfig,
   parseResolvedIdePort,
@@ -962,6 +964,47 @@ test('parseAutomationCliFailure explains INVALID_LOGIN from CLI output with raw 
   assert.match(String(failure.hint || ''), /INVALID_LOGIN|access_token|code:\s*10/i)
 })
 
+test('parseAutomationCliFailure does not treat successful auto log with Fetching AppID as AppID failure', () => {
+  const raw = [
+    '- Fetching AppID () permissions',
+    '✔ Using AppID: wx54815aae95e09ef5',
+    '✔ auto',
+    '[info] long connection established',
+  ].join('\n')
+  assert.equal(parseAutomationCliFailure({ status: 0, raw }, {}), null)
+  assert.equal(parseAutomationCliFailure({ status: 1, raw }, {}), null)
+  assert.equal(explainDevtoolsFailureRaw(raw), null)
+})
+
+test('parseAutomationCliFailure still explains real AppID missing without Using AppID success', () => {
+  const raw = [
+    '- Fetching AppID () permissions',
+    '[error] errcode=41002 appid missing',
+  ].join('\n')
+  const failure = parseAutomationCliFailure({ status: 1, raw }, {})
+  assert.ok(failure)
+  assert.match(failure.message, /AppID|41002|appid missing/i)
+  assert.match(failure.raw, /41002|appid missing/i)
+})
+
+test('summarizeDevtoolsCliRaw keeps signal lines and bounds output', () => {
+  const raw = [
+    'debug fluff line 1',
+    'debug fluff line 2',
+    '[error] errcode=41002 appid missing',
+    'more fluff',
+    '✔ Using AppID: wx123',
+    'noise',
+    'start cli server error',
+    ...Array.from({ length: 40 }, (_, i) => `padding ${i}`),
+  ].join('\n')
+  const excerpt = summarizeDevtoolsCliRaw(raw, { maxLines: 8 })
+  assert.match(excerpt, /\[error\] errcode=41002/)
+  assert.match(excerpt, /Using AppID: wx123/)
+  assert.match(excerpt, /start cli server error/)
+  assert.ok(excerpt.split(/\r?\n/u).length <= 10)
+})
+
 test('formatAutomationCliError adds actionable hint for devtools port restart requirement', () => {
   const error = formatAutomationCliError(
     'IDE server has started on http://127.0.0.1:39085 and must be restarted on port 39100 first',
@@ -1177,6 +1220,7 @@ test('closeDevtoolsProject closes the recorded DevTools project path', () => {
 test('connectOrEnable runs enable before connect', async () => {
   const calls = []
   const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
     onProgress(phase) {
       calls.push(`progress:${phase}`)
     },
@@ -1203,10 +1247,30 @@ test('connectOrEnable runs enable before connect', async () => {
   assert.ok(result.ok)
 })
 
+test('connectOrEnable refuses enable when allowEnable is false and endpoint is not live', async () => {
+  await assert.rejects(
+    connectOrEnable({ autoPort: 9421, projectPath: '/repo/apps/miniprogram' }, {
+      allowEnable: false,
+    }, {
+      async connect() {
+        throw new Error('should not connect')
+      },
+      enable() {
+        throw new Error('should not enable')
+      },
+      async sleepFn() {},
+      async isLive() {
+        return false
+      },
+    }),
+    /自动化未连接|请先 open/i,
+  )
+})
+
 test('connectOrEnable adopts resolved devtools port from enable metadata', async () => {
   const config = { autoPort: 9421, devtoolsPort: '' }
   let observedPort = ''
-  await connectOrEnable(config, {}, {
+  await connectOrEnable(config, { allowEnable: true }, {
     async connect(nextConfig) {
       observedPort = nextConfig.devtoolsPort
       return { ok: true }
@@ -1244,7 +1308,7 @@ test('connectWithRetry rejects with timeout on hanging connect', async () => {
 
 test('connectOrEnable passes deadlineAt to connect', async () => {
   let observedOptions = null
-  const result = await connectOrEnable({ autoPort: 9421 }, {}, {
+  const result = await connectOrEnable({ autoPort: 9421 }, { allowEnable: true }, {
     async connect(_config, connectOptions) {
       observedOptions = connectOptions
       return { ok: true }
@@ -1289,6 +1353,7 @@ test('connectOrEnable runs enable and connect, failure bubbles up', async () => 
   const calls = []
   await assert.rejects(
     connectOrEnable({ autoPort: 9421 }, {
+      allowEnable: true,
       onProgress(phase) {
         calls.push(`progress:${phase}`)
       },
@@ -1318,7 +1383,7 @@ test('connectOrEnable runs enable and connect, failure bubbles up', async () => 
 
 test('connectOrEnable always runs enable first; builder issue surfaces when ws connect fails', async () => {
   await assert.rejects(
-    connectOrEnable({ autoPort: 9421 }, {}, {
+    connectOrEnable({ autoPort: 9421 }, { allowEnable: true }, {
       async connect() {
         throw new Error('Failed connecting to ws://127.0.0.1:9421')
       },
@@ -1338,7 +1403,7 @@ test('connectOrEnable always runs enable first; builder issue surfaces when ws c
 
 test('connectOrEnable surfaces builder issue when ws connect still fails after enable', async () => {
   await assert.rejects(
-    connectOrEnable({ autoPort: 9421 }, {}, {
+    connectOrEnable({ autoPort: 9421 }, { allowEnable: true }, {
       async connect() {
         throw new Error('Failed connecting to ws://127.0.0.1:9421')
       },
