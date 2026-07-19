@@ -50,6 +50,11 @@ npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/ski
 npm install
 npm run build
 npm test
+
+# 可选：真机 open 门禁（需本机 DevTools；缺环境 exit 2）
+# export WECHAT_DEVTOOLS_CLI=...
+# export MINIPROGRAM_BROWSER_GATE_PROJECT=...
+npm run test:real-open-gate
 node dist/miniprogram-browser.js help
 ```
 

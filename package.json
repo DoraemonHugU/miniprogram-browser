@@ -37,7 +37,8 @@
     "lint:fix": "eslint src/ --fix",
     "test": "npm run build && npm run test:node && npm run test:image-processing",
     "prepack": "npm run build",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "test:real-open-gate": "npm run build && node scripts/real-open-gate.cjs"
   },
   "engines": {
     "node": ">=18"

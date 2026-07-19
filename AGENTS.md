@@ -49,6 +49,14 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 
 ## Verification
 
+- Real DevTools open gate (optional, not in default `npm test`):
+  ```bash
+  export WECHAT_DEVTOOLS_CLI=/path/to/cli.js
+  export MINIPROGRAM_BROWSER_GATE_PROJECT=/mnt/d/path/to/miniprogram
+  npm run test:real-open-gate   # exit 0 pass, 1 fail, 2 skip (no env)
+  ```
+  Expect: one successful `open` then `path` and `snapshot -i` on the gate project.
+
 - Add or update tests before behavior changes when feasible.
 - At minimum run `npm run build` and the relevant `node --test ...` subset after edits.
 - Before claiming completion, run the full feasible verification set and report any skipped real-DevTools smoke separately.
