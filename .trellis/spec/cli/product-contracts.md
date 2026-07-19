@@ -56,6 +56,20 @@ open [ --project ] [ --session ]
 禁止用本项目空泛包装盖掉根因
 ```
 
+**失败输出形态（可执行）：**
+
+| 通道 | raw 行为 |
+|------|----------|
+| 文本 stderr | 人话 +（可选）hint + **raw 摘录**（`summarizeDevtoolsCliRaw`，保留 `[error]`/41002/INVALID_LOGIN/`Using AppID`/`start cli server error` 等真因行；避免 `--debug` 全文淹没） |
+| JSON `--json` | `error.raw` **保留完整**原文；`error.message` 为人话 |
+
+**AppID / auto 分类（禁止假阳性）：**
+
+- DevTools 成功 `auto` 也会打印 `Fetching AppID () permissions`，随后才有 `Using AppID: wx…` / `✔ auto`。
+- **禁止**仅凭 `Fetching AppID () permissions` 判定 AppID 缺失。
+- 真失败须有明确信号：`errcode=41002` / `appid missing` 等，且无成功 `Using AppID`。
+- 实现：`hasAutomationCliSuccessSignal` / `explainDevtoolsFailureRaw` / `parseAutomationCliFailure`（`runtime-cli-shared.ts`）。
+
 ### 3.3 `@e` 生命周期（硬契约）
 
 ```text
@@ -99,19 +113,31 @@ autoPort 不落 session 文件；成功可回显
 | stableKey/signature 对不上 | stale；重新 snapshot |
 | 依赖 `dist/lib` 私有导出 | 不在兼容承诺内 |
 | 登录失效等 | 人话 + raw；工具不伪造成功 |
+| 成功 auto 日志含 `Fetching AppID () permissions` | **不得**判 AppID 失败；`parseAutomationCliFailure` → null |
+| 真 41002 / appid missing（无 Using AppID 成功） | 人话 AppID 问题 + 保留 raw 真因 |
+| 非 open 命令且 automation 非 live | 明确要求先 `open`；**禁止**默认再跑全量 `devtools auto --debug` |
+| 无法发现 project / session | 人话 + 可执行下一步（进入小程序目录或 `--project` / `--session`） |
 
 ## 5. Good / Base / Bad
 
 - **Good**：`open` → `snapshot -i` → `click @e3`（`@e3` 来自本轮输出）
 - **Good**：click 导致跳转后先 `snapshot -i` 再点新 `@e`
+- **Good**：open 失败文本首屏可读（人话 + 短 raw 摘录）；JSON 仍有完整 `error.raw`
 - **Base**：同页二次 snapshot，带 stableKey 的节点尽量仍是原 `@eN`
 - **Bad**：隔天仍用昨天的 `@e7`；跨 session 复用 `@e`；把图上的 `3` 当成「第三项」而非 `@e3`
 - **Bad**：把 `require('…/dist/lib/session-store')` 当公共 API
+- **Bad**：把成功 auto 的 `Fetching AppID () permissions` 解释成 AppID 缺失
+- **Bad**：未 open 时对 `snapshot` 无脑 `enableAutomation` 刷 debug 全文
 
 ## 6. Tests Required
 
 - 文档任务：无强制新单测
 - 回归依赖已有：`tests/core.test.cjs` ref 复用；resolve stale 文案在 runtime 路径
+- 冷启动/失败分类：`tests/runtime.test.cjs`
+  - 成功 raw（Fetching + Using AppID + ✔ auto）→ `parseAutomationCliFailure` null
+  - 真 41002 → 仍人话 AppID + raw
+  - `summarizeDevtoolsCliRaw` 保留 error 行且有行数上界
+  - `connectOrEnable({ allowEnable: false })` 非 live → 提示先 open
 - 若未来对输出字段做代码 enforcement，另开任务
 
 ## 7. Wrong vs Correct

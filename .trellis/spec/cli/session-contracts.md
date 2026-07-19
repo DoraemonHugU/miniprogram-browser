@@ -117,9 +117,27 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 `withMiniProgram` → `connectOrEnable`：
 
 1. 若 `config.autoPort` 已有且 endpoint live → **直接 connect**，不要再跑 `devtools auto`
-2. 否则才 `enableAutomation` → wait → connect
+2. 否则：
+   - **`allowEnable=true`**（仅 `open` / `connect` 经 `connectOpenSession` 传入；`forceEnable` 同理）→ `enableAutomation` → wait → connect
+   - **默认 `allowEnable=false`**（`snapshot` / `click` / `goto` 等）→ **抛错要求先 open**，禁止无脑全量 `devtools auto --debug`
 
-重复 `auto` 会重启小程序（路由回首页），并可能打断已有 automation 会话。
+重复 `auto` 会重启小程序（路由回首页），并可能打断已有 automation 会话；失败后再 snapshot 刷 auto 还会制造 AppID 假阳性与日志噪音。
+
+```ts
+// Wrong：业务命令默认 enable
+await connectOrEnable(config) // 旧行为：非 live 就 auto
+
+// Correct
+// open/connect:
+await withMiniProgram(state, task, { allowEnable: true, ... })
+// snapshot/click:
+await withMiniProgram(state, task) // allowEnable 默认 false
+```
+
+### 3.1.3 DevTools raw 分类与启动 hints
+
+- `Fetching AppID () permissions` **不是** AppID 失败信号；成功 auto 也会打印。真失败看 `41002` / `appid missing` 等。
+- open 失败 diagnostics 的 WeappLog hints 应 **时间过滤**（默认近 10 分钟 mtime），避免陈旧 41002 挂到本次失败。
 
 ### 3.2 持久化过滤
 
