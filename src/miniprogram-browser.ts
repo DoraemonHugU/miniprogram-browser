@@ -508,7 +508,56 @@ async function withOpenTimeout(task: () => Promise<AnyRecord>, timeoutMs: number
   }
 }
 
+async function countOtherLiveRuntimesInProject(state: SessionState): Promise<number> {
+  const projectPath = path.resolve(String(state.config.projectPath || ''))
+  if (!projectPath) {
+    return 0
+  }
+  const launches = await listRuntimeLaunches({ ...state.config, projectPath })
+  let liveCount = 0
+  for (const launch of launches) {
+    if (!launch || !launch.autoPort) {
+      continue
+    }
+    if (state.runtimeLaunchId && String(launch.id || '') === String(state.runtimeLaunchId)) {
+      continue
+    }
+    if (launch.projectPath && path.resolve(String(launch.projectPath)) !== projectPath) {
+      continue
+    }
+    const live = await isAutomationEndpointLive(
+      { ...state.config, autoPort: launch.autoPort },
+      { timeoutMs: 800 },
+    ).catch(() => false)
+    if (live) {
+      liveCount += 1
+    }
+  }
+  return liveCount
+}
+
 async function cleanupStartedOpenRuntime(state: SessionState) {
+  const sharedLive = await countOtherLiveRuntimesInProject(state).catch(() => 0)
+  if (sharedLive > 0) {
+    const cleanup = {
+      projectClosed: false,
+      closeVerified: false,
+      closeAttempted: false,
+      skippedCloseReason: 'shared-live-runtime',
+      sharedLiveCount: sharedLive,
+      sessionCleared: false,
+    } as unknown as AnyRecord
+    if (state.runtimeLaunchId) {
+      cleanup.runtimeLaunchId = state.runtimeLaunchId
+      await markStartedRuntimeLaunch(state, {
+        status: 'stale',
+        cleanup,
+      }).catch(() => null)
+    }
+    // 保留 session 文件，便于用户 session list 后再次 open attach
+    return cleanup
+  }
+
   const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 }) as unknown as AnyRecord
   await waitAfterDevtoolsCloseRequest(closeResult)
   const cleanup = {
@@ -729,6 +778,26 @@ async function openSessionWithDiagnostics(state: SessionState, options: AnyRecor
 
 async function handleOpen(state: SessionState, options: AnyRecord) {
   assertProjectPath(state.config)
+
+  // 显式 --auto-port：若已 live 则直接 connected（同项目 attach 语义），避免 already-bound / 再 enable
+  if (options.autoPort && !options.fresh) {
+    const explicitLive = await isAutomationEndpointLive(state.config, { timeoutMs: 1500 }).catch(() => false)
+    if (explicitLive) {
+      await saveSessionState(state)
+      const connected = await openSessionWithDiagnostics(state, options, {
+        mode: state.runtimeAttached ? 'attached' : 'connected',
+        attachedTo: state.runtimeOwnerSession || '',
+      })
+      await ensureLiveRuntimeLaunch(state, {
+        route: connected.path || '',
+        autoPort: connected.autoPort || state.config.autoPort,
+        devtoolsPort: connected.devtoolsPort || state.config.devtoolsPort,
+      })
+      await saveSessionState(state)
+      emitOpenResult(connected, options)
+      return
+    }
+  }
 
   const currentEndpointLive = state.config.autoPort
     ? await isAutomationEndpointLive(state.config, { timeoutMs: 1000 }).catch(() => false)
@@ -994,10 +1063,17 @@ async function resolveAttachableRuntime(state: SessionState) {
 
   // RuntimeLaunchRecord 管理 DevTools 窗口连接信息，session 不再固化 autoPort
   const launches = await listRuntimeLaunches({ ...state.config, projectPath })
-  const liveLaunches = launches.filter((item: AnyRecord) => item && item.status === 'live' && item.autoPort)
+  // live + starting：starting 可能已可连但尚未 mark live
+  const candidateLaunches = launches.filter((item: AnyRecord) => {
+    if (!item || !item.autoPort) {
+      return false
+    }
+    const status = String(item.status || '')
+    return status === 'live' || status === 'starting'
+  })
   const sameProjectLaunches = []
 
-  for (const launch of liveLaunches) {
+  for (const launch of candidateLaunches) {
     if (launch.projectPath && path.resolve(launch.projectPath) !== projectPath) {
       continue
     }
@@ -1641,12 +1717,36 @@ async function handleSessionList(options: AnyRecord = {}) {
   const visibleSessions = projectFilter
     ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
     : (options.all ? sessions : [])
+  // 从 runtime 池回填 autoPort（session 文件不落 port）
+  const launchIndex = new Map<string, AnyRecord>()
+  try {
+    const launches = await listRuntimeLaunches(baseConfig)
+    for (const launch of launches) {
+      if (!launch || !launch.sessionName || !launch.autoPort) {
+        continue
+      }
+      const key = `${String(launch.sessionName)}::${path.resolve(String(launch.projectPath || ''))}`
+      const prev = launchIndex.get(key)
+      if (!prev || String(launch.updatedAt || '') > String(prev.updatedAt || '')) {
+        launchIndex.set(key, launch)
+      }
+    }
+  } catch (_) {}
+
   const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
-    const live = item.autoPort
-      ? await isAutomationEndpointLive({ ...baseConfig, autoPort: item.autoPort }, { timeoutMs: 800 }).catch(() => false)
+    const projectKey = path.resolve(String(item.projectPath || ''))
+    const launch = launchIndex.get(`${item.name}::${projectKey}`)
+    const autoPort = String(item.autoPort || (launch && launch.autoPort) || '').trim()
+    const devtoolsPort = String(item.devtoolsPort || (launch && launch.devtoolsPort) || '').trim()
+    const live = autoPort
+      ? await isAutomationEndpointLive({ ...baseConfig, autoPort }, { timeoutMs: 800 }).catch(() => false)
       : false
     return {
       ...item,
+      autoPort: autoPort || item.autoPort || '',
+      devtoolsPort: devtoolsPort || item.devtoolsPort || '',
+      createdAt: item.createdAt || '',
+      updatedAt: item.updatedAt || '',
       status: live ? 'live' : 'stale',
     }
   }))
@@ -1669,7 +1769,8 @@ async function handleSessionList(options: AnyRecord = {}) {
       const project = item.projectPath || '(unbound)'
       const devtoolsProject = item.devtoolsProjectPath ? ` devtoolsProject=${item.devtoolsProjectPath}` : ''
       const route = item.route || '(no route)'
-      return `${item.name} status=${item.status} project=${project}${devtoolsProject} devtoolsPort=${item.devtoolsPort || '-'} autoPort=${item.autoPort || '-'} route=${route}`
+      const created = item.createdAt || '-'
+      return `${item.name} status=${item.status} created=${created} project=${project}${devtoolsProject} devtoolsPort=${item.devtoolsPort || '-'} autoPort=${item.autoPort || '-'} route=${route}`
     }),
   }, options)
 }

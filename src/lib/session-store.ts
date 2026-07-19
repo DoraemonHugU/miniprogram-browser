@@ -661,10 +661,16 @@ function validateSessionPortConflicts(config: AnyRecord = {}, otherSessions: Any
     return
   }
 
+  const currentProject = normalizeProjectPath(config && config.projectPath)
   for (const item of otherSessions) {
     const otherConfig = (item && item.config ? item.config : item) as AnyRecord
     const otherAutoPort = String((otherConfig && otherConfig.autoPort) || '').trim()
     if (!otherAutoPort || otherAutoPort !== currentAutoPort) {
+      continue
+    }
+    // 同项目共享同一 automation 端口是 attach 语义，不是冲突
+    const otherProject = normalizeProjectPath(otherConfig && otherConfig.projectPath)
+    if (currentProject && otherProject && currentProject === otherProject) {
       continue
     }
 
@@ -744,6 +750,8 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
             name,
             route: (parsed.route as string) || '',
             epoch: Number(parsed.epoch || 0),
+            createdAt: String(parsed.createdAt || '').trim(),
+            updatedAt: String(parsed.updatedAt || '').trim(),
             config: { ...candidateConfig, ...((parsed.config || {}) as AnyRecord) },
           })
         }
@@ -780,6 +788,8 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
             name,
             route: (parsed.route as string) || '',
             epoch: Number(parsed.epoch || 0),
+            createdAt: String(parsed.createdAt || '').trim(),
+            updatedAt: String(parsed.updatedAt || '').trim(),
             config: { ...currentConfig, ...((parsed.config || {}) as AnyRecord), sessionDir: legacySessionDir },
           })
           seen.add(identity)
@@ -852,6 +862,7 @@ interface CreateSessionStateInput {
 }
 
 function createEmptySessionState({ sessionName, config }: CreateSessionStateInput): AnyRecord {
+  const now = new Date().toISOString()
   return {
     name: sessionName,
     bound: false,
@@ -868,6 +879,8 @@ function createEmptySessionState({ sessionName, config }: CreateSessionStateInpu
     lastRouteEventSeq: 0,
     lastVisualProbe: null,
     pendingVisualAction: null,
+    createdAt: now,
+    updatedAt: now,
   }
 }
 
@@ -1223,6 +1236,8 @@ function prepareSessionStateForSave(state: AnyRecord, options: SaveOptions = {})
     ? (state.routeEvents as unknown[]).slice(-maxRouteEvents)
     : []
 
+  const now = new Date().toISOString()
+  const createdAt = String(state.createdAt || '').trim() || now
   return {
     ...state,
     refs,
@@ -1233,6 +1248,8 @@ function prepareSessionStateForSave(state: AnyRecord, options: SaveOptions = {})
     routeEvents,
     lastVisualProbe: state.lastVisualProbe || null,
     pendingVisualAction: state.pendingVisualAction || null,
+    createdAt,
+    updatedAt: now,
   }
 }
 
@@ -1259,6 +1276,8 @@ interface SessionListEntry {
   runtimeOwnerSession: string
   route: string
   epoch: number
+  createdAt: string
+  updatedAt: string
 }
 
 async function listSessionStates(sessionDirOrConfig: AnyRecord | string): Promise<SessionListEntry[]> {
@@ -1275,6 +1294,8 @@ async function listSessionStates(sessionDirOrConfig: AnyRecord | string): Promis
         runtimeOwnerSession: (item.runtimeOwnerSession as string) || '',
         route: item.route || '',
         epoch: Number(item.epoch || 0),
+        createdAt: String(item.createdAt || '').trim(),
+        updatedAt: String(item.updatedAt || '').trim(),
       }))
       .sort((left: SessionListEntry, right: SessionListEntry) => left.name.localeCompare(right.name))
   }
@@ -1308,6 +1329,8 @@ async function listSessionStates(sessionDirOrConfig: AnyRecord | string): Promis
         runtimeOwnerSession: (parsed.runtimeOwnerSession as string) || '',
         route: (parsed.route as string) || '',
         epoch: Number(parsed.epoch || 0),
+        createdAt: String(parsed.createdAt || '').trim(),
+        updatedAt: String(parsed.updatedAt || '').trim(),
       })
     } catch (_: unknown) {
     }

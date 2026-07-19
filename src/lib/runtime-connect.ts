@@ -62,6 +62,58 @@ const RUNTIME_PROBE_TIMEOUT_MS = 15000
 const RUNTIME_PROBE_GAP_MS = 3000
 const DEFAULT_CONNECT_TIMEOUT_MS = 120000
 const ENABLE_AUTO_WAIT_MS = 3000
+const LIVE_POLL_MS = 500
+
+/**
+ * enable 之后：在 deadline 内轮询 automation 端口是否 live。
+ * 最小等待 minWaitMs（默认 ENABLE_AUTO_WAIT），避免 CLI 刚返回就狂连。
+ */
+async function waitUntilAutomationLive(
+  config: Record<string, unknown>,
+  options: Record<string, unknown> = {},
+): Promise<boolean> {
+  const liveCheck = (options.isLive as ((cfg: Record<string, unknown>, opts?: Record<string, unknown>) => Promise<boolean>) | undefined)
+    || isAutomationEndpointLive
+  const sleepFn = (options.sleepFn as ((ms: number) => Promise<void>) | undefined) || sleep
+  const deadlineAt = Number(options.deadlineAt || 0)
+  const minWaitMs = Math.max(0, Number(options.minWaitMs ?? ENABLE_AUTO_WAIT_MS))
+  const pollMs = Math.max(100, Number(options.pollMs || LIVE_POLL_MS))
+  const startedAt = Date.now()
+
+  if (minWaitMs > 0) {
+    const remainingForMin = deadlineAt ? Math.max(0, Math.min(minWaitMs, deadlineAt - Date.now())) : minWaitMs
+    if (remainingForMin > 0) {
+      await sleepFn(remainingForMin)
+    }
+  }
+
+  while (true) {
+    if (deadlineAt && Date.now() >= deadlineAt) {
+      return false
+    }
+    const live = await liveCheck(config, {
+      timeoutMs: Math.min(1500, Math.max(300, deadlineAt ? deadlineAt - Date.now() : 1500)),
+      automator: options.automator,
+    }).catch(() => false)
+    if (live) {
+      return true
+    }
+    if (deadlineAt && Date.now() + pollMs >= deadlineAt) {
+      // 最后再探一次
+      const last = await liveCheck(config, {
+        timeoutMs: Math.max(200, deadlineAt - Date.now()),
+        automator: options.automator,
+      }).catch(() => false)
+      return Boolean(last)
+    }
+    await sleepFn(pollMs)
+    // 无 deadline 时最多等 60s，防止测试/误用挂死
+    if (!deadlineAt && Date.now() - startedAt > 60000) {
+      return false
+    }
+  }
+}
+
 
 // ---- 通用超时辅助 ----
 
@@ -537,8 +589,20 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
     config.devtoolsPort = metadata.resolvedDevtoolsPort
   }
 
-  // 3. 等一会，让 DevTools IDE 有时间完成初始化
-  await sleepFn(ENABLE_AUTO_WAIT_MS)
+  // 3. 等到 automation 端口 live（最小等待 ENABLE_AUTO_WAIT，受 deadline 约束）
+  onProgress && onProgress('wait-live')
+  const becameLive = await waitUntilAutomationLive(config, {
+    deadlineAt,
+    minWaitMs: ENABLE_AUTO_WAIT_MS,
+    sleepFn,
+    isLive: liveCheck,
+    automator: options.automator,
+  })
+  if (!becameLive && String(config.autoPort || '').trim()) {
+    throw new Error(
+      `DevTools automation 在超时前未在 autoPort=${config.autoPort} 就绪（enable 已返回但 WebSocket 仍不可连）。可加大 --timeout 后重试 open；若页面已可见，可先 session list 再 open 复用。`,
+    )
+  }
 
   // 4. connect WS
   onProgress && onProgress('connect')
@@ -706,6 +770,7 @@ module.exports = {
   waitForRuntimeReady,
   sendAutomationProtocol,
   connectOrEnable,
+  waitUntilAutomationLive,
   withMiniProgram,
   confirmRouteAfterAction,
 }
