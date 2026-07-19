@@ -67,7 +67,7 @@ miniprogram-browser screenshot out.png --session feat-a --mode layout -c --capsu
 `snapshot -i` 默认输出两部分，用同一 `@eN` ref 交叉引用：
 
 - 结构化 ref 文本树：层级 + ref + 文本标签
-- 紧凑 ASCII 空间图：用 `rectPct`（来自 `offset`/`size` 比例坐标，不触发官方截图）渲染；图例标 `top-left=(0,0) x→右 y→下`，每行左侧是该行对应页面 y% 区段，`@eN` 数字标记元素中心，容器画边框盒，`*` 表示碰撞
+- 紧凑 ASCII 空间线框：用 `rectPct`（窗口百分比，与 DPI 无关）渲染；**先读语义树再读图**。图中数字 = `@eN` 的编号；够大的区域/控件画边框，过小元素只标数字；数字会智能避让，`*` 表示避让失败。可用 `--no-map` 关闭
 
 需要纯文字比例 rect 时，改用：
 
