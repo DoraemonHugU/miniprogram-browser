@@ -54,8 +54,9 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
   export WECHAT_DEVTOOLS_CLI=/path/to/cli.js
   export MINIPROGRAM_BROWSER_GATE_PROJECT=/mnt/d/path/to/miniprogram
   npm run test:real-open-gate   # exit 0 pass, 1 fail, 2 skip (no env)
+  npm run test:l0-e2e           # broader L0 journey + branches (goto/session/click soft)
   ```
-  Expect: one successful `open` then `path` and `snapshot -i` on the gate project.
+  Expect: open→path→snapshot (gate); L0 e2e adds second session, goto, snapshot, soft click, logs.
 
 - Add or update tests before behavior changes when feasible.
 - At minimum run `npm run build` and the relevant `node --test ...` subset after edits.

@@ -55,6 +55,7 @@ npm test
 # export WECHAT_DEVTOOLS_CLI=...
 # export MINIPROGRAM_BROWSER_GATE_PROJECT=...
 npm run test:real-open-gate
+npm run test:l0-e2e           # L0 旅程+分支（goto/session/click…）
 node dist/miniprogram-browser.js help
 ```
 

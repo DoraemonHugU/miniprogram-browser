@@ -38,7 +38,9 @@
     "test": "npm run build && npm run test:node && npm run test:image-processing",
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run",
-    "test:real-open-gate": "npm run build && node scripts/real-open-gate.cjs"
+    "test:real-open-gate": "npm run build && node scripts/real-open-gate.cjs",
+    "test:l0-e2e": "npm run build && node scripts/l0-e2e.cjs",
+    "test:e2e": "npm run test:real-open-gate && npm run test:l0-e2e"
   },
   "engines": {
     "node": ">=18"
