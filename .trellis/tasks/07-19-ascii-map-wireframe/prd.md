@@ -30,13 +30,13 @@
 
 ## Acceptance Criteria
 
-- [ ] 大 view 内大 button：button 有自己的边框且带数字
-- [ ] 极小 text：无框，仅数字
-- [ ] 两叶子中心原重叠：尽量错开数字，而非必现 `*`
-- [ ] 底栏三按钮 fixture：三个编号可见且不重叠
-- [ ] 输出不因「假设 dpr」改变（仅用 rectPct）
-- [ ] `npm run build` + `node --test tests/ascii-map.test.cjs` 全绿
-- [ ] skill/图例：数字=`@eN`；框=区域；`*`=避让失败
+- [x] 大 view 内大 button：button 有自己的边框且带数字
+- [x] 极小 text：无框，仅数字
+- [x] 两叶子中心原重叠：尽量错开数字，而非必现 `*`
+- [x] 底栏三按钮 fixture：三个编号可见且不重叠
+- [x] 输出不因「假设 dpr」改变（仅用 rectPct）
+- [x] `npm run build` + `node --test tests/ascii-map.test.cjs` 全绿
+- [x] skill/图例：数字=`@eN`；框=区域；`*`=避让失败
 
 ## Out of scope
 
