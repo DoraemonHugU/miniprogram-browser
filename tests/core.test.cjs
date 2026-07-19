@@ -1068,3 +1068,39 @@ test('acquireSessionLock timeout reports owner pid and command', async () => {
 
   await fs.promises.rm(lockPath, { recursive: true, force: true })
 })
+
+const {
+  enrichOpenFailure,
+} = require('../dist/miniprogram-browser.js')
+
+test('enrichOpenFailure does not overwrite OPEN_TIMEOUT with cli-server-start-error hints', async () => {
+  const error = {
+    message: 'open timed out after 200ms',
+    code: 'OPEN_TIMEOUT',
+    hint: 'phase=open; timeoutMs=200',
+  }
+  // state without real logs: buildOpenFailureDiagnostics may return empty
+  const state = {
+    name: 't',
+    config: {
+      projectPath: '/tmp/mpb-no-project',
+      cliPath: '',
+    },
+  }
+  const enriched = await enrichOpenFailure(error, state, { timeout: 200 })
+  assert.equal(enriched.code, 'OPEN_TIMEOUT')
+  assert.match(String(enriched.message || ''), /timed out|timeout/i)
+})
+
+test('enrichOpenFailure maps wait-live message to OPEN_TIMEOUT when code missing', async () => {
+  const error = {
+    message: 'DevTools automation 在超时前未在 autoPort=9517 就绪（enable 已返回但 WebSocket 仍不可连）。可加大 --timeout 后重试 open',
+  }
+  const state = {
+    name: 't',
+    config: { projectPath: '/tmp/mpb-no-project', cliPath: '' },
+  }
+  const enriched = await enrichOpenFailure(error, state, { timeout: 5000 })
+  assert.equal(enriched.code, 'OPEN_TIMEOUT')
+})
+

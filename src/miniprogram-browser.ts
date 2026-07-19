@@ -712,8 +712,23 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
     openError.code = timeoutError.code
     openError.hint = timeoutError.hint
   }
+  if (
+    openError
+    && !openError.code
+    && /automation 在超时前未在 autoPort=|open timed out after/iu.test(String(openError.message || ''))
+  ) {
+    const timeoutError = createOpenTimeoutError(resolveOpenTimeoutMs(options))
+    openError.code = timeoutError.code
+    if (/open timed out after/iu.test(String(openError.message || ''))) {
+      openError.message = timeoutError.message
+    }
+    if (!openError.hint) {
+      openError.hint = timeoutError.hint
+    }
+  }
   const failureContext = await buildOpenFailureDiagnostics(state, options).catch(() => undefined)
-  if (failureContext && failureContext.code && (!openError.code || openError.code === 'OPEN_TIMEOUT')) {
+  // OPEN_TIMEOUT 是 open 路径的硬结果，禁止被陈旧 WeappLog（如 cli-server-start-error）盖掉
+  if (failureContext && failureContext.code && !openError.code) {
     openError.code = failureContext.code
   }
   if (failureContext && failureContext.diagnostics) {
@@ -776,9 +791,71 @@ async function openSessionWithDiagnostics(state: SessionState, options: AnyRecor
   }
 }
 
+
+async function tryRescueAttachAfterStartFailure(state: SessionState, options: AnyRecord, previousError: AnyRecord) {
+  const attachResult = await resolveAttachableRuntime(state)
+  if (attachResult.mode !== 'attach' || !attachResult.session) {
+    return null
+  }
+  const sessionInfo = attachResult.session as AnyRecord
+  const autoPort = String(sessionInfo.autoPort || '').trim()
+  if (!autoPort) {
+    return null
+  }
+  // 不要 attach 到本次刚失败的同一 port（仍可能半死）
+  if (autoPort === String(state.config.autoPort || '').trim()) {
+    return null
+  }
+  const live = await isAutomationEndpointLive(
+    { ...state.config, autoPort },
+    { timeoutMs: 1500 },
+  ).catch(() => false)
+  if (!live) {
+    return null
+  }
+
+  ;(state.config as AnyRecord).autoPort = autoPort
+  if (sessionInfo.devtoolsPort) {
+    ;(state.config as AnyRecord).devtoolsPort = String(sessionInfo.devtoolsPort)
+  }
+  state.runtimeAttached = true
+  state.runtimeOwnerSession = String(sessionInfo.name || sessionInfo.sessionName || '')
+
+  await saveSessionState(state)
+  const attached = await openSessionWithDiagnostics(state, options, {
+    mode: 'attached',
+    attachedTo: state.runtimeOwnerSession || '',
+  })
+  await ensureLiveRuntimeLaunch(state, {
+    route: attached.path || '',
+    autoPort: attached.autoPort || state.config.autoPort,
+    devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
+  })
+  await saveSessionState(state)
+  attached.rescuedFromStartFailure = true
+  attached.previousStartError = previousError && previousError.message
+    ? String(previousError.message).slice(0, 240)
+    : undefined
+  emitOpenResult(attached, options)
+  return attached
+}
+
 async function handleOpen(state: SessionState, options: AnyRecord) {
   assertProjectPath(state.config)
 
+  // 同项目 open 串行：避免双 auto；锁在 projectStateRoot/locks/__open_project__.lock
+  const projectOpenLock = await acquireSessionLock('__open_project__', state.config, {
+    command: 'open project',
+    timeoutMs: Number(options.lockTimeoutMs || process.env.MINIPROGRAM_BROWSER_LOCK_TIMEOUT_MS || 180000),
+  })
+  try {
+    return await handleOpenLocked(state, options)
+  } finally {
+    await releaseSessionLock(projectOpenLock)
+  }
+}
+
+async function handleOpenLocked(state: SessionState, options: AnyRecord) {
   // 显式 --auto-port：若已 live 则直接 connected（同项目 attach 语义），避免 already-bound / 再 enable
   if (options.autoPort && !options.fresh) {
     const explicitLive = await isAutomationEndpointLive(state.config, { timeoutMs: 1500 }).catch(() => false)
@@ -869,6 +946,13 @@ async function handleOpen(state: SessionState, options: AnyRecord) {
         caughtError.diagnostics = {
           ...((caughtError.diagnostics as AnyRecord) || {}),
           attemptedAutoPorts: [...attemptedAutoPorts, state.config.autoPort].filter(Boolean),
+        }
+        // 救援：非 fresh 且同项目已有唯一 live → attach，避免冷启动失败后孤儿 runtime 浪费
+        if (openMode === 'started' && !options.fresh) {
+          const rescued = await tryRescueAttachAfterStartFailure(state, options, caughtError).catch(() => null)
+          if (rescued) {
+            return rescued
+          }
         }
         throw caughtError
       }
@@ -3016,6 +3100,7 @@ module.exports = {
   normalizeOpenStableWaitError,
   resolveOpenFailureNextAction,
   shouldRetryOpenWithAnotherAutoPort,
+  enrichOpenFailure,
   classifyOpenFailureFromStartupHints,
   summarizeDevtoolsStartupHints,
   summarizeOpenResolution,

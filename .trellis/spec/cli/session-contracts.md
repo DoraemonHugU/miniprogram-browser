@@ -128,6 +128,10 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 - enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
 - started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
 - session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间，autoPort 尽量从 runtime 池回显。
+- 同项目 `open` 串行：`locks/__open_project__.lock`，避免双 auto。
+- `OPEN_TIMEOUT` 不被 WeappLog 的 `cli-server-start-error` 覆盖 code。
+- started 失败后非 `--fresh` 可救援 attach 到同项目其它 live port。
+
 
 
 ```ts
