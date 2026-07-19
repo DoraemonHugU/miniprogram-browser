@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-07-19
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~257 | Active |
+| `journal-1.md` | ~292 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-07-19 | open 冷启动 poll-live 与 session list 时间 | `97d9cf3`, `3d55110`, `ebc4b0f` | `feat/ascii-map-wireframe-v1` |
 | 6 | 2026-07-19 | cli-behavior 跨平台测试修复 | `e4a090d`, `1e40d15` | `feat/ascii-map-wireframe-v1` |
 | 5 | 2026-07-19 | open 冷启动与失败分类 | `08fa0aa`, `7b2787e` | `feat/ascii-map-wireframe-v1` |
 | 4 | 2026-07-18 | 完成 runtime.ts 终极拆包重构 + 冗余清理 + code-spec 更新 | `c97a0e2` | `main` |

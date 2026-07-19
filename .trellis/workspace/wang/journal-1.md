@@ -255,3 +255,38 @@ createFakeDevtoolsCli + seedSession 修 10 个失败用例；open 接 withOpenTi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: open 冷启动 poll-live 与 session list 时间
+
+**Date**: 2026-07-19
+**Task**: open 冷启动 poll-live 与 session list 时间
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+waitUntilAutomationLive；共享 live 不误杀 close；auto-port attach；session createdAt + list 展示；runtime/cli-behavior 全绿。真机仍可能受 cli-server-start-error 限制。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `97d9cf3` | (see git log) |
+| `3d55110` | (see git log) |
+| `ebc4b0f` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
