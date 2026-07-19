@@ -290,3 +290,36 @@ waitUntilAutomationLive；共享 live 不误杀 close；auto-port attach；sessi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 项目 open 锁与 OPEN_TIMEOUT 救援
+
+**Date**: 2026-07-19
+**Task**: 项目 open 锁与 OPEN_TIMEOUT 救援
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+项目级 open 串行锁；OPEN_TIMEOUT 不被 cli-server-start-error 盖掉；started 失败救援 attach；core/cli-behavior/runtime 全绿。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5219527` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
