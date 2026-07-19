@@ -198,6 +198,19 @@ test('CLI emits JSON errors when --json is present on argument errors', () => {
   assert.match(payload.error.message, /--session.*value|--session.*值/i)
 })
 
+test('session list includes createdAt for seeded sessions', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const projectDir = createMiniProgramProject()
+  await seedSession(homeDir, { name: 'timed', projectPath: projectDir })
+
+  const result = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectDir })
+  const payload = parseJsonOutput(result)
+  assert.equal(result.status, 0)
+  assert.equal(payload.sessions.length, 1)
+  assert.equal(payload.sessions[0].name, 'timed')
+  assert.match(String(payload.sessions[0].createdAt || ''), /^\d{4}-\d{2}-\d{2}T/)
+})
+
 test('session list filters to the current mini program project unless --all is passed', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectA = createMiniProgramProject()

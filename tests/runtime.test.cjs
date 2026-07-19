@@ -1221,6 +1221,7 @@ test('connectOrEnable runs enable before connect', async () => {
   const calls = []
   const result = await connectOrEnable({ autoPort: 9421 }, {
     allowEnable: true,
+    forceEnable: true,
     onProgress(phase) {
       calls.push(`progress:${phase}`)
     },
@@ -1232,6 +1233,9 @@ test('connectOrEnable runs enable before connect', async () => {
     enable() {
       calls.push('enable')
     },
+    async isLive() {
+      return true
+    },
     async sleepFn(ms) {
       calls.push(`sleep:${ms}`)
     },
@@ -1240,11 +1244,47 @@ test('connectOrEnable runs enable before connect', async () => {
   assert.deepEqual(calls, [
     'progress:enable',
     'enable',
+    'progress:wait-live',
     'sleep:3000',
     'progress:connect',
     'connect',
   ])
   assert.ok(result.ok)
+})
+
+test('connectOrEnable waits for automation live after enable before connect', async () => {
+  const calls = []
+  let liveChecks = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    connectTimeoutMs: 5000,
+    onProgress(phase) {
+      calls.push(`progress:${phase}`)
+    },
+  }, {
+    async connect() {
+      calls.push('connect')
+      return { ok: true }
+    },
+    enable() {
+      calls.push('enable')
+    },
+    async isLive() {
+      liveChecks += 1
+      calls.push(`live:${liveChecks}`)
+      return liveChecks >= 2
+    },
+    async sleepFn(ms) {
+      calls.push(`sleep:${ms}`)
+    },
+  })
+
+  assert.ok(result.ok)
+  assert.ok(calls.includes('progress:enable'))
+  assert.ok(calls.includes('progress:wait-live'))
+  assert.ok(calls.includes('live:2'))
+  assert.ok(calls.indexOf('connect') > calls.indexOf('live:2'))
 })
 
 test('connectOrEnable refuses enable when allowEnable is false and endpoint is not live', async () => {
@@ -1270,11 +1310,12 @@ test('connectOrEnable refuses enable when allowEnable is false and endpoint is n
 test('connectOrEnable adopts resolved devtools port from enable metadata', async () => {
   const config = { autoPort: 9421, devtoolsPort: '' }
   let observedPort = ''
-  await connectOrEnable(config, { allowEnable: true }, {
+  await connectOrEnable(config, { allowEnable: true, forceEnable: true }, {
     async connect(nextConfig) {
       observedPort = nextConfig.devtoolsPort
       return { ok: true }
     },
+    async isLive() { return true },
     enable() {
       return { resolvedDevtoolsPort: '38596' }
     },
@@ -1308,11 +1349,12 @@ test('connectWithRetry rejects with timeout on hanging connect', async () => {
 
 test('connectOrEnable passes deadlineAt to connect', async () => {
   let observedOptions = null
-  const result = await connectOrEnable({ autoPort: 9421 }, { allowEnable: true }, {
+  const result = await connectOrEnable({ autoPort: 9421 }, { allowEnable: true, forceEnable: true }, {
     async connect(_config, connectOptions) {
       observedOptions = connectOptions
       return { ok: true }
     },
+    async isLive() { return true },
     enable() {
       return {}
     },
@@ -1353,7 +1395,8 @@ test('connectOrEnable runs enable and connect, failure bubbles up', async () => 
   const calls = []
   await assert.rejects(
     connectOrEnable({ autoPort: 9421 }, {
-      allowEnable: true,
+    allowEnable: true,
+    forceEnable: true,
       onProgress(phase) {
         calls.push(`progress:${phase}`)
       },
@@ -1362,6 +1405,7 @@ test('connectOrEnable runs enable and connect, failure bubbles up', async () => 
         calls.push('connect')
         throw new Error('Failed connecting to ws://127.0.0.1:9421')
       },
+      async isLive() { return true },
       enable() {
         calls.push('enable')
       },
@@ -1375,6 +1419,7 @@ test('connectOrEnable runs enable and connect, failure bubbles up', async () => 
   assert.deepEqual(calls, [
     'progress:enable',
     'enable',
+    'progress:wait-live',
     'sleep:3000',
     'progress:connect',
     'connect',
@@ -1383,10 +1428,11 @@ test('connectOrEnable runs enable and connect, failure bubbles up', async () => 
 
 test('connectOrEnable always runs enable first; builder issue surfaces when ws connect fails', async () => {
   await assert.rejects(
-    connectOrEnable({ autoPort: 9421 }, { allowEnable: true }, {
+    connectOrEnable({ autoPort: 9421 }, { allowEnable: true, forceEnable: true }, {
       async connect() {
         throw new Error('Failed connecting to ws://127.0.0.1:9421')
       },
+      async isLive() { return true },
       enable() {
         return {
           startupIssue: {
@@ -1403,10 +1449,11 @@ test('connectOrEnable always runs enable first; builder issue surfaces when ws c
 
 test('connectOrEnable surfaces builder issue when ws connect still fails after enable', async () => {
   await assert.rejects(
-    connectOrEnable({ autoPort: 9421 }, { allowEnable: true }, {
+    connectOrEnable({ autoPort: 9421 }, { allowEnable: true, forceEnable: true }, {
       async connect() {
         throw new Error('Failed connecting to ws://127.0.0.1:9421')
       },
+      async isLive() { return true },
       enable() {
         return {
           startupIssue: {
