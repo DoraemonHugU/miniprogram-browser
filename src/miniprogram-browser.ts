@@ -395,7 +395,7 @@ async function resolveSession(options: AnyRecord) {
  * 优先匹配同 sessionName 的 live launch；否则同项目唯一 live。
  * 探测失败的 launch 标记为 stale，继续尝试同 session 的其他候选。
  */
-async function bindSessionRuntimeFromPool(state: SessionState): Promise<boolean> {
+async function bindSessionRuntimeFromPool(state: SessionState, options: { requireLive?: boolean } = {}): Promise<boolean> {
   const projectPath = String(state.config.projectPath || '').trim()
   if (!projectPath) {
     return false
@@ -404,11 +404,16 @@ async function bindSessionRuntimeFromPool(state: SessionState): Promise<boolean>
     return true
   }
 
+  const requireLive = options.requireLive !== false
   const launches = await listRuntimeLaunches({ ...state.config, projectPath })
   const resolvedProject = path.resolve(projectPath)
   const preferred = String(state.name || '').trim()
   const candidates = launches.filter((item: AnyRecord) => {
-    if (!item || !item.autoPort || item.status !== 'live') {
+    if (!item || !item.autoPort) {
+      return false
+    }
+    // kill/close 需要用历史 autoPort 抢 runtime 锁；open 后续命令仍默认只绑 live
+    if (requireLive && item.status !== 'live') {
       return false
     }
     const itemProject = item.projectPath ? path.resolve(String(item.projectPath)) : ''
@@ -428,15 +433,17 @@ async function bindSessionRuntimeFromPool(state: SessionState): Promise<boolean>
     : (candidates.length === 1 ? candidates : [])
 
   for (const selected of tryList) {
-    const live = await isAutomationEndpointLive(
-      { ...state.config, autoPort: selected.autoPort },
-      { timeoutMs: 1000 },
-    ).catch(() => false)
-    if (!live) {
-      if (selected.id) {
-        await updateRuntimeLaunch(selected.id, state.config, { status: 'stale' }).catch(() => null)
+    if (requireLive) {
+      const live = await isAutomationEndpointLive(
+        { ...state.config, autoPort: selected.autoPort },
+        { timeoutMs: 1000 },
+      ).catch(() => false)
+      if (!live) {
+        if (selected.id) {
+          await updateRuntimeLaunch(selected.id, state.config, { status: 'stale' }).catch(() => null)
+        }
+        continue
       }
-      continue
     }
 
     ;(state.config as AnyRecord).autoPort = String(selected.autoPort)
@@ -485,12 +492,12 @@ function createOpenTimeoutError(timeoutMs: number) {
   return error
 }
 
-async function withOpenTimeout(task: () => Promise<AnyRecord>, timeoutMs: number) {
-  let timer
+async function withOpenTimeout(task: () => Promise<AnyRecord>, timeoutMs: number): Promise<AnyRecord> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
       Promise.resolve().then(task),
-      new Promise((_resolve, reject) => {
+      new Promise<AnyRecord>((_resolve, reject) => {
         timer = setTimeout(() => reject(createOpenTimeoutError(timeoutMs)), timeoutMs)
       }),
     ])
@@ -697,7 +704,11 @@ function shouldClearFailedOpenSession(closeResult: AnyRecord) {
 
 async function openSessionWithDiagnostics(state: SessionState, options: AnyRecord, openOptions: AnyRecord = {}) {
   try {
-    return await connectOpenSession(state, options, openOptions)
+    // --timeout 约束整段 open 连接（含 enable + connect 重试），到期统一 OPEN_TIMEOUT
+    return await withOpenTimeout(
+      () => connectOpenSession(state, options, openOptions),
+      resolveOpenTimeoutMs(options),
+    )
   } catch (error: unknown) {
     const openError = await enrichOpenFailure(error as AnyRecord, state, options)
     if (shouldCleanupStartedOpenRuntime(state, openOptions, openError)) {
@@ -2826,6 +2837,8 @@ async function main(argv = process.argv.slice(2)) {
     let runtimeLock = null
     try {
       const targetState = await loadSessionState(targetSession, targetConfig)
+      // session 文件不落 autoPort；从 runtime 池回绑后才能抢 runtime 锁（close 不要求 endpoint live）
+      await bindSessionRuntimeFromPool(targetState, { requireLive: false })
       const targetRuntimeLockName = runtimeLockName(targetState.config)
       if (targetRuntimeLockName) {
         runtimeLock = await acquireSessionLock(targetRuntimeLockName, targetState.config, { command: `runtime session ${positional[1]}` })
