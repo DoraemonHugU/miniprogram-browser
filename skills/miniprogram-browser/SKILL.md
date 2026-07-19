@@ -19,140 +19,126 @@ npx miniprogram-browser ...
 
 它适合让 agent 直接操作微信小程序，但要记住：
 
-- `--project` 指向 agent 当前系统可读的小程序项目根目录；当前目录或同 Git 工作树能唯一发现项目时可以省略
-- DevTools 实际接收的项目路径由 CLI 按平台自动推导（macOS/Windows 直传；WSL `/mnt/*` 转盘符；必要时用 `--devtools-project` / `--project-map`）
-- 必须已登录微信开发者工具；登录过期时无法自动化，错误会保留 DevTools 原文
+- `--project` 指向当前系统可读的小程序项目根目录；当前目录或同 Git 工作树能唯一发现项目时可以省略
+- 传给微信开发者工具的项目路径由 CLI 按平台自动处理（macOS/Windows 通常可直接用；WSL 下 `/mnt/<盘符>/...` 会自动转成对应盘符路径；不够用时再用 `--devtools-project` / `--project-map`）
+- 必须已登录微信开发者工具；登录过期时无法自动化，错误里会保留开发者工具侧的原始信息
 - 它不是浏览器 DOM 自动化，部分自定义组件在运行时里可能不透明
 
 不要用它做上传、预览、发布、CI 打包；那属于 `miniprogram-ci`。
 
+完整命令清单以 CLI 自带帮助为准：`miniprogram-browser help` / `help <command>`。
+
 ## 何时使用
 
 - 想用 `snapshot -i`、`@e1`、`click`、`fill`、`get text` 这类 agent-friendly 命令
-- 想优先走稳定 ref，而不是手写脆弱的 class 链或 nth 选择器
+- 想优先走 ref，而不是手写脆弱的 class 链或 nth 选择器
 - 想查看当前页面状态、路由变化、日志、异常、应用结构摘要
 
 ## 模型分派：非识图 vs 识图
 
-- **非识图模型（纯文本/结构化推理）**：默认用 `snapshot -i`。它输出结构化 ref 文本树 + 紧凑 ASCII 空间图，零真实像素、稳定，不依赖官方截图通道。
-- **识图模型（能直接看图片）**：确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`（真实图片）。`screenshot` 默认 `mode` 为 `layout`（纯 JS/字体渲染的结构图，同样不走不稳定的官方截图）；要真实像素请显式 `--mode page|visual|annotate`。
-- 不要把 `snapshot` 当真实截图工具：它默认只给结构化 + ASCII 空间图；要真实像素走 `screenshot --mode page|visual|annotate`，或 `snapshot -i --visual`。
+- **非识图模型（纯文本/结构化推理）**：默认用 `snapshot -i`。输出结构化 ref 文本树 + 紧凑 ASCII 空间图，不依赖真实截图通道。
+- **识图模型（能直接看图片）**：确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`。`screenshot` 默认 `mode` 为 `layout`（结构布局图，同样不依赖不稳定的官方页面截图）；要真实像素请显式 `--mode page|visual|annotate`。
+- 不要把 `snapshot` 当真实截图工具：它默认只给结构化树 + ASCII 空间图；要真实像素走 `screenshot --mode page|visual|annotate`，或 `snapshot -i --visual`。
 
 ## 核心心智
 
-1. `open` 绑定的是一个**小程序实例 / session**，不是页面 URL
-2. **session ≠ runtime**：session 存 route/refs；`autoPort` 等连接信息在 runtime 池，后续命令会自动回绑
-3. `open` 默认复用同项目唯一 live runtime；没有才启动；`--fresh` 才强制新 runtime
-4. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
-5. 常规使用不要自己再额外手拼 DevTools `cli open`；`open/connect` 已包揽 trust / 路径 / 端口等脏活
-6. 绑定后先 `path` 或 `app inspect` 确认当前状态
-7. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
-8. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
-9. 非识图模型优先用 `snapshot -i`：默认输出结构化 ref 文本树 + 紧凑 ASCII 空间图（零真实像素、稳定）
-10. 需要纯文字比例 rect 时，用 `snapshot -i --layout`（文本树额外附 x/y/w/h 百分比）
-11. 需要稳定 ref 时，再 `snapshot -i` 生成 `@eN` refs
-12. 识图模型、且确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`
-13. 页面明显变化后，重新 `snapshot -i`
+1. `open` 绑定的是一个**小程序工作会话（session）**，不是浏览器 URL
+2. 同一项目下，`open` 默认会尽量复用已经可用的开发者工具实例；只有没有可复用实例，或你显式 `--fresh` 时，才会尝试新开
+3. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
+4. 常规使用不要自己再手拼开发者工具的 `cli open`；路径、信任项目、端口等由本 CLI 处理
+5. 绑定后先 `path` 或 `app inspect` 确认当前状态
+6. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
+7. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
+8. 非识图模型优先 `snapshot -i`：结构化 ref 树 + ASCII 空间图
+9. 需要纯文字比例位置时，用 `snapshot -i --layout`（为每个 ref 附带 x/y/w/h 百分比）
+10. 识图模型、且确实需要真实像素时，用 `screenshot --mode page|visual|annotate`
+11. **页面明显变化后，重新 `snapshot -i` 再使用新的 `@eN`**
 
-如果你的目标是让模型稳定理解页面结构，优先使用：
+理解页面结构时优先：
 
 ```bash
-miniprogram-browser snapshot -i --session feat-a
-miniprogram-browser snapshot -i --session feat-a --no-map
-miniprogram-browser screenshot out.png --session feat-a --mode layout --focus @e20,@e21
-miniprogram-browser screenshot out.png --session feat-a --mode layout --no-ref
-miniprogram-browser screenshot out.png --session feat-a --mode layout -c --capsule
+miniprogram-browser snapshot -i
+miniprogram-browser snapshot -i --no-map
+miniprogram-browser screenshot out.png --mode layout --focus @e20,@e21
+miniprogram-browser screenshot out.png --mode layout --no-ref
+miniprogram-browser screenshot out.png --mode layout -c --capsule
 ```
 
-`snapshot -i` 默认输出两部分，用同一 `@eN` ref 交叉引用：
+`snapshot -i` 默认两部分，用同一套 `@eN` 交叉引用：
 
-- 结构化 ref 文本树：层级 + ref + 文本标签
-- 紧凑 ASCII 空间线框：用 `rectPct`（窗口百分比，与 DPI 无关）渲染；**先读语义树再读图**。图中数字 = `@eN` 的编号；够大的区域/控件画边框，过小元素只标数字；数字会智能避让，`*` 表示避让失败。可用 `--no-map` 关闭
+- **语义树**：层级 + `@eN` + 控件类型 + 文案（操作与读字以这里为准）
+- **ASCII 空间图**：帮助判断大致布局；图中数字对应 `@eN` 的编号（如 `23` → `@e23`）；较大区域/控件会有边框，过小的只标数字；`*` 表示多个编号挤在同一位置。不需要图时用 `--no-map`
 
-需要纯文字比例 rect 时，改用：
+需要纯文字比例 rect 时：
 
 ```bash
-miniprogram-browser snapshot -i --layout --session feat-a
+miniprogram-browser snapshot -i --layout
 ```
-
-它会为每个 ref 附加相对窗口的比例位置/尺寸（`x/y/w/h` 百分比）。
 
 `layout` 截图模式会：
 
-- 默认使用语义布局层渲染结构图
-- `-c/--compact` 时输出更紧凑的语义布局
-- `--raw` 时切到更底层的运行时节点布局
-- 用确定性多色分组增强层次区分
-- 通过纯 JS 字体路径叠加中文文本
-- 继续支持 `--focus` 高亮
-- `--no-ref` 时隐藏图片里的 `@eN` 标签，但不影响 focus 框
-- 可选 `--capsule` 叠加右上角微信胶囊
+- 默认用语义布局层画结构图
+- `-c/--compact` 更紧凑
+- `--raw` 更底层的运行时节点布局
+- 支持 `--focus` 高亮、`--no-ref` 隐藏图上的 `@eN` 标签
+- 可选 `--capsule` 叠加右上角微信胶囊样式
 
 ## 最常用流程
 
 ```bash
-# 如果本地还没设置 WECHAT_DEVTOOLS_CLI，再先 export
+# 若本机未配置开发者工具 CLI 路径，再设置（路径按本机安装位置修改）
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
-# 最短路径：可省略 --session（自动 earlyriser-x1 这类名字）
+# 最短路径：可省略 --session（会按项目自动生成/复用类似 myapp-x1 的名字）
 miniprogram-browser open --project /path/to/miniprogram-root
 miniprogram-browser snapshot -i
 miniprogram-browser click @e1 --await route-change
 
-# 需要并行时再显式命名
+# 需要并行工作台时再显式命名
 miniprogram-browser open --session work --project /path/to/miniprogram-root
 miniprogram-browser open --session debug --project /path/to/miniprogram-root --fresh
 ```
 
-`open` 已经默认等待 `stable`，常规流程不要再补一条 `await stable`。只有 `open` 返回 `RUNTIME_UNSTABLE`，或你明确看到 DevTools 还在编译/刷新时，才继续执行 `miniprogram-browser await stable --session feat-a`。
+`open` 已经默认等待 `stable`，常规流程不要再补一条 `await stable`。只有 `open` 返回 `RUNTIME_UNSTABLE`，或你明确看到开发者工具还在编译/刷新时，才继续：
 
-如果 fresh 启动阶段你或人类已经**肉眼看到小程序页面出来了**，但 `open` 还没成功，不要立刻再次 `--fresh`。优先采用下面这个顺序：
+```bash
+miniprogram-browser await stable --session <name>
+```
 
-1. 先静置一次短等待，让 DevTools 自己把编译 / AppService / cli server 收尾
-2. 再重跑同一个 `open`，但**不带** `--fresh`
-3. 如果 session 还在，再补 `await app-ready` / `await stable`
+如果 `--fresh` 启动时人已经**看到小程序页面出来了**，但 `open` 仍失败，不要立刻再次 `--fresh`。优先：
 
-参考写法：
+1. 短等几秒，让开发者工具收尾编译
+2. 再跑同一个 `open`（**不带** `--fresh`）
+3. session 仍在时，可补 `await app-ready` / `await stable`
 
 ```bash
 miniprogram-browser open --session feat-a --project /path/to/miniprogram-root --fresh
-
-# 如果刚才页面已经显示，但 open 仍失败，不要继续 fresh 循环
 sleep 8
 miniprogram-browser open --session feat-a --project /path/to/miniprogram-root
-
-# 如果 session 还在
 miniprogram-browser await app-ready --session feat-a
 miniprogram-browser await stable --session feat-a
 ```
 
-如果 DevTools 弹出“允许该项目 / 信任项目”确认框：
+如果开发者工具弹出「允许该项目 / 信任项目」：
 
-- 先把它理解成 DevTools 项目安全校验，不是业务页面里的弹窗
-- `miniprogram-browser` 默认已经传 `--trust-project`；如果当前 DevTools 版本仍弹窗，说明这次启动没有被工具自动吸收
-- 这类确认目前不要靠 agent 猜测或硬等；应由人类确认一次
-- 确认后优先重新执行同一个 `open`；如果 session 已保留，也可以先执行 `await app-ready` 或 `doctor`
-- WSL 下优先用 `/mnt/<drive>/...` 项目路径；attach 到已有 live runtime 往往比反复 `--fresh` 更稳定
+- 这是开发者工具的项目安全确认，不是业务页弹窗
+- 本 CLI 默认会尝试自动信任；若仍弹出，需要**人点一次确认**
+- 确认后优先重跑同一个 `open`；session 还在时也可 `await app-ready` 或 `doctor`
+- WSL 下优先把项目放在 `/mnt/<盘符>/...`；已有可用实例时，复用往往比反复 `--fresh` 更稳
 
-如果本地 shell 已经设置了 `WECHAT_DEVTOOLS_CLI`，就不需要重复 `export`。
-
-如果当前环境还没安装 CLI，也可以改用：
+本地已设置 `WECHAT_DEVTOOLS_CLI` 时不必重复 `export`。未全局安装时可先：
 
 ```bash
 npx miniprogram-browser help
 ```
 
-完整命令清单以 CLI 自带帮助为准。
-
 ## 等待策略
 
-优先级固定如下：
+优先级：
 
 1. 业务命令直接挂 `--await`
 2. 需要分步探测时用显式 `await <condition>`
-3. `wait` 只做最后兜底
-
-常见写法：
+3. `wait <ms>` 只做最后兜底
 
 ```bash
 miniprogram-browser await app-ready --session feat-a
@@ -165,23 +151,24 @@ miniprogram-browser wait 1200 --session feat-a
 
 建议：
 
-- `open` 默认等待 `stable`：App runtime 响应、当前页路径/页面栈短暂稳定，并尝试读取通用视图树
-- 如果 `open` 报 `RUNTIME_UNSTABLE`，不先重启；优先继续 `await stable --session <name>`，再用 `doctor` / `devtools logs` 判断是否真的失败
-- 如果 fresh 启动失败，但人类已经看到页面显示出来，先等 5 到 10 秒，再重跑同一个 `open`，优先复用现有 runtime，不要立刻继续 `--fresh`
-- 如果 `open` 期间出现 DevTools 项目信任确认框，先由人类确认，再重试同一个 `open` 或继续 `await app-ready`
-- 如果 fresh 启动已经显示 `Using AppID: ...`，但后续仍连不上 automation，这通常不是路径或 AppID 问题，而是 DevTools 自身的 `cli server` / 编译链路仍未起来
-- 如果 agent 自己无法判断页面是否真的已显示，可以直接让人类确认“页面已显示 / 仍在白屏”；这比盲目重复启动更稳定
+- `open` 默认等待稳定（运行时响应、路径/页面栈短暂稳定等）
+- `RUNTIME_UNSTABLE` 时不要先重启；优先 `await stable`，再用 `doctor` / `devtools logs`
+- fresh 失败但人已看到页面：先短等，再**无** `--fresh` 重开
+- 信任确认框：人确认后再 `open` / `await app-ready`
+- 若日志里已出现 AppID 相关成功线索，但 automation 仍连不上，更可能是开发者工具自身服务/编译未就绪，而不是路径写错
+- 不确定页面是否真显示时，可问人「已显示 / 仍白屏」，比盲目重复启动更稳
 - `goto/click/native/screenshot/snapshot` 优先写 `--await`
-- 不要把 `wait 3000` 当主路径；只有找不到合适条件时才退回固定毫秒
+- 不要把 `wait 3000` 当主路径
 
-## 跨平台路径策略
+## 跨平台路径
 
-`miniprogram-browser` 的默认目标是让 agent 在 macOS、Windows、WSL 下使用同一套心智：
+目标：macOS / Windows / WSL 同一套用法。
 
-- `--project` 始终写当前 shell 可读的小程序根目录
-- macOS / Windows / WSL `/mnt/*` 路径由 CLI 自动转成 DevTools 可接受的路径
-- WSL 推荐把项目放在 `/mnt/<drive>/...`；`/home/...` 不再做受控镜像复制
-- 不要为了路径问题回退到 GUI 截图、OCR、PowerShell 控窗
+- `--project` 始终写**当前 shell 可读**的小程序根目录
+- macOS / Windows / WSL `/mnt/*` 由 CLI 自动转成开发者工具可接受的路径
+- WSL **推荐**项目在 `/mnt/<盘符>/...`（例如 `/mnt/d/work/...`）
+- Linux 家目录路径（如 `/home/...`）若开发者工具无法直接打开，用下面的高级兜底，或把项目放到盘符挂载路径
+- 不要为了路径问题改用 GUI 截图、OCR、PowerShell 控窗
 
 WSL 日常推荐：
 
@@ -193,7 +180,7 @@ miniprogram-browser open \
 
 ### 高级路径兜底
 
-当自动路径策略不够用时：
+自动转换不够用时：
 
 ```bash
 miniprogram-browser open \
@@ -202,114 +189,93 @@ miniprogram-browser open \
   --devtools-project 'P:\work\demo\apps\miniprogram'
 ```
 
-如果多个项目共享同一个 WSL 前缀，可以配置显式前缀映射：
+多个项目共享前缀时，可配置映射（分号分隔，最长前缀优先）：
 
 ```bash
 export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tmp'
 ```
 
-这些兜底只影响传给微信开发者工具 CLI 的项目路径；`--project` 仍负责本地静态扫描、session 归属和截图产物定位。不要把 Windows 盘符路径直接塞进 WSL 下的 `--project`。
+说明：
 
-## Session 语义
+- `--devtools-project` / `--project-map` 只影响**交给开发者工具**的路径
+- `--project` 仍用于本地发现项目、session 归属、截图等产物路径
+- 不要在 WSL 里把 `P:\...` 直接当作 `--project`
 
-**session** 是用户/agent 的工作上下文；**runtime** 是 DevTools 自动化连接。
+## Session（工作台）
 
-session 持久化大致包括：
+**session** 是你的操作上下文：当前项目、路由记忆、`@e` refs、日志等。  
+同一项目可以有多个 session（并行任务）；日常一个就够。
 
-- `projectPath`
-- `route` / refs / logs 等用户状态
+### 怎么选名字
 
-**不**固化在 session 文件中：
+- **可省略 `--session`**：CLI 会按项目生成/复用类似 `myapp-x1` 的名字；`open --fresh` 且仍省略时，往往会再开一个新的自动名（如 `myapp-x2`）
+- **显式命名**（推荐有语义）：`--session work`、`debug`、`feat-a`，便于并行与沟通
+- 不要依赖无意义的全局固定名当「唯一默认台」去硬撞
 
-- `autoPort` / `devtoolsPort`（运行时资源，存在 runtime 池；成功连接时仍会回显）
+### 项目从哪来
 
-规则：
+绑定后多数命令只需 `--session`（或继续省略以沿用自动 session）。项目作用域：
 
-- 可省略 `--session`：按项目自动生成/复用 `{project}-xN`（如 `earlyriser-x1`）；`open --fresh` 且未显式 session 时分配下一个 `xN`
-- 显式 `--session work` 等仍用于并行工作台；**不要**用全局 `default`
-- `--project` 可由当前目录/Git 工作树自动发现
-- fresh session 下，`autoPort` 默认自动分配；调用方通常不需要传端口
-- 本机 DevTools 的 `auto -h` 可能不显示 `--auto-port`，但 CLI 实际仍支持并透传给 `/auto`
-- 显式 `--auto-port` 只用于调试/指定端口；后续命令会从 runtime 池按 session 回绑 live 端口
-- `devtoolsPort` 默认不作为隔离边界；CLI 会让 DevTools 回显/沿用当前 HTTP 服务端口
-- 只有在明确排查 DevTools HTTP 服务端口时，才显式传 `--devtools-port`
-- 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工打开的小程序要先用 `doctor --project <path> --devtools-port <port>` 做 bootstrap 预检
-- `open` 的默认语义是“确保拿到一个可用 session”：优先 attach 到同项目唯一 live runtime；没有可复用 runtime 时才尝试启动新的
-- `open` 成功前会尽量做通用稳定验收；如果 Tool 层已连通但 App 仍在 warmup，`open` 会返回 `appReady=false`，session 保留，后续显式执行 `await app-ready`
-- 如果当前项目还没有已启动的小程序 runtime，attach 不会发生，`open` 会直接走启动路径
-- 同项目存在多个 live runtime 时不会静默选择；请显式使用目标 `--session`，或传 `--fresh` 尝试启动新 runtime
-- `--fresh` 表示“必须新起”；失败时不会偷偷降级成 attach
-- `open --fresh` 如果在启动阶段失败，会优先尝试关闭这次拉起的 DevTools 项目，并清理本次新建的 session/launch 记录；已存在的旧 session 不会被静默删除
-- DevTools debug 里的 `ws connect <port>` 是 CLI 自己的 `/upgrade` 长连接端口，不是 automation ws 端口
-- 如果你显式传了端口，CLI 会校验 `autoPort` 冲突；不会静默抢占其他 session
-- 同一个 `session` 内部会串行化；不同 `session` 可以并发
-- 共享同一 `autoPort` 的多个 session 还会经过 runtime 级锁串行执行，避免两个 agent 同时操作同一小程序实例
-- 多 worktree / 多分支并行时，每个 worktree 用独立 `session`；默认 session 发现会按当前 Git 工作树识别项目，不跨到无关父目录
-- 用完后执行 `close --session <name>`；attached session 默认只解绑自己，不关闭 owner runtime
-- 只有 owner session 或显式 `--runtime` 才关闭底层 DevTools runtime
-- `open` 如果自己新启动 runtime，会先登记一个项目级 launch record；底层启动失败/连接失败时会按该记录尝试 `close --project` 收尾，避免失败后丢失清理线索
-- 如果已经连上但只是 `stable` 超时，不会立刻关闭 runtime；这类情况通常可以继续等待或诊断
-- `session prune` 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；会尝试关闭对应 DevTools 项目窗口，不会全局扫其他项目
-- `session list` 默认只列当前项目；找不到当前项目时默认返回空并提示，避免泄漏全局旧 session
-- `session list --all` 是显式全局查看入口
-- `session kill <name>` / `session close <name>` 会优先终止当前项目下的同名 session，不会清理其他项目
+- 当前目录就是小程序根 → 直接用
+- 同一 Git 工作树内可唯一发现 `apps/miniprogram` 或 `miniprogram` → 可用
+- 不会跨出当前 Git 工作树去猜别的仓库
 
-### 当前项目发现
+发现失败时，`open/connect` 请显式传 `--project`。
 
-常规命令绑定后通常只需要传 `--session`。CLI 会从当前目录推导项目作用域：
-
-- 当前目录本身是小程序项目时，直接使用它
-- 当前目录在同一个 Git 工作树的 sibling 目录里时，尝试发现唯一的 `apps/miniprogram` 或 `miniprogram`
-- 一旦发现 Git 工作树边界，就不会继续向父目录外查找，避免选中无关仓库
-
-注意：如果项目发现失败，首次 `open/connect` 仍应显式传 `--project`，这样 session 归属对调用方是清晰的。
-
-### 多 session 与失败回显
-
-同一个项目可以打开多个 session，例如并行分析两个小程序实例。默认每个 fresh session 使用独立的 `autoPort` 和独立 session 状态；DevTools HTTP 端口通常由当前 DevTools 服务统一承载。
-
-日常默认不是强行 fresh，而是优先复用唯一 live runtime：
+### 复用与新开
 
 ```bash
+# 默认：尽量用上已有可用实例
 miniprogram-browser open --session agent-task-a
-```
 
-如果当前项目只有一个 live runtime，输出会包含：
-
-- `mode=attached`
-- `attachedTo=<owner-session>`
-- `autoPort=<owner-auto-port>`
-
-如果你确实要尝试新开 runtime，再显式传：
-
-```bash
+# 明确要新开时
 miniprogram-browser open --session agent-task-a --fresh
 ```
 
-如果你显式传了 `--auto-port`，应把它理解成 fresh 启动时的 automation 端口请求；attach 到已有 runtime 时不会强行改绑 owner 的 `autoPort`。
+成功时输出里常见：
 
-如果新 session 等待超时，CLI 不会静默复用其他 session；错误会优先回显：
+- `mode=attached` / `connected` / `started`：附着已有、连上、新启动等
+- `attachedTo=...`：附着到谁（若有）
+- `autoPort=...`：本次自动化连接端口（观测用；日常不必手填）
+- `session=...`：实际使用的 session 名（省略时也能从这里确认）
 
-- 短 `code`
-- 一句 `message`
-- 一条事实型 `hint`
-- 一条相关 `log`
-- 最小化的项目级 `diagnostics`
+端口相关：
 
-这样 agent 可以先判断是路径策略、autoPort，还是同项目已有 live session 在干扰。
+- 常规**不必**传 `--auto-port` / `--devtools-port`
+- `--auto-port` 仅在你要指定新开自动化端口时使用；附着已有实例时以实际连上的为准
+- `--devtools-port` 仅在排查开发者工具 HTTP 服务时使用
 
-## 诊断与逃逸点
+### 并发与关闭
+
+- 同一 session 内命令会串行；不同 session 可并行
+- 多个 session 若连到同一小程序实例，工具会避免它们同时抢操作
+- `close --session <name>`：默认结束该工作台；若只是附着别人的实例，通常**不会**关掉底层开发者工具窗口
+- 需要关掉底层实例时，用 owner session 关闭，或按 CLI 帮助使用显式 runtime 关闭选项
+- `session list`：默认当前项目；`session list --all` 看全部
+- `session prune`：清理当前项目里过期/无效 session 记录，并尽量关掉对应工具窗口（不扫其他项目）
+- `session kill <name>` / `session close <name>`：针对当前项目下的同名 session
+
+### open 失败时怎么读
+
+优先看返回里的说明和原始错误信息，判断是：
+
+- 项目路径 / 映射问题
+- 登录或 AppID 问题
+- 开发者工具还在启动/编译
+- 同项目已有多个实例需要你指定 session 或 `--fresh`
+
+不要假设一定有固定错误码字段；以可读说明 + 原始日志为准。
+
+## 诊断与逃逸
 
 ### 推荐诊断
 
 - `app inspect`：应用结构摘要
-- `doctor`：分层诊断 DevTools CLI、automation WebSocket 和小程序 App runtime
-- `devtools logs`：读取微信开发者工具 `WeappLog` 底层日志；用于 App runtime 不响应、普通 `logs` / `exceptions` 拿不到信息时
-- `timeline`：路由变化时间线
-- `logs` / `exceptions`：运行时输出与异常；优先用它们理解当前页面的数据加载、报错、按钮点击后发生了什么
+- `doctor`：区分开发者工具、自动化连接、小程序 App 是否就绪
+- `devtools logs`：开发者工具底层日志（App 不响应、普通 logs 不够时）
+- `timeline`：路由变化
+- `logs` / `exceptions`：console 与异常（优先用来理解数据加载、点击后发生了什么）
 - `system-info` / `page-stack`：设备与页面栈
-
-典型诊断流程：
 
 ```bash
 miniprogram-browser app inspect --session feat-a
@@ -320,214 +286,151 @@ miniprogram-browser timeline --session feat-a
 miniprogram-browser devtools logs --session feat-a --limit 40 --grep "appservice|simulator|error"
 ```
 
-使用建议：
+建议：
 
-- 看到“页面没反应 / 不确定按钮是否生效”时，不要只盯截图；先看 `logs` / `exceptions`
-- 如果 `doctor` 显示 Tool 层可达但 App runtime 不响应，优先看 `devtools logs`，不要回退到 Windows GUI 截图/OCR
-- `doctor` 的 `startupIssue` 更适合作为“最近一次相关启动线索”；如果你需要判断 fresh 启动为什么失败，以同次 `open --fresh` 返回的 `code / hint / log` 为准
-- 对数据加载页、表单页、工具页，console 往往比截图更早暴露真实状态
-- 如果 `logs` 已经明确报错，再去看 layout / snapshot 会更容易判断问题归因
+- 「页面没反应」不要只盯截图；先看 `logs` / `exceptions`
+- Tool 层通但 App 不通时，优先 `devtools logs`，不要 GUI/OCR
+- 判断某次 `open --fresh` 为何失败，以**同一次** open 返回的说明和日志为准
+- 数据页/表单页 console 往往比截图更早暴露问题
 
-### 底层逃逸点
+### 底层与辅助命令
 
-`protocol <method> [json]` 是自动化 WebSocket 的底层调用口，例如 `Tool.getInfo` 或 `App.callWxMethod`。它只用于极端排障，不作为常规操作入口；常规操作仍优先使用 `snapshot/click/fill/get/logs/exceptions`。
+- `protocol <method> [json]`：自动化底层调用（如排查用）；**非**日常入口
+- `eval` / `eval --stdin`：小程序运行时脚本（不是浏览器 DOM）
+- `native <method> [...]`：开发者工具原生控制通道
+- `call wx` / `call page`：调用 wx 或页面方法
+- `get attr|prop|rect`：读属性/矩形
+- `query <mode> <value>`：`selector | text | business` 快速定位，再切回 ref 命令
+- `within <ref> <command> ...`：在某个 ref 作用域内执行子命令
+- `relaunch <route>`：重启到指定路由（类似冷启动后的 goto）
 
-## Taro / H5 浏览器渲染（可选高保真视觉工作流）
+原则：标准命令优先 → 不够再用逃逸 → 用完回到 ref/语义命令。
 
-如果当前项目是跨端 Taro 项目，并且已经有可用的 H5 输出，这时可以把浏览器渲染作为**辅助视觉工作流**：
+## Taro / H5 浏览器渲染（可选高保真视觉）
 
-- 用浏览器拿更高保真的视觉截图
-- 用 `miniprogram-browser` 拿真实小程序运行时结构、ref、logs、exceptions
-- 两条证据线结合，而不是只信其中一条
+跨端 Taro 且 H5 可用时，浏览器渲染可作**辅助视觉**，不能替代小程序运行时证据：
 
-适用场景：
+- 浏览器：更高保真视觉截图
+- `miniprogram-browser`：真实小程序结构、ref、logs、exceptions
 
-- 你需要更像真实页面的视觉留证
-- DevTools 真实截图通道不稳定，但 H5 端可正常运行
-- 你想核对复杂样式、间距、字体、阴影等视觉细节
-
-不适用场景：
-
-- 你要证明微信小程序专属能力或原生组件行为
-- 页面强依赖 `wx` 能力，H5 端并没有完整实现
-- 你想把浏览器截图当成“小程序真实截图”的替代证据
+适用：视觉留证、DevTools 真截图不稳但 H5 正常、核对样式细节。  
+不适用：要证明小程序专属/原生能力、H5 未实现的 `wx` 行为、把浏览器图当成「小程序真截图」。
 
 推荐步骤：
 
-1. 先在小程序里读取当前视觉尺寸：
+1. 小程序侧对齐尺寸：
 
 ```bash
 miniprogram-browser system-info --session feat-a
 ```
 
-重点看：
+关注 `windowWidth` / `windowHeight` / `pixelRatio`（设备像素比，用于对齐浏览器 DPR，不是让你改 snapshot 坐标）。
 
-- `windowWidth`
-- `windowHeight`
-- `pixelRatio`
+2. 浏览器 viewport 固定为相近尺寸，例如 `375×812` 或 `414×896`，DPR 2 或 3  
+3. 浏览器只负责视觉图；结构/行为仍用 `logs`、`snapshot -i`、`screenshot --mode layout`  
+4. 冲突时优先信小程序运行时证据  
 
-2. 再把浏览器/H5 的 viewport 固定成同样尺寸，尽量对齐视觉基线
-
-推荐移动基线：
-
-- 主基线：`375 x 812`
-- 大屏补充：`414 x 896`
-- DPR 建议 `2` 或 `3`
-
-3. 浏览器端只负责**视觉截图**，小程序端继续负责：
-
-- `logs` / `exceptions`
-- `snapshot -i`
-- `snapshot -i --layout`
-- `screenshot --mode layout`
-
-4. 最终判断时遵循：
-
-- 浏览器图更偏视觉
-- 小程序图更偏真实运行时
-- 结论冲突时，优先继续看小程序运行时证据
-
-重要边界：
-
-- 浏览器渲染不是小程序运行时等价物
-- 它可以帮助看“样子”，但不能替代小程序里的行为证据
-- 如果只是做结构分析，优先 `screenshot --mode layout`；不要因为有浏览器就跳过小程序取证
-
-### 逃逸点
-
-当 `snapshot/click/fill/get` 不够用时，再退到：
-
-- `eval` / `eval --stdin`
-- `native <method> [...args]`
-- `get attr|get prop|get rect`
-- `call wx` / `call page`
-
-原则：
-
-1. 标准层命令优先
-2. 标准层不够时，再用逃逸点
-3. 用完后尽量回到 ref/语义命令
-
-### 辅助命令（query / within / relaunch）
-
-- `query <mode> <value>`：按 `selector | text | business` 查询节点；先用它快速定位，再切到 ref 语义命令
-- `within <ref> <command> ...`：在 ref 作用域内继续执行子命令，例如只在某个列表项内 `click`；子命令仍走同一 session
-- `relaunch <route>`：重启到指定路由，等价于冷启动后 `goto`
+结构分析优先 `screenshot --mode layout`，不要因为有浏览器就跳过小程序取证。
 
 ## app inspect
 
-`app inspect` 默认只给摘要，不直接吐完整应用图。
+默认摘要，不直接倾倒整图。常见字段：`pagesSummary`、`tabBarSummary`、`current`、`pageStack`、`recentRoutes`、`currentOutgoingEdges`、`staticSummary`。
 
-默认摘要包含：
+更细：
 
-- `pagesSummary`
-- `tabBarSummary`
-- `current`
-- `pageStack`
-- `recentRoutes`
-- `currentOutgoingEdges`
-- `staticSummary`
-
-更详细时再用：
-
-- `--sections a,b,c`
-- `--all`
+```bash
+miniprogram-browser app inspect --sections a,b,c
+miniprogram-browser app inspect --all
+```
 
 ## screenshot
 
-对 agent 而言，推荐顺序通常是：
+推荐顺序：
 
-1. `snapshot -i`（非识图模型默认：结构化 ref 文本树 + ASCII 空间图，零真实像素）
-2. `--mode layout`
+1. `snapshot -i`（非识图默认）
+2. `screenshot --mode layout`
 3. `snapshot -i --layout`
 4. `--mode annotate`
 5. `--mode page` / `--mode visual`
 
-原因：`layout` 更稳定，也更适合把结构、层次和 focus 交给模型分析；真实像素截图更适合留证或核对视觉细节。
+`layout` 更稳、更适合结构分析；真实像素适合留证或对视觉细节。
 
-补充边界：
+边界：
 
-- `page/visual/annotate` 这些真实像素截图，本质上依赖开发者工具模拟器截图通道
-- 它们不等价于真机画面，也不适合在截图通道已经不稳定时反复硬试
-- `layout` 不依赖真实像素截图通道，更适合作为默认分析入口
+- `page/visual/annotate` 依赖开发者工具模拟器截图通道，≠ 真机画面
+- 通道不稳时不要反复硬试；改 `layout` 或 `snapshot -i --layout`
+- 不要默认用 `close/open` 或重启开发者工具修截图超时；多项目持续失败再考虑重启
 
-支持四种模式：
+模式：
 
-- `--mode layout`：结构化布局图，默认模式，优先推荐给 agent
+- `--mode layout`：默认，结构布局图
 - `--mode page`：官方页面截图
 - `--mode visual`：页面截图 + 胶囊视觉合成
-- `--mode annotate`：页面截图 + `@eNN` 标注叠加
-- `--focus @e1,@e2`：对指定 ref 叠加高亮框，支持多元素自动换色；当前样式是高对比配色 + 双层边框 + 轻纹理填充
-- `--no-ref`：隐藏截图里的 `@eN` 标签；适合只看结构或汇报图
+- `--mode annotate`：页面截图 + `@eN` 标注
+- `--focus @e1,@e2`：高亮指定 ref
+- `--no-ref`：隐藏图上 `@eN` 标签
 
-默认模式是 `layout`。
+路径：
 
-保存方式：
+- 不传路径：默认截图目录（仓库常见为 `artifacts/screenshots`）
+- 传路径：保存到指定位置（建议可追溯目录，便于对照日志）
 
-- 不传路径：保存到默认截图目录（当前仓库默认是 `artifacts/screenshots`）
-- 传路径(优先推荐策略)：保存到显式指定的位置(推荐放在.artifacts/{时间戳}-{session}里)，方便后续查看和关联日志/trace.
+截图前：
 
-如果你主要是为了让模型理解页面，不要默认先追求真实截图；优先走 `screenshot --mode layout`。如果真实截图偶发超时，优先切到 `--mode layout`，其次才是 `snapshot -i --layout`。不要把 `close/open` 或重启 DevTools 当默认修复手段；只有在不同 session / 项目都持续超时时，再把完全重启 DevTools 当成最后手段。
+1. `goto/click/fill/...` 后优先 `--await`
+2. 先 `path` / `app inspect` / `snapshot -i` 确认页面稳定
+3. 只看结构时直接 `layout`，不要死磕真实截图
 
-截图前的通用建议：
+`--focus`：先 `snapshot -i` 再 `screenshot --focus @e1,@e2`。`snapshot -i -c` 更紧凑，**不会**因 compact 单独重编号。
 
-1. 每次 `goto / click / fill / call / native` 后优先 `--await`
-2. 截图前先 `path`、`app inspect` 或 `snapshot -i` 确认页面已经稳定
-3. 如果只是看结构，不要继续硬试真实截图，直接切 `--mode layout`
+## 命令优先级（给 agent）
 
-`--focus` 的推荐用法：
+| 优先 | 用途 | 示例 |
+|------|------|------|
+| 主路径 | 日常操作 | `open` `snapshot` `click` `fill` `get` `goto` `await` `close` `session` `path` |
+| 诊断 | 搞不清状态时 | `doctor` `logs` `exceptions` `timeline` `devtools logs` `app inspect` |
+| 逃逸 | 标准命令不够时 | `protocol` `eval` `native` `call` `query` `within` 及高级截图 |
 
-1. 先 `snapshot -i` 拿当前页面的 ref
-2. 再 `screenshot --focus @e1,@e2`
-3. 如果需要更简洁视图，可以先看 `snapshot -i -c`；但 compact 现在只是同一套 ref 的子集，不会再重新编号
+成功时优先看：`session`、`path`、`mode`、`project`，以及回显的连接端口信息。  
+失败时：读清说明，并保留/查看原始错误；不要假设一定有固定 `code` 字段。
 
-## 稳定 CLI 面（公共契约）
+## `@e` 使用规则（必须遵守）
 
-权威细节：仓库 `.trellis/spec/cli/product-contracts.md`。
+`@eN` 表示**当前 session 里、某次 snapshot 给出的可点击/可读取目标**。  
+同页、结构变化不大时，再次 snapshot **有时**会沿用原来的编号，但：
 
-- **公共 API = CLI 命令**，不是 `dist/lib/**` 的 Node require 面
-- **L0 主路径（优先）**：`open` / `snapshot` / `click` / `fill` / `get` / `goto` / `await` / `close` / `session` / `path`
-- **L1 诊断**：`doctor` / `logs` / `exceptions` / `timeline` / `devtools logs` / `app inspect`
-- **L2 逃逸**：`protocol` / `eval` / `native` / `call` / `query` / `within` / 高级 `screenshot`
-- 成功时关注：`session`、`path`、`mode`、`autoPort`、`project`（其余为观测扩展）
-- 失败时：读人话 + 保留的底层 raw；不要假设一定有 `code` / `next`
+- **不是**永远不变的全局 ID  
+- **不是**跨 session 通用  
+- **不是**「永远等于某个业务按钮」的保证  
 
-## Ref 使用边界（`@e` 硬规则）
-
-`@eN` 是 **当前 session 内、以 snapshot 为界的可解析句柄**。实现会用 stableKey **尽力**跨 snapshot 复用同号，但：
-
-**不是**全局永久 ID，**不是**跨 session ID，**不是**「永远是保存按钮」的业务主键。
-
-硬规则（必须遵守）：
+必须遵守：
 
 1. **先 `snapshot -i`（或本轮已产出 refs 的查询），只用本轮输出里的 `@eN`。**
-2. **页面可能变化后（导航、列表刷新、弹层开关、明显重渲染）必须重新 `snapshot -i`，不得沿用旧号碰运气。**
-3. **路由变了 → 旧页 `@e` 全部作废**；出现 route mismatch 时重新 snapshot。
-4. **stale / unknown ref / selector 失效 → 禁止重试同一旧 `@e`**；重新 `snapshot -i` 再操作。
-5. **`@e` 仅在产生它的 session 内有效**；换 session 必须重新 snapshot。
-6. **ASCII 图中的数字 = `@eN` 的 N**；命令仍写 `@e23` 这种完整形式。读文案看语义树，不看图内文字（图默认不渲染文案）。
+2. **导航、列表刷新、弹层开关、明显重渲染后，必须重新 `snapshot -i`，不要拿旧号碰运气。**
+3. **换页后旧 `@e` 全部作废**；提示 route 不一致时重新 snapshot。
+4. **提示 stale / unknown ref / 找不到节点时，禁止重试同一个旧 `@e`**；重新 snapshot 再操作。
+5. **换 session 必须重新 snapshot**；`@e` 不随 session 共享。
+6. **ASCII 图上的数字 = `@eN` 的编号**（`23` → 命令写 `click @e23`）。读文案看语义树，不要从图里猜字。
 
 补充：
 
-- `snapshot -i -c` 更紧凑，但 ref 与普通快照同一套 identity，不会因 compact 单独重编号
-- `snapshot -i --layout` 附加比例 rect，便于纯文字布局分析
-- 业务若要跨会话稳定定位，应在小程序侧提供 testid / businessKey，而不是神化 `@e` 编号
+- 需要跨会话稳定定位时，应在小程序侧使用 testid / 业务 key，再配合 `query`，而不是死记 `@e` 数字
+- `snapshot -i -c` / `--layout` 不改变「先 snap 再用」的规则
 
 ## 常见误区
 
-- 误以为 `open` 是打开页面 URL；它的本质是绑定实例
-- 误以为 `open` 成功就代表当前页已经对了；应先 `path` 或 `app inspect`
-- 误以为可以默认猜项目目录；`--project` 必须是当前 shell 可读的小程序项目根目录（或 cwd 唯一发现）
-- 误以为 WSL 下可以把 Windows 盘符路径直接塞进 `--project`；默认仍传 Linux 路径，必要时用 `--devtools-project` 或 `--project-map` 指定 DevTools 侧路径
-- 误以为登录过期还能继续自动化；需在 DevTools 重新登录，CLI 会保留底层原始错误
-- 误以为 session 文件会长期固化 `autoPort`；端口在 runtime 池，成功连接时回显，后续命令自动回绑
-- 误以为 `@eN` 是永久 ID 或跨页/跨 session 仍有效；见上方硬规则
-- 误以为 ASCII 图上的 `3` 是「第三项」而不是 `@e3`；图上数字只是编号 N
-- 误以为 `snapshot -i` 需要业务自己提供 tree；不需要
-- 误以为 `timeline` 是截图历史；它记录的是路由事件，不是视觉历史
-- 误以为 `eval` 等价于浏览器 DOM 脚本；这里执行的是小程序 AppService 运行时
-- 误以为 `native` 是普通 click；它走的是开发者工具暴露的原生控制通道
-- 误以为 debug 日志里的 `ws connect <port>` 就是 automation ws；实际那是 CLI 自己的 `/upgrade` 长连接
-- 误以为 session 名不同就一定隔离；不要依赖抢占不同 `devtoolsPort` 来做多分支并行
-- 误以为很多操作可以无间隔链起来；优先写 `--await`，只有没有合适条件时才退回 `wait`
-- 误以为应 `require` 包内 `dist/lib/*` 当 SDK；公共面是 CLI
+- 误以为 `open` 是打开网页 URL；它是绑定小程序工作会话
+- 误以为 `open` 成功就等于已在目标页；应 `path` / `app inspect` / `snapshot` 确认
+- 误以为总能猜中项目目录；发现失败时要显式 `--project`
+- 误以为 WSL 里 `--project` 可以写 `P:\...`；应写 Linux 可读路径，必要时用 `--devtools-project` / `--project-map`
+- 误以为登录过期仍能自动化；需在开发者工具重新登录
+- 误以为必须每次手写端口；日常不用管，成功输出里的端口仅供确认与排障
+- 误以为 `@eN` 永久有效或跨页/跨 session 仍可用
+- 误以为 ASCII 图上的 `3` 表示「第三项」而不是 `@e3`
+- 误以为 `snapshot -i` 需要业务自备 tree
+- 误以为 `timeline` 是截图历史；它是路由事件
+- 误以为 `eval` 是浏览器 DOM 脚本
+- 误以为 `native` 等于普通 `click`
+- 误以为多 session 一定等于多个完全隔离的工具窗口；并行时仍可能共享同一运行中的小程序实例
+- 误以为可以无等待狂点；优先 `--await`
+- 误以为应直接调用包装库内部模块；请通过 CLI 使用
