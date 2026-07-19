@@ -253,7 +253,7 @@ miniprogram-browser open --session agent-task-a --fresh
 - 多个 session 若连到同一小程序实例，工具会避免它们同时抢操作
 - `close --session <name>`：默认结束该工作台；若只是附着别人的实例，通常**不会**关掉底层开发者工具窗口
 - 需要关掉底层实例时，用 owner session 关闭，或按 CLI 帮助使用显式 runtime 关闭选项
-- `session list`：默认当前项目；`session list --all` 看全部
+- `session list`：默认当前项目；`session list --all` 看全部；输出含 `created`（创建时间）与 status/autoPort
 - `session prune`：清理当前项目里过期/无效 session 记录，并尽量关掉对应工具窗口（不扫其他项目）
 - `session kill <name>` / `session close <name>`：针对当前项目下的同名 session
 

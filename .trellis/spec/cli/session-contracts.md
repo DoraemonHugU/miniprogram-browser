@@ -123,6 +123,13 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 
 重复 `auto` 会重启小程序（路由回首页），并可能打断已有 automation 会话；失败后再 snapshot 刷 auto 还会制造 AppID 假阳性与日志噪音。
 
+### 3.1.4 open 冷启动时序与 cleanup
+
+- enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
+- started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
+- session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间，autoPort 尽量从 runtime 池回显。
+
+
 ```ts
 // Wrong：业务命令默认 enable
 await connectOrEnable(config) // 旧行为：非 live 就 auto
