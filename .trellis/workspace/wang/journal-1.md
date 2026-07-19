@@ -169,3 +169,49 @@
   2. `connectOrEnable` 必须优先复用 live endpoint，禁止重复 auto
 - 真实 DevTools：open/snapshot/get/goto/click 全通；session 文件无 autoPort
 - 测试基线维持 224 pass / 10 fail
+
+## 2026-07-19 open-exit-cold-start
+
+Task: `.trellis/tasks/07-19-open-exit-cold-start`
+
+Done:
+- R1/R2: `explainDevtoolsFailureRaw` / `parseAutomationCliFailure` 不再把成功路径 `Fetching AppID () permissions` + `Using AppID` 误判为 AppID 缺失；真 41002 仍人话。
+- R3: `summarizeDevtoolsCliRaw` + 文本 `emitCliError` 摘录；JSON 仍可带完整 raw。
+- R5: `connectOrEnable` 默认 `allowEnable=false`；`open/connect` 经 `connectOpenSession` 传 true；非 live 业务命令提示先 open。
+- R4: `collectDevtoolsStartupHints` 过滤 mtime 超 10 分钟的日志文件。
+- R6: 无 session/project 错误文案补可执行下一步；skill 写明先 open。
+- Verify: `npm run build`；`tests/runtime.test.cjs` 79 pass；`core`/`skill-docs` pass；`cli-behavior` 仍 10 fail（基线，本任务 out of scope）。
+
+
+## Session 5: open 冷启动与失败分类
+
+**Date**: 2026-07-19
+**Task**: open 冷启动与失败分类
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+修复 AppID 假阳性（Fetching≠缺失）；文本 raw 摘录；非 open 默认 allowEnable=false 提示先 open；startupHints 10 分钟时间窗；同步 product/session contracts；runtime 79 测通过。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `08fa0aa` | (see git log) |
+| `7b2787e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
