@@ -215,3 +215,43 @@ Done:
 ### Next Steps
 
 - None - task complete
+
+## 2026-07-19 cli-behavior-cross-platform
+
+- 根因：失败 open 清 session；WSL fake CLI 缺 node.exe；withOpenTimeout 未接线；kill 未回绑 autoPort
+- 修：createFakeDevtoolsCli + seedSession；open 接 withOpenTimeout；kill bindSessionRuntimeFromPool(requireLive:false)
+- 验证：cli-behavior 18/18；runtime+core 全绿
+
+
+## Session 6: cli-behavior 跨平台测试修复
+
+**Date**: 2026-07-19
+**Task**: cli-behavior 跨平台测试修复
+**Branch**: `feat/ascii-map-wireframe-v1`
+
+### Summary
+
+createFakeDevtoolsCli + seedSession 修 10 个失败用例；open 接 withOpenTimeout；kill 回绑 autoPort；cli-behavior 18/18。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e4a090d` | (see git log) |
+| `1e40d15` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

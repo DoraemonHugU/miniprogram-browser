@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 6
 - **Last Active**: 2026-07-19
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~217 | Active |
+| `journal-1.md` | ~257 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-07-19 | cli-behavior 跨平台测试修复 | `e4a090d`, `1e40d15` | `feat/ascii-map-wireframe-v1` |
 | 5 | 2026-07-19 | open 冷启动与失败分类 | `08fa0aa`, `7b2787e` | `feat/ascii-map-wireframe-v1` |
 | 4 | 2026-07-18 | 完成 runtime.ts 终极拆包重构 + 冗余清理 + code-spec 更新 | `c97a0e2` | `main` |
 | 3 | 2026-07-17 | runtime.ts 拆包重构 + .bat→env 迁移 + 严格 TS 检查 | `505afd5`, `f371f06` | `main` |
