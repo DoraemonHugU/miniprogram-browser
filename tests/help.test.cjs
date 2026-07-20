@@ -271,16 +271,24 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
     }, 1),
     true,
   )
+  // 冷启动：OPEN_TIMEOUT / 扫端口全空 允许同一次 open 内换 port 再 auto
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'OPEN_TIMEOUT' }, 1),
-    false,
+    true,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      code: 'OPEN_TIMEOUT',
+      message: '冷启动未完成：devtools auto 已返回，但本机未发现可用 automation WebSocket',
+    }, 1),
+    true,
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
       code: 'OPEN_TIMEOUT',
       message: 'runtime stable timed out after 15000ms',
     }, 1),
-    false,
+    true,
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, { autoPort: '9515' }, 'started', { code: 'OPEN_TIMEOUT' }, 1),
@@ -290,9 +298,10 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'APPID_MISSING' }, 1),
     false,
   )
+  // 假成功 auto + cli server 类：仍允许换 port 重试（同一次 open）
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED' }, 1),
-    false,
+    true,
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
@@ -301,10 +310,14 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
         startupHints: [{ code: 'cli-server-start-error' }],
       },
     }, 1),
-    false,
+    true,
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'connected', { code: 'OPEN_TIMEOUT' }, 1),
+    false,
+  )
+  assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', { code: 'WINDOWS_SOCKET_EXHAUSTED' }, 1),
     false,
   )
 })

@@ -829,11 +829,19 @@ function shouldClearFailedOpenSession(closeResult: AnyRecord) {
  * open 连接阶段：只负责 withOpenTimeout + 错误 enrich。
  * cleanup 延后到 handleOpen 在「自愈失败」之后执行，避免拆掉已 live 的 port。
  */
-async function openSessionWithDiagnostics(state: SessionState, options: AnyRecord, openOptions: AnyRecord = {}) {
+async function openSessionWithDiagnostics(
+  state: SessionState,
+  options: AnyRecord,
+  openOptions: AnyRecord = {},
+  timeoutMs?: number,
+) {
+  const budgetMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Number(timeoutMs)
+    : resolveOpenTimeoutMs(options)
   try {
     return await withOpenTimeout(
-      () => connectOpenSession(state, options, openOptions),
-      resolveOpenTimeoutMs(options),
+      () => connectOpenSession(state, { ...options, timeout: budgetMs }, openOptions),
+      budgetMs,
     )
   } catch (error: unknown) {
     const openError = await enrichOpenFailure(error as AnyRecord, state, options)
@@ -1062,10 +1070,24 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
   }
 
   const openMode = currentEndpointLive ? (state.runtimeAttached ? 'attached' : 'connected') : 'started'
-  const attemptedAutoPorts = []
+  const attemptedAutoPorts: string[] = []
   let result
+  let lastOpenError: AnyRecord | null = null
+  const totalTimeoutMs = resolveOpenTimeoutMs(options)
+  const openDeadlineAt = Date.now() + totalTimeoutMs
+  // 同一次 open 内最多 3 次 auto：预算切开，避免第 1 次吃光全部 timeout
+  const perAttemptBudget = Math.max(
+    25000,
+    Math.floor(totalTimeoutMs / DEFAULT_OPEN_AUTO_PORT_ATTEMPTS),
+  )
 
   for (let attempt = 1; attempt <= DEFAULT_OPEN_AUTO_PORT_ATTEMPTS; attempt += 1) {
+    const remainingMs = Math.max(8000, openDeadlineAt - Date.now())
+    const attemptTimeoutMs = Math.min(remainingMs, perAttemptBudget)
+    if (openDeadlineAt - Date.now() < 5000 && attempt > 1) {
+      break
+    }
+
     if (openMode === 'started') {
       await recordStartedRuntimeLaunch(state, {
         attempt,
@@ -1075,20 +1097,44 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
     await saveSessionState(state)
 
     try {
+      if (attempt > 1) {
+        emitProgress(`冷启动第 ${attempt}/${DEFAULT_OPEN_AUTO_PORT_ATTEMPTS} 次尝试（autoPort=${state.config.autoPort || '-'}）...`, options)
+        await sleep(Math.min(3000, 1000 * attempt))
+        const latePort = await discoverLiveAutomationPort(state.config, {
+          preferredPort: String((state.config as AnyRecord).autoPort || ''),
+          timeoutMs: 400,
+          maxProbes: 50,
+        }).catch(() => '')
+        if (latePort) {
+          ;(state.config as AnyRecord).autoPort = latePort
+          result = await openSessionWithDiagnostics(state, options, {
+            mode: 'connected',
+            attachedTo: '',
+          }, Math.min(attemptTimeoutMs, Math.max(8000, openDeadlineAt - Date.now())))
+          result.rescuedFromStartFailure = true
+          result.healedDiscoveredPort = true
+          result.openAttempt = attempt
+          break
+        }
+      }
       result = await openSessionWithDiagnostics(state, options, {
         mode: openMode,
         attachedTo: state.runtimeAttached ? state.runtimeOwnerSession : '',
-      })
+      }, attemptTimeoutMs)
+      if (attempt > 1) {
+        result.openAttempt = attempt
+      }
       break
     } catch (error: unknown) {
       const caughtError: AnyRecord = error as AnyRecord
+      lastOpenError = caughtError
+      attemptedAutoPorts.push(String(state.config.autoPort || ''))
       if (!shouldRetryOpenWithAnotherAutoPort(state, options, openMode, caughtError, attempt)) {
         caughtError.diagnostics = {
           ...((caughtError.diagnostics as AnyRecord) || {}),
-          attemptedAutoPorts: [...attemptedAutoPorts, state.config.autoPort].filter(Boolean),
+          attemptedAutoPorts: attemptedAutoPorts.filter(Boolean),
         }
-        // 自愈：同 port live 重连 / 其它 live attach——在 cleanup 之前，用户无需二次 open
-        if (openMode === 'started' && !options.fresh) {
+        if (openMode === 'started') {
           const healed = await tryHealOpenAfterStartFailure(state, options, caughtError).catch(() => null)
           if (healed) {
             return healed
@@ -1109,12 +1155,24 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
         throw caughtError
       }
 
-      attemptedAutoPorts.push(state.config.autoPort as string)
       await reassignOpenAutoPort(state, attemptedAutoPorts)
     }
   }
 
   if (!result) {
+    if (lastOpenError) {
+      lastOpenError.diagnostics = {
+        ...((lastOpenError.diagnostics as AnyRecord) || {}),
+        attemptedAutoPorts: attemptedAutoPorts.filter(Boolean),
+      }
+      if (openMode === 'started') {
+        const healed = await tryHealOpenAfterStartFailure(state, options, lastOpenError).catch(() => null)
+        if (healed) {
+          return healed
+        }
+      }
+      throw lastOpenError
+    }
     throw new Error('open failed without a result')
   }
 
@@ -1149,20 +1207,17 @@ function shouldRetryOpenWithAnotherAutoPort(state: SessionState, options: AnyRec
   if (code === 'APPID_MISSING') {
     return false
   }
-  if (code === 'DEVTOOLS_AUTOMATION_SERVER_FAILED' || code === 'APP_LAUNCH_TIMEOUT' || code === 'WINDOWS_SOCKET_EXHAUSTED') {
+  // 真登录/资源枯竭：换 port 无意义
+  if (code === 'WINDOWS_SOCKET_EXHAUSTED') {
     return false
   }
-  const startupHints = ((error.diagnostics as AnyRecord | undefined)?.startupHints as AnyRecord[] | undefined) || []
-  const startupHintCodes = new Set(startupHints.map((item: AnyRecord) => item && item.code).filter(Boolean) as string[])
-  if (startupHintCodes.has('cli-server-start-error') || startupHintCodes.has('app-launch-timeout') || startupHintCodes.has('windows-socket-10055')) {
-    return false
-  }
-  if (code === 'AUTOMATION_CONNECT_TIMEOUT') {
+  // 冷启动：指定 port 未 live / 扫端口暂空 → 允许同一次 open 内换 port 再 auto
+  if (code === 'OPEN_TIMEOUT' || code === 'AUTOMATION_CONNECT_TIMEOUT' || code === 'DEVTOOLS_AUTOMATION_SERVER_FAILED') {
     return true
   }
 
   const message = String(error.message || '')
-  if (/Failed connecting to ws:\/\/127\.0\.0\.1:/iu.test(message)) {
+  if (/冷启动未完成|未发现可用 automation|WebSocket 尚不可连|Failed connecting to ws:\/\/127\.0\.0\.1:/iu.test(message)) {
     return true
   }
 
@@ -1258,6 +1313,10 @@ async function connectOpenSession(state: SessionState, options: AnyRecord, openO
       }
       if (phase === 'wait-live') {
         emitProgress('正在等待 automation 端口就绪（冷启动常见，请稍候）...', options)
+        return
+      }
+      if (phase === 'discover-port') {
+        emitProgress('指定端口未就绪，正在扫描本机其它 automation 端口...', options)
         return
       }
       if (phase === 'connect') {
