@@ -370,8 +370,8 @@ function buildCommandHelpText(command: unknown): string {
       return `session
 
 用法:
-  miniprogram-browser session list [--json]
-  miniprogram-browser session list --all [--json]
+  miniprogram-browser session list [--json] [--noise]
+  miniprogram-browser session list --all [--json] [--noise]
   miniprogram-browser session prune [--json]
   miniprogram-browser session kill <name> [--json]
   miniprogram-browser session close <name> [--json]
@@ -381,6 +381,7 @@ function buildCommandHelpText(command: unknown): string {
 
 说明:
   - session list 默认只显示当前项目，状态包含 live/stale
+  - 默认隐藏 gate/e2e/test 前缀的 stale 残留；加 --noise 看全量
   - 当前目录无法发现小程序项目时，默认返回空并提示；--all 才查看全局注册表
   - session prune 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；会尝试关闭对应 DevTools 项目窗口
   - session kill/close <name> 会优先作用于当前项目，不会静默清理其他项目同名 session

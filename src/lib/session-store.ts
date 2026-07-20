@@ -73,6 +73,8 @@ const DEFAULT_MAX_INACTIVE_REFS = 200
 const DEFAULT_MAX_RUNTIME_EVENTS = 200
 const DEFAULT_MAX_ROUTE_EVENTS = 200
 const DEFAULT_MAX_RUNTIME_LAUNCH_RECORDS = 100
+/** starting 超过此时长仍未变 live → 视为僵尸，标 stale（冷启动失败常见残留） */
+const DEFAULT_STARTING_LAUNCH_MAX_AGE_MS = 3 * 60 * 1000
 
 function detectRepoRoot(): string {
   return path.resolve(__dirname, '../..')
@@ -571,6 +573,57 @@ async function listRuntimeLaunches(config: AnyRecord = {}): Promise<RuntimeLaunc
   return registry.launches
 }
 
+/**
+ * 清理 runtime 池噪音：过期 starting → stale。
+ * 不删记录（保留观测）；open attach / session list 前调用即可。
+ */
+async function reconcileRuntimeLaunches(
+  config: AnyRecord = {},
+  options: { startingMaxAgeMs?: number; nowMs?: number } = {},
+): Promise<{ markedStale: number }> {
+  const maxAgeMs = Math.max(10_000, Number(options.startingMaxAgeMs || DEFAULT_STARTING_LAUNCH_MAX_AGE_MS))
+  const nowMs = Number(options.nowMs || Date.now())
+  const registry = await readRuntimeLaunchRegistry(config)
+  let markedStale = 0
+  let changed = false
+
+  registry.launches = registry.launches.map((item: RuntimeLaunchRecord) => {
+    if (!item || String(item.status || '') !== 'starting') {
+      return item
+    }
+    const stamp = String(item.updatedAt || item.createdAt || '').trim()
+    const ageMs = stamp ? Math.max(0, nowMs - Date.parse(stamp)) : maxAgeMs + 1
+    if (!Number.isFinite(ageMs) || ageMs < maxAgeMs) {
+      return item
+    }
+    markedStale += 1
+    changed = true
+    return normalizeRuntimeLaunchRecord({
+      ...item,
+      status: 'stale',
+      updatedAt: new Date(nowMs).toISOString(),
+    })
+  })
+
+  if (changed) {
+    await writeRuntimeLaunchRegistry(config, registry)
+  }
+  return { markedStale }
+}
+
+/**
+ * 临时/门禁 session 名：e2e / gate / 一次性测试前缀。
+ * 用于 list 默认隐藏「无 route 的 stale」噪音行。
+ */
+function isEphemeralNoiseSessionName(sessionName: string): boolean {
+  const name = String(sessionName || '').trim()
+  if (!name) {
+    return false
+  }
+  return /^(gate|e2e|test)[-_]/iu.test(name)
+    || /^e2e-(a|b|fresh)-/iu.test(name)
+}
+
 async function resolveSessionConfig(sessionName: string, config: AnyRecord = {}): Promise<AnyRecord> {
   const explicitProjectPath = normalizeProjectPath(config && config.projectPath)
   if (explicitProjectPath) {
@@ -940,8 +993,13 @@ function runtimeLockName(config: Record<string, unknown> = {}): string {
   return `__runtime_auto_${autoPort}`
 }
 
+/**
+ * 选择可附着的 live runtime。
+ * 多条 session 记录若共享同一 autoPort，视为**同一底层 runtime**（多工作台附着）。
+ * 多个不同 live autoPort 时取 updatedAt 最新的，**不报 ambiguous**。
+ */
 function selectAttachableRuntimeSession(
-  sessions: { status?: string; autoPort?: string; name?: string; sessionName?: string }[] = [],
+  sessions: { status?: string; autoPort?: string; name?: string; sessionName?: string; updatedAt?: string }[] = [],
   preferredSessionName = '',
 ): { mode: string; session?: AnyRecord; sessions?: AnyRecord[] } {
   const liveSessions = (sessions || []).filter((item: AnyRecord) => item && item.status === 'live' && item.autoPort)
@@ -959,27 +1017,41 @@ function selectAttachableRuntimeSession(
       }
     }
   }
-  if (liveSessions.length === 1) {
+
+  // 按 autoPort 去重：同 port 多条 launch/session 只算一个 runtime
+  const byPort = new Map<string, AnyRecord>()
+  for (const item of liveSessions) {
+    const port = String(item.autoPort || '').trim()
+    if (!port || byPort.has(port)) {
+      continue
+    }
+    byPort.set(port, item)
+  }
+  const uniqueRuntimes = [...byPort.values()]
+
+  if (uniqueRuntimes.length === 0) {
     return {
-      mode: 'attach',
-      session: liveSessions[0],
+      mode: 'none',
+      sessions: [],
     }
   }
-  if (liveSessions.length > 1) {
-    return {
-      mode: 'ambiguous',
-      sessions: liveSessions,
-    }
+  // 1 个或多个不同 live 端口：都自动选，不冲突。多 port 时取 updatedAt 最新。
+  if (uniqueRuntimes.length > 1) {
+    uniqueRuntimes.sort((a, b) => {
+      const tA = String(a.updatedAt || a.createdAt || '').trim()
+      const tB = String(b.updatedAt || b.createdAt || '').trim()
+      return tB.localeCompare(tA)
+    })
   }
   return {
-    mode: 'none',
-    sessions: [],
+    mode: 'attach',
+    session: uniqueRuntimes[0],
   }
 }
 
 /**
  * 从 runtime 池为 session 选择应回绑的 live launch。
- * 优先级：同 sessionName > 同项目唯一 live。
+ * 优先级：同 sessionName > 同项目唯一 live autoPort（同 port 多条 launch 算一个 runtime）。
  * 不负责探测 endpoint 是否可达（由调用方做）。
  */
 function selectRuntimeLaunchForSession(
@@ -1008,8 +1080,17 @@ function selectRuntimeLaunchForSession(
     }
   }
 
-  if (sameProjectLive.length === 1) {
-    return sameProjectLive[0]
+  // 同 port 去重后再判断是否「唯一 runtime」
+  const byPort = new Map<string, AnyRecord>()
+  for (const item of sameProjectLive) {
+    const port = String(item.autoPort || '').trim()
+    if (!port || byPort.has(port)) {
+      continue
+    }
+    byPort.set(port, item)
+  }
+  if (byPort.size === 1) {
+    return [...byPort.values()][0]
   }
 
   return null
@@ -1366,6 +1447,8 @@ module.exports = {
   listSessionStates,
   loadOtherSessionConfigs,
   listRuntimeLaunches,
+  reconcileRuntimeLaunches,
+  isEphemeralNoiseSessionName,
   runtimeLockName,
   recordRuntimeLaunch,
   updateRuntimeLaunch,

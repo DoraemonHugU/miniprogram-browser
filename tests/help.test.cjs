@@ -237,14 +237,16 @@ test('summarizeOpenResolution distinguishes attachable and start-required startu
   assert.equal(summarizeOpenResolution({ devtoolsPort: '23986' }, []), 'adopt-via-devtools-port')
   assert.equal(summarizeOpenResolution({}, [{ name: 'owner', autoPort: '9431' }]), 'attachable')
   assert.equal(summarizeOpenResolution({ autoPort: '9555' }, [{ name: 'owner', autoPort: '9431' }]), 'attach-blocked-by-auto-port')
-  assert.equal(summarizeOpenResolution({}, [{ name: 'a' }, { name: 'b' }]), 'ambiguous')
+  // 多个 live 端口由 CLI 自选，仍标 attachable，不再 ambiguous
+  assert.equal(summarizeOpenResolution({}, [{ name: 'a' }, { name: 'b' }]), 'attachable')
 })
 
 test('resolveOpenFailureNextAction only suggests attach fallback when the request was fresh or auto-port pinned', () => {
   assert.equal(resolveOpenFailureNextAction({}, []), '')
   assert.equal(resolveOpenFailureNextAction({ fresh: true }, [{ name: 'owner', autoPort: '9431' }]), 'open without --fresh')
   assert.equal(resolveOpenFailureNextAction({ autoPort: '9555' }, [{ name: 'owner', autoPort: '9431' }]), 'open without --auto-port')
-  assert.equal(resolveOpenFailureNextAction({}, [{ name: 'a' }, { name: 'b' }]), 'session list')
+  // 多 live 不是使用者决策点，不推 session list
+  assert.equal(resolveOpenFailureNextAction({}, [{ name: 'a' }, { name: 'b' }]), '')
 })
 
 test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startup failures', () => {

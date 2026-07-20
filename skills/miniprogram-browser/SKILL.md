@@ -250,10 +250,11 @@ miniprogram-browser open --session agent-task-a --fresh
 ### 并发与关闭
 
 - 同一 session 内命令会串行；不同 session 可并行
-- 多个 session 若连到同一小程序实例，工具会避免它们同时抢操作
+- 多个 session 可附着同一（或不同）automation 端口；端口由 CLI 自动分配与选择，日常不必关心。需要隔离实例时再用 `--fresh`
 - `close --session <name>`：默认结束该工作台；若只是附着别人的实例，通常**不会**关掉底层开发者工具窗口
 - 需要关掉底层实例时，用 owner session 关闭，或按 CLI 帮助使用显式 runtime 关闭选项
-- `session list`：默认当前项目；`session list --all` 看全部；输出含 `created`（创建时间）与 status/autoPort
+- `session list`：默认当前项目；`session list --all` 看全部；输出含 `created`（创建时间）、status/autoPort；**附着到他人 runtime 的 session 也会回填 live 端口与 `attachedTo`**
+- 默认隐藏 `gate-*` / `e2e-*` / `test-*` 等门禁残留的 stale 行；需要全量时加 `--noise`；清理用 `session prune`
 - `session prune`：清理当前项目里过期/无效 session 记录，并尽量关掉对应工具窗口（不扫其他项目）
 - `session kill <name>` / `session close <name>`：针对当前项目下的同名 session
 
@@ -280,7 +281,7 @@ miniprogram-browser open --session agent-task-a --fresh
 ### 推荐诊断
 
 - `app inspect`：应用结构摘要
-- `doctor`：区分开发者工具、自动化连接、小程序 App 是否就绪
+- `doctor`：区分开发者工具、自动化连接、小程序 App 是否就绪；**已 live 时只 probe，不会再跑一轮 `auto`**
 - `devtools logs`：开发者工具底层日志（App 不响应、普通 logs 不够时）
 - `timeline`：路由变化
 - `logs` / `exceptions`：console 与异常（优先用来理解数据加载、点击后发生了什么）

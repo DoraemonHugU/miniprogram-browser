@@ -127,7 +127,12 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 
 - enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
 - started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
-- session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间，autoPort 尽量从 runtime 池回显。
+- session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间。
+- `session list` / `session prune` 解析 autoPort 优先级：session 字段 → 同 sessionName launch → `runtimeOwnerSession` 的 launch → **同项目唯一 live launch**；附着 session 无自身 launch 行时也应回填 live 端口与 `attachedTo`。
+- **autoPort 由 CLI 自管**：分配 / 预留 / 附着；使用者日常不选 port。
+- **同 autoPort 多条 live launch/session 视为同一 runtime**。
+- **多个不同 live autoPort**：`selectAttachableRuntimeSession` 取 `updatedAt` 最新自动 attach；**永不** `SESSION_CONFLICT` / `ambiguous`。失败诊断里的 live 列表只放 JSON diagnostics，不进主 hint。
+- **噪音收敛**：`reconcileRuntimeLaunches` 把过期 `starting`（默认 >3min）标 `stale`；探测失败的 starting 立即 stale。`session list` 默认隐藏 `gate/e2e/test` 前缀的 stale；`--noise` 看全量。
 - 同项目 `open` 串行：`locks/__open_project__.lock`，避免双 auto。
 - `OPEN_TIMEOUT` 不被 WeappLog 的 `cli-server-start-error` 覆盖 code。
 - started 失败后非 `--fresh` 可救援 attach 到同项目其它 live port。
@@ -180,16 +185,23 @@ const absoluteRoute = route.startsWith('/') ? route : `/${route}`
 
 无 `/` 前缀时 DevTools automation 协议会按**相对路径**处理，从当前页面拼接。
 
-### 3.4 doctor 失败不污染 session
+### 3.4 doctor live-first，失败不污染 session
 
-`handleDoctor` 中 session 保存时机在 `enableAutomation` + `probeAutomationRuntime` 成功之后：
+`handleDoctor`：
+
+1. **先** `isAutomationEndpointLive`；已 live → **跳过** `enableAutomation`，只 probe（`automation.reusedLive=true`）。
+2. 未 live 才 `enableAutomation` + wait + probe。
+3. probe 已 connected 时 **不要** 用历史 WeappLog（appid-missing 等）覆盖 `ok`。
+4. session 保存仅在 `probe.connected` 之后：
 
 ```ts
-// 修改后
-let automationMetadata // ... 执行 automation
-let probe // ... probe runtime
+if (alreadyLive) {
+  // probe only
+} else {
+  enableAutomation(...)
+}
 if (persistSession && probe && probe.connected) {
-  await saveSessionState(state)  // 只在连通时保存
+  await saveSessionState(state)
 }
 ```
 
@@ -237,8 +249,8 @@ autoPort 冲突检查在运行时分配时由 `validateSessionPortConflicts` 处
   - `prepareSessionStateForSave`：保存后的 `config` 中不含 `autoPort`/`devtoolsPort`
   - `loadSessionState`：从含 autoPort 的旧 JSON 加载后，内存中 `config.autoPort` 为空
   - `stripRuntimeFields`：输入含运行时字段的输出不含这些字段
-  - `selectAttachableRuntimeSession`：多 live 时无 preferred → ambiguous；有 preferred sessionName → attach 到同名
-  - `selectRuntimeLaunchForSession`：同 sessionName 优先；无同名时仅同项目唯一 live 可回绑；多 live 且无同名 → null
+  - `selectAttachableRuntimeSession`：同 port 去重后始终 attach（多 port 取最新 updatedAt）；有 preferred sessionName → 同名优先
+  - `selectRuntimeLaunchForSession`：同 sessionName 优先；无同名时同项目唯一 live port 可回绑
 
 ## 7. Wrong vs Correct
 

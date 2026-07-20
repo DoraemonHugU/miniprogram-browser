@@ -211,6 +211,84 @@ test('session list includes createdAt for seeded sessions', async () => {
   assert.match(String(payload.sessions[0].createdAt || ''), /^\d{4}-\d{2}-\d{2}T/)
 })
 
+test('session list backfills autoPort for attached session from project live launch', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const projectDir = createMiniProgramProject()
+
+  // owner 持有 live launch；attached 会话无自身 launch 行（真实 open attach 后常见）
+  await seedSession(homeDir, {
+    name: 'owner-work',
+    projectPath: projectDir,
+    autoPort: '19566',
+  })
+  await withHome(homeDir, async () => {
+    const attached = createEmptySessionState({
+      sessionName: 'attached-x1',
+      config: {
+        ...createDefaultConfig(),
+        projectPath: projectDir,
+      },
+    })
+    attached.runtimeAttached = true
+    attached.runtimeOwnerSession = 'owner-work'
+    await saveSessionState(attached)
+  })
+
+  const result = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectDir })
+  const payload = parseJsonOutput(result)
+  assert.equal(result.status, 0)
+  const byName = Object.fromEntries((payload.sessions || []).map((s) => [s.name, s]))
+  assert.ok(byName['attached-x1'], payload)
+  assert.equal(byName['attached-x1'].autoPort, '19566')
+  assert.equal(byName['attached-x1'].attachedTo || byName['attached-x1'].runtimeOwnerSession, 'owner-work')
+  // 无真实 endpoint 时 status 仍为 stale，但 autoPort 必须回填（观测可用）
+  assert.ok(byName['owner-work'])
+  assert.equal(byName['owner-work'].autoPort, '19566')
+})
+
+test('non-open commands do not invent a fake autoPort when runtime is unbound', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const projectDir = createMiniProgramProject()
+  // session 存在但无 live launch、无 autoPort
+  await seedSession(homeDir, { name: 'orphan', projectPath: projectDir })
+
+  const result = runCli([
+    'path',
+    '--session',
+    'orphan',
+    '--project',
+    projectDir,
+    '--json',
+  ], { HOME: homeDir })
+  const payload = parseJsonOutput(result)
+  assert.notEqual(result.status, 0)
+  const msg = String((payload.error && payload.error.message) || '')
+  // 应提示先 open，而不是「记录的 autoPort=95xx 当前不可用」
+  assert.match(msg, /自动化未连接|请先执行 open/i)
+  assert.doesNotMatch(msg, /记录的 autoPort=\d+/)
+})
+
+test('session list hides ephemeral gate/e2e stale noise by default', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const projectDir = createMiniProgramProject()
+  await seedSession(homeDir, { name: 'work', projectPath: projectDir, autoPort: '19501' })
+  await seedSession(homeDir, { name: 'gate-abc123', projectPath: projectDir, autoPort: '19502' })
+  await seedSession(homeDir, { name: 'e2e-a-xyz', projectPath: projectDir })
+  await seedSession(homeDir, { name: 'test-real', projectPath: projectDir })
+
+  const defaultList = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectDir })
+  const defaultPayload = parseJsonOutput(defaultList)
+  assert.equal(defaultList.status, 0)
+  const defaultNames = (defaultPayload.sessions || []).map((s) => s.name).sort()
+  assert.deepEqual(defaultNames, ['work'])
+  assert.ok(Number(defaultPayload.hiddenNoise || 0) >= 2)
+
+  const noisy = runCli(['session', 'list', '--json', '--noise'], { HOME: homeDir }, { cwd: projectDir })
+  const noisyPayload = parseJsonOutput(noisy)
+  const noisyNames = (noisyPayload.sessions || []).map((s) => s.name).sort()
+  assert.deepEqual(noisyNames, ['e2e-a-xyz', 'gate-abc123', 'test-real', 'work'])
+})
+
 test('session list filters to the current mini program project unless --all is passed', async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   const projectA = createMiniProgramProject()
@@ -546,12 +624,51 @@ test('doctor can probe a DevTools HTTP port without a prebound session and does 
   assert.equal(payload.projectPath, projectDir)
   assert.equal(payload.devtoolsPort, '23986')
   assert.equal(payload.probe.connected, false)
-  // doctor 默认 enableAutomation(openFirst=false)，只跑 auto，不强制 open
+  // endpoint 未 live 时 doctor 仍会 enableAutomation(openFirst=false)，只跑 auto，不强制 open
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
 
   const listResult = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectDir })
   const listPayload = parseJsonOutput(listResult)
   assert.deepEqual(listPayload.sessions, [])
+})
+
+test('doctor still enables automation when bound autoPort is not live', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const projectDir = createMiniProgramProject()
+  const fake = createFakeDevtoolsCli({
+    onAuto: '✔ IDE server has started, listening on http://127.0.0.1:23987',
+  })
+
+  // 不可达 port：live-first 探测失败后仍应 enable（回归保护）。
+  // 已 live 跳过 enable 的路径见真机复核 / 后续 automator mock。
+  await seedSession(homeDir, {
+    name: 'doc-stale',
+    projectPath: projectDir,
+    autoPort: '19999',
+    cliPath: fake.cliPath,
+  })
+
+  const result = runCli([
+    'doctor',
+    '--session',
+    'doc-stale',
+    '--project',
+    projectDir,
+    '--cli-path',
+    fake.cliPath,
+    '--wait',
+    '0',
+    '--timeout',
+    '50',
+    '--json',
+  ], { HOME: homeDir })
+  const payload = parseJsonOutput(result)
+  const calls = fake.readCalls()
+
+  assert.equal(result.status, 0)
+  assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
+  assert.equal(payload.projectPath, projectDir)
+  assert.notEqual(payload.automation && payload.automation.reusedLive, true)
 })
 
 test('session prune closes and removes stale sessions only for the current project', async () => {

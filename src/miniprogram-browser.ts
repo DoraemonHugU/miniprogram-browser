@@ -106,6 +106,8 @@ const {
   recordRuntimeLaunch,
   updateRuntimeLaunch,
   removeRuntimeLaunch,
+  reconcileRuntimeLaunches,
+  isEphemeralNoiseSessionName,
   saveSessionState,
   clearSessionState,
   releaseSessionLock,
@@ -159,6 +161,7 @@ const {
   collectDevtoolsLogs,
   closeDevtoolsProject,
   isAutomationEndpointLive,
+  discoverLiveAutomationPort,
   resolveTarget,
   snapshotInteractive,
   queryRecords,
@@ -366,7 +369,7 @@ async function ensureImplicitSessionName(options: AnyRecord, command: string): P
   }
 }
 
-async function resolveSession(options: AnyRecord) {
+async function resolveSession(options: AnyRecord, resolveOpts: { allocatePorts?: boolean } = {}) {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
   const explicitOverrides = buildExplicitOverrides(options)
   const initialConfig = mergeConfigOverrides(baseConfig, explicitOverrides)
@@ -386,13 +389,27 @@ async function resolveSession(options: AnyRecord) {
     await bindSessionRuntimeFromPool(state)
   }
 
-  await ensureSessionPorts(state)
+  // open/connect/doctor 才允许分配新 autoPort；path/snapshot 等只回绑，避免「假端口 9517 不可用」误导
+  const allocatePorts = resolveOpts.allocatePorts !== false
+  if (allocatePorts || explicitOverrides.autoPort || String((state.config as AnyRecord).autoPort || '').trim()) {
+    if (allocatePorts) {
+      await ensureSessionPorts(state)
+    } else {
+      // 已有 port（显式或回绑）只做规范化，不新分配
+      const stateConfig = state.config as AnyRecord
+      stateConfig.autoPort = String(stateConfig.autoPort || '').trim()
+      stateConfig.devtoolsPort = String(stateConfig.devtoolsPort || '').trim()
+      state.portResolution = { autoPortAssigned: false, devtoolsPortAssigned: false }
+    }
+  } else {
+    state.portResolution = { autoPortAssigned: false, devtoolsPortAssigned: false }
+  }
   return state
 }
 
 /**
  * 从 RuntimeLaunchRecord 池为当前 session 回绑 autoPort（瞬态，不写回 session 文件）。
- * 优先匹配同 sessionName 的 live launch；否则同项目唯一 live。
+ * 优先匹配同 sessionName 的 live launch；否则同项目唯一 live autoPort。
  * 探测失败的 launch 标记为 stale，继续尝试同 session 的其他候选。
  */
 async function bindSessionRuntimeFromPool(state: SessionState, options: { requireLive?: boolean } = {}): Promise<boolean> {
@@ -420,17 +437,21 @@ async function bindSessionRuntimeFromPool(state: SessionState, options: { requir
     return itemProject === resolvedProject
   })
 
-  // 同 sessionName 优先，保持 registry 的 updatedAt 降序
-  const ordered = [
-    ...candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred),
-    ...candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() !== preferred),
-  ]
-
-  // 无同名时仅允许唯一 live（与 selectRuntimeLaunchForSession 一致）
-  const own = ordered.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred)
-  const tryList = own.length > 0
-    ? own
-    : (candidates.length === 1 ? candidates : [])
+  // 同 sessionName 优先
+  const own = candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred)
+  let tryList: AnyRecord[] = own
+  if (tryList.length === 0) {
+    // 无同名：按 autoPort 去重后仅允许唯一 live runtime
+    const byPort = new Map<string, AnyRecord>()
+    for (const item of candidates) {
+      const port = String(item.autoPort || '').trim()
+      if (!port || byPort.has(port)) {
+        continue
+      }
+      byPort.set(port, item)
+    }
+    tryList = byPort.size === 1 ? [...byPort.values()] : []
+  }
 
   for (const selected of tryList) {
     if (requireLive) {
@@ -675,16 +696,28 @@ async function ensureLiveRuntimeLaunch(state: SessionState, metadata: AnyRecord 
     route: metadata.route || state.route || '',
   } as AnyRecord
 
+  const launches = await listRuntimeLaunches({ ...state.config, projectPath: state.config.projectPath })
+
+  // 仅当 runtimeLaunchId 确实属于当前 session 时才原地 update。
+  // 附着 owner runtime 时 id 指向他人 launch，绝不能改写 owner 行。
   if (state.runtimeLaunchId) {
-    const updated = await updateRuntimeLaunch(state.runtimeLaunchId, state.config, patch).catch(() => null)
-    if (updated) {
-      state.runtimeLaunchStatus = 'live'
-      return updated
+    const owned = launches.find((item: AnyRecord) => (
+      item
+      && String(item.id || '') === String(state.runtimeLaunchId)
+      && String(item.sessionName || '').trim() === state.name
+    ))
+    if (owned) {
+      const updated = await updateRuntimeLaunch(state.runtimeLaunchId, state.config, patch).catch(() => null)
+      if (updated) {
+        state.runtimeLaunchStatus = 'live'
+        return updated
+      }
+    } else {
+      state.runtimeLaunchId = null
     }
   }
 
   // 尝试复用同 session + 同 autoPort 的已有记录
-  const launches = await listRuntimeLaunches({ ...state.config, projectPath: state.config.projectPath })
   const existing = launches.find((item: AnyRecord) => (
     String(item.sessionName || '').trim() === state.name
     && String(item.autoPort || '').trim() === autoPort
@@ -709,8 +742,8 @@ async function ensureLiveRuntimeLaunch(state: SessionState, metadata: AnyRecord 
 
   // 同 session 其他不同 autoPort 的 live 记录标 stale，避免后续回绑到死端口
   try {
-    const launches = await listRuntimeLaunches({ ...state.config, projectPath: state.config.projectPath })
-    for (const item of launches) {
+    const refreshed = await listRuntimeLaunches({ ...state.config, projectPath: state.config.projectPath })
+    for (const item of refreshed) {
       if (!item || !item.id || item.status !== 'live') {
         continue
       }
@@ -858,56 +891,83 @@ async function tryHealOpenAfterStartFailure(state: SessionState, options: AnyRec
 
   // 2) 同项目其它 live runtime
   const attachResult = await resolveAttachableRuntime(state)
-  if (attachResult.mode !== 'attach' || !attachResult.session) {
-    return null
-  }
-  const sessionInfo = attachResult.session as AnyRecord
-  const autoPort = String(sessionInfo.autoPort || '').trim()
-  if (!autoPort) {
-    return null
-  }
-  const ownPort = String((state.config as AnyRecord).autoPort || '').trim()
-  // 同 port 已在上面试过
-  if (autoPort === ownPort) {
-    return null
-  }
-  const live = await isAutomationEndpointLive(
-    { ...state.config, autoPort },
-    { timeoutMs: 1500 },
-  ).catch(() => false)
-  if (!live) {
-    return null
+  if (attachResult.mode === 'attach' && attachResult.session) {
+    const sessionInfo = attachResult.session as AnyRecord
+    const autoPort = String(sessionInfo.autoPort || '').trim()
+    if (autoPort) {
+      const ownPort = String((state.config as AnyRecord).autoPort || '').trim()
+      if (autoPort !== ownPort) {
+        const live = await isAutomationEndpointLive(
+          { ...state.config, autoPort },
+          { timeoutMs: 1500 },
+        ).catch(() => false)
+        if (live) {
+          ;(state.config as AnyRecord).autoPort = autoPort
+          if (sessionInfo.devtoolsPort) {
+            ;(state.config as AnyRecord).devtoolsPort = String(sessionInfo.devtoolsPort)
+          }
+          state.runtimeAttached = true
+          state.runtimeOwnerSession = String(sessionInfo.name || sessionInfo.sessionName || '')
+          await saveSessionState(state)
+          try {
+            const attached = await withOpenTimeout(
+              () => connectOpenSession(state, options, {
+                mode: 'attached',
+                attachedTo: state.runtimeOwnerSession || '',
+              }),
+              Math.min(30000, Math.max(8000, resolveOpenTimeoutMs(options))),
+            )
+            await ensureLiveRuntimeLaunch(state, {
+              route: attached.path || '',
+              autoPort: attached.autoPort || state.config.autoPort,
+              devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
+            })
+            await saveSessionState(state)
+            attached.rescuedFromStartFailure = true
+            attached.previousStartError = previousMessage
+            emitOpenResult(attached, options)
+            return attached
+          } catch (_) {
+            // fall through to port scan
+          }
+        }
+      }
+    }
   }
 
-  ;(state.config as AnyRecord).autoPort = autoPort
-  if (sessionInfo.devtoolsPort) {
-    ;(state.config as AnyRecord).devtoolsPort = String(sessionInfo.devtoolsPort)
+  // 3) 扫描端口范围：auto 可能落在非指定 port
+  const discovered = await discoverLiveAutomationPort(state.config, {
+    preferredPort: String((state.config as AnyRecord).autoPort || ''),
+    timeoutMs: 600,
+    maxProbes: 35,
+  }).catch(() => '')
+  if (discovered) {
+    ;(state.config as AnyRecord).autoPort = discovered
+    try {
+      const connected = await withOpenTimeout(
+        () => connectOpenSession(state, options, {
+          mode: 'connected',
+          attachedTo: '',
+        }),
+        Math.min(30000, Math.max(8000, resolveOpenTimeoutMs(options))),
+      )
+      await ensureLiveRuntimeLaunch(state, {
+        route: connected.path || '',
+        autoPort: discovered,
+        devtoolsPort: connected.devtoolsPort || state.config.devtoolsPort,
+      })
+      await saveSessionState(state)
+      connected.rescuedFromStartFailure = true
+      connected.healedDiscoveredPort = true
+      connected.previousStartError = previousMessage
+      emitOpenResult(connected, options)
+      return connected
+    } catch (_) {
+      return null
+    }
   }
-  state.runtimeAttached = true
-  state.runtimeOwnerSession = String(sessionInfo.name || sessionInfo.sessionName || '')
 
-  await saveSessionState(state)
-  try {
-    const attached = await withOpenTimeout(
-      () => connectOpenSession(state, options, {
-        mode: 'attached',
-        attachedTo: state.runtimeOwnerSession || '',
-      }),
-      Math.min(30000, Math.max(8000, resolveOpenTimeoutMs(options))),
-    )
-    await ensureLiveRuntimeLaunch(state, {
-      route: attached.path || '',
-      autoPort: attached.autoPort || state.config.autoPort,
-      devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
-    })
-    await saveSessionState(state)
-    attached.rescuedFromStartFailure = true
-    attached.previousStartError = previousMessage
-    emitOpenResult(attached, options)
-    return attached
-  } catch (_) {
-    return null
-  }
+  return null
 }
 
 async function handleOpen(state: SessionState, options: AnyRecord) {
@@ -951,17 +1011,14 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
     : false
   if (!currentEndpointLive && !options.fresh && !options.autoPort) {
     const attachResult = await resolveAttachableRuntime(state)
-    if (attachResult.mode === 'attach') {
+    if (attachResult.mode === 'attach' && attachResult.session) {
       const sessionInfo = attachResult.session as AnyRecord
-      // 从 runtime 池获取 autoPort，不依赖 session 固化
       const autoPort = sessionInfo.autoPort as string | undefined
       if (autoPort) {
-        (state.config as AnyRecord).autoPort = autoPort
+        ;(state.config as AnyRecord).autoPort = autoPort
       }
-      // 检查 endpoint 是否存活
       const live = await isAutomationEndpointLive(state.config, { timeoutMs: 1000 }).catch(() => false)
       if (!live) {
-        // runtime record 标记为 stale 但实际不可用，继续走 start 流程
         delete (state.config as AnyRecord).autoPort
       } else {
         await saveSessionState(state)
@@ -979,15 +1036,28 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
         return
       }
     }
-    if (attachResult.mode === 'ambiguous') {
-      const error = new Error('同项目存在多个 live automation session，open 不会静默选择；请显式使用其中一个 --session，或传 --fresh 尝试启动新 runtime。') as unknown as AnyRecord
-      error.code = 'SESSION_CONFLICT'
-      error.hint = `liveSameProjectSessions=${attachResult.sessions.length}; explicitSessionRequired`
-      error.diagnostics = {
-        projectPath: state.config.projectPath,
-        liveSameProjectSessions: attachResult.sessions,
+    // 池无 live 记录，但本机已有 automation 在监听（上次 auto 迟到/手工启用）
+    if (!String((state.config as AnyRecord).autoPort || '').trim()) {
+      const orphanPort = await discoverLiveAutomationPort(state.config, {
+        timeoutMs: 500,
+        maxProbes: 30,
+      }).catch(() => '')
+      if (orphanPort) {
+        ;(state.config as AnyRecord).autoPort = orphanPort
+        await saveSessionState(state)
+        const attached = await openSessionWithDiagnostics(state, options, {
+          mode: 'attached',
+          attachedTo: 'orphan-live',
+        })
+        await ensureLiveRuntimeLaunch(state, {
+          route: attached.path || '',
+          autoPort: attached.autoPort || orphanPort,
+          devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
+        })
+        await saveSessionState(state)
+        emitOpenResult(attached, options)
+        return
       }
-      throw error
     }
   }
 
@@ -1246,30 +1316,49 @@ async function resolveAttachableRuntime(state: SessionState) {
     return { mode: 'none', sessions: [] }
   }
 
+  // 先清理僵尸 starting，避免池里假「进行中」干扰 attach 与观测
+  await reconcileRuntimeLaunches({ ...state.config, projectPath }).catch(() => ({ markedStale: 0 }))
+
   // RuntimeLaunchRecord 管理 DevTools 窗口连接信息，session 不再固化 autoPort
   const launches = await listRuntimeLaunches({ ...state.config, projectPath })
-  // live + starting：starting 可能已可连但尚未 mark live
+  // 仅 live（starting 已 reconcile 或探测失败会变 stale）
   const candidateLaunches = launches.filter((item: AnyRecord) => {
     if (!item || !item.autoPort) {
       return false
     }
+    if (item.projectPath && path.resolve(item.projectPath) !== projectPath) {
+      return false
+    }
     const status = String(item.status || '')
+    // 仍允许「年轻」starting：可能刚写入尚未 mark live
     return status === 'live' || status === 'starting'
   })
-  const sameProjectLaunches = []
 
+  // 同 autoPort 只探测一次
+  const portProbe = new Map<string, boolean>()
+  const sameProjectLaunches: AnyRecord[] = []
   for (const launch of candidateLaunches) {
-    if (launch.projectPath && path.resolve(launch.projectPath) !== projectPath) {
+    const port = String(launch.autoPort || '').trim()
+    if (!port) {
       continue
     }
-    const live = await isAutomationEndpointLive({ ...state.config, autoPort: launch.autoPort }, { timeoutMs: 1000 }).catch(() => false)
+    let live = portProbe.get(port)
+    if (live === undefined) {
+      const probed = await isAutomationEndpointLive({ ...state.config, autoPort: port }, { timeoutMs: 1000 }).catch(() => false)
+      live = Boolean(probed)
+      portProbe.set(port, live)
+      // 探测失败的 starting 立刻标 stale（不必等 3 分钟）
+      if (!live && String(launch.status || '') === 'starting' && launch.id) {
+        await updateRuntimeLaunch(launch.id, state.config, { status: 'stale' }).catch(() => null)
+      }
+    }
     sameProjectLaunches.push({
       ...launch,
       status: live ? 'live' : 'stale',
     })
   }
 
-  // 同 sessionName 优先；否则同项目唯一 live
+  // 同 sessionName 优先；否则同项目唯一 live autoPort
   const attachableSessions = sameProjectLaunches.map((item: AnyRecord) => ({
     name: item.sessionName || '',
     projectPath: item.projectPath || '',
@@ -1277,6 +1366,7 @@ async function resolveAttachableRuntime(state: SessionState) {
     devtoolsPort: item.devtoolsPort || '',
     status: item.status || 'stale',
     route: item.route || '',
+    updatedAt: item.updatedAt || '',
   }))
   const selected = selectAttachableRuntimeSession(attachableSessions, state.name)
   if (selected.mode !== 'attach') {
@@ -1536,12 +1626,13 @@ function summarizeAutomationProbeHint(condition: AnyRecord, probe: AnyRecord) {
   return `phase=${condition.kind}`
 }
 
+/**
+ * open 失败诊断用的 resolution 标签（内部观测，不是使用者决策点）。
+ * 端口由 CLI 自管自避让；多个 live port 也只标 attachable，从不 ambiguous。
+ */
 function summarizeOpenResolution(options: AnyRecord, liveSameProjectSessions: AnyRecord[] = []) {
   const liveCount = Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions.length : 0
-  if (liveCount > 1) {
-    return 'ambiguous'
-  }
-  if (liveCount === 1) {
+  if (liveCount >= 1) {
     if (options && options.autoPort) {
       return 'attach-blocked-by-auto-port'
     }
@@ -1553,12 +1644,13 @@ function summarizeOpenResolution(options: AnyRecord, liveSameProjectSessions: An
   return 'start-required'
 }
 
+/**
+ * 可选 next 提示：只在使用者显式挡了 attach 路径时给（--fresh / --auto-port）。
+ * 多个 live 端口不是使用者问题，不推 session list。
+ */
 function resolveOpenFailureNextAction(options: AnyRecord, liveSameProjectSessions: AnyRecord[] = []) {
   const liveCount = Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions.length : 0
-  if (liveCount > 1) {
-    return 'session list'
-  }
-  if (liveCount !== 1) {
+  if (liveCount < 1) {
     return ''
   }
   if (options && options.fresh) {
@@ -1689,13 +1781,13 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
     diagnostics.devtoolsReuseMode = 'adopt-bootstrap'
   }
 
+  // 人话 hint：只放 resolution/strategy/autoPort；live 多实例细节只在 diagnostics JSON
   const facts = [
     startupClassification ? startupClassification.hint : '',
     adoptBootstrap ? 'mode=adopt-bootstrap' : '',
     `resolution=${resolution}`,
     `strategy=${automationArgs.projectStrategy}`,
     state.config.autoPort ? `autoPort=${state.config.autoPort}` : '',
-    `liveSameProjectSessions=${liveSameProjectSessions.length}`,
   ].filter(Boolean)
 
   return {
@@ -1715,23 +1807,35 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
   }
   assertProjectPath(state.config)
 
-  // 先执行 automation 诊断，成功后再保存 session。
-  // 避免因 DevTools 时序问题（如 appid 未就绪）导致 session 被污染。
+  // live-first：已有可用 automation 时只 probe，不重复 enable（避免扰动现网 + 陈旧日志误报）
   let automationMetadata: AnyRecord | null = null
   let automationError: AnyRecord | null = null
-  try {
-    automationMetadata = enableAutomation(state.config)
-  } catch (error: unknown) {
-    const caughtError = error as AnyRecord
-    automationError = {
-      message: caughtError && caughtError.message ? String(caughtError.message) : String(caughtError),
-      raw: caughtError && caughtError.raw ? String(caughtError.raw) : undefined,
-    }
-  }
+  let reusedLiveEndpoint = false
+  const alreadyLive = await isAutomationEndpointLive(state.config, {
+    timeoutMs: Math.min(2000, Number(options.timeout || 5000)),
+  }).catch(() => false)
 
-  const waitMs = Number(options.wait || 5000)
-  if (!automationError && waitMs > 0) {
-    await sleep(waitMs)
+  if (alreadyLive) {
+    reusedLiveEndpoint = true
+    automationMetadata = {
+      reusedLive: true,
+      note: 'automation endpoint already live; skipped enableAutomation',
+    }
+  } else {
+    try {
+      automationMetadata = enableAutomation(state.config)
+    } catch (error: unknown) {
+      const caughtError = error as AnyRecord
+      automationError = {
+        message: caughtError && caughtError.message ? String(caughtError.message) : String(caughtError),
+        raw: caughtError && caughtError.raw ? String(caughtError.raw) : undefined,
+      }
+    }
+
+    const waitMs = Number(options.wait || 5000)
+    if (!automationError && waitMs > 0) {
+      await sleep(waitMs)
+    }
   }
 
   const probe = automationError
@@ -1741,28 +1845,32 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
       screenshot: Boolean(options.captureScreenshot),
     })
 
-  const startupHints = (!automationError && probe && !probe.connected)
+  // 已 live 且 probe 成功：不要再用历史 appid-missing 等日志覆盖 ok
+  const shouldCollectStartupNoise = !automationError && probe && !probe.connected && !reusedLiveEndpoint
+  const startupHints = shouldCollectStartupNoise
     ? await collectDevtoolsStartupHints(state)
     : []
-  const doctorLogContext = (!automationError && probe && !probe.connected)
+  const doctorLogContext = shouldCollectStartupNoise
     ? await collectDevtoolsLogContext(state, 'error|fail|timeout|errcode|appid')
     : { log: '' }
-  const startupClassification = (!automationError && probe && !probe.connected)
+  const startupClassification = shouldCollectStartupNoise
     ? classifyOpenFailureFromStartupHints(startupHints, {
       summaryLine: doctorLogContext.log,
     })
     : null
   const startupIssue = automationError
     ? null
-    : (automationMetadata && automationMetadata.startupIssue)
-      || (startupClassification
-        ? {
-          code: startupClassification.code,
-          hint: startupClassification.hint,
-          message: resolveStartupIssueMessage(startupHints, startupClassification.code),
-          raw: resolveStartupIssueRaw(startupHints, startupClassification.code, doctorLogContext.log) || undefined,
-        }
-        : null)
+    : (probe && probe.connected)
+      ? null
+      : (automationMetadata && automationMetadata.startupIssue)
+        || (startupClassification
+          ? {
+            code: startupClassification.code,
+            hint: startupClassification.hint,
+            message: resolveStartupIssueMessage(startupHints, startupClassification.code),
+            raw: resolveStartupIssueRaw(startupHints, startupClassification.code, doctorLogContext.log) || undefined,
+          }
+          : null)
 
   if (persistSession && probe && probe.connected) {
     await saveSessionState(state)
@@ -1782,6 +1890,7 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
       ? { ok: false, error: automationError }
       : {
         ok: !startupIssue,
+        reusedLive: reusedLiveEndpoint || undefined,
         ...automationMetadata,
         startupIssue: startupIssue || undefined,
         startupHints: startupHints.length ? compactStartupHints(startupHints) : undefined,
@@ -1804,7 +1913,7 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
   if (automationError) {
     lines.push(`automation=failed ${automationError.message}`)
   } else {
-    lines.push(`automation=${(payload.automation as AnyRecord).ok ? 'ok' : 'failed'}`)
+    lines.push(`automation=${(payload.automation as AnyRecord).ok ? 'ok' : 'failed'}${reusedLiveEndpoint ? ' (reused-live)' : ''}`)
     const automation = payload.automation as AnyRecord
     if (automation.startupIssue && (automation.startupIssue as AnyRecord).code) {
       lines.push(`startupIssue=${(automation.startupIssue as AnyRecord).code}`)
@@ -1883,6 +1992,99 @@ async function handleDevtools(state: SessionState, rest: string[], options: AnyR
   emit({ lines }, options)
 }
 
+  /**
+   * 从 runtime 池解析 session 应展示/探测的 autoPort。
+   * 优先级：session 自身字段 → 同 sessionName launch → 已记录的 owner launch → 同项目唯一 live launch。
+   * 附着 session 往往没有自己的 launch 行，必须能回落到项目 live。
+   *
+   * attachedTo 规则（避免「owner 显示 attachedTo 自己」）：
+   * - 已有 runtimeOwnerSession 则用之
+   * - 有自身 launch 行 → 视为该 port 的 owner 侧记录，不填 attachedTo
+   * - 仅当无自身 launch、port 来自他人时才填 attachedTo
+   */
+function resolveSessionRuntimeBinding(
+  item: AnyRecord,
+  launchIndex: Map<string, AnyRecord>,
+  projectUniqueLive: AnyRecord | null,
+): { autoPort: string; devtoolsPort: string; launch: AnyRecord | null; attachedTo: string } {
+  const projectKey = path.resolve(String(item.projectPath || ''))
+  const ownLaunch = launchIndex.get(`${item.name}::${projectKey}`) || null
+  const ownerName = String(item.runtimeOwnerSession || '').trim()
+  const ownerLaunch = ownerName
+    ? (launchIndex.get(`${ownerName}::${projectKey}`) || null)
+    : null
+
+  let launch: AnyRecord | null = ownLaunch
+  if (!launch && ownerLaunch && ownerLaunch.autoPort) {
+    launch = ownerLaunch
+  }
+  if (!launch && projectUniqueLive && projectUniqueLive.autoPort) {
+    launch = projectUniqueLive
+  }
+
+  const autoPort = String(item.autoPort || (launch && launch.autoPort) || '').trim()
+  const devtoolsPort = String(item.devtoolsPort || (launch && launch.devtoolsPort) || '').trim()
+
+  let attachedTo = ''
+  if (ownerName && ownerName !== item.name) {
+    attachedTo = ownerName
+  } else if (!ownLaunch && launch && String(launch.sessionName || '').trim() && String(launch.sessionName) !== item.name) {
+    // 无自身 launch：port 来自他人 → 附着
+    attachedTo = String(launch.sessionName)
+  }
+  // 有自身 live launch 时不因「同 port 还有别人」而标 attachedTo
+
+  return { autoPort, devtoolsPort, launch, attachedTo }
+}
+
+async function buildProjectLaunchIndexes(baseConfig: AnyRecord, projectPaths: string[]) {
+  const launchIndex = new Map<string, AnyRecord>()
+  const projectLiveLaunches = new Map<string, AnyRecord[]>()
+
+  const uniqueProjects = [...new Set(projectPaths.map((p) => path.resolve(String(p || ''))).filter(Boolean))]
+  for (const projectPath of uniqueProjects) {
+    try {
+      const launches = await listRuntimeLaunches({ ...baseConfig, projectPath })
+      const liveRows: AnyRecord[] = []
+      for (const launch of launches) {
+        if (!launch || !launch.sessionName || !launch.autoPort) {
+          continue
+        }
+        const key = `${String(launch.sessionName)}::${path.resolve(String(launch.projectPath || projectPath))}`
+        const prev = launchIndex.get(key)
+        if (!prev || String(launch.updatedAt || '') > String(prev.updatedAt || '')) {
+          launchIndex.set(key, launch)
+        }
+        if (String(launch.status || '') === 'live') {
+          liveRows.push(launch)
+        }
+      }
+      projectLiveLaunches.set(projectPath, liveRows)
+    } catch (_) {}
+  }
+
+  return { launchIndex, projectLiveLaunches }
+}
+
+function pickProjectUniqueLiveLaunch(liveRows: AnyRecord[] = []): AnyRecord | null {
+  const byPort = new Map<string, AnyRecord>()
+  for (const row of liveRows) {
+    const port = String(row && row.autoPort || '').trim()
+    if (!port) {
+      continue
+    }
+    const prev = byPort.get(port)
+    if (!prev || String(row.updatedAt || '') > String(prev.updatedAt || '')) {
+      byPort.set(port, row)
+    }
+  }
+  // 多 port 时无法唯一推断附着目标
+  if (byPort.size !== 1) {
+    return null
+  }
+  return [...byPort.values()][0]
+}
+
 async function handleSessionList(options: AnyRecord = {}) {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
   const sessions = await listSessionStates(baseConfig)
@@ -1899,46 +2101,72 @@ async function handleSessionList(options: AnyRecord = {}) {
       message = '当前目录没有发现小程序项目；默认不显示全局 session。可传 --project <path> 或 --all 查看。'
     }
   }
-  const visibleSessions = projectFilter
+  let visibleSessions = projectFilter
     ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
     : (options.all ? sessions : [])
-  // 从 runtime 池回填 autoPort（session 文件不落 port）
-  const launchIndex = new Map<string, AnyRecord>()
-  try {
-    const launches = await listRuntimeLaunches(baseConfig)
-    for (const launch of launches) {
-      if (!launch || !launch.sessionName || !launch.autoPort) {
-        continue
-      }
-      const key = `${String(launch.sessionName)}::${path.resolve(String(launch.projectPath || ''))}`
-      const prev = launchIndex.get(key)
-      if (!prev || String(launch.updatedAt || '') > String(prev.updatedAt || '')) {
-        launchIndex.set(key, launch)
-      }
-    }
-  } catch (_) {}
 
-  const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
+  // 项目内先 reconcile 僵尸 starting，list 与 open 看到同一干净池
+  if (projectFilter) {
+    await reconcileRuntimeLaunches({ ...baseConfig, projectPath: projectFilter }).catch(() => ({ markedStale: 0 }))
+  } else if (options.all) {
+    const projectPaths = [...new Set(visibleSessions.map((s: AnyRecord) => path.resolve(String(s.projectPath || ''))).filter(Boolean))]
+    for (const projectPath of projectPaths) {
+      await reconcileRuntimeLaunches({ ...baseConfig, projectPath }).catch(() => ({ markedStale: 0 }))
+    }
+  }
+
+  const { launchIndex, projectLiveLaunches } = await buildProjectLaunchIndexes(
+    baseConfig,
+    visibleSessions.map((item: AnyRecord) => String(item.projectPath || projectFilter || '')),
+  )
+
+  let sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
     const projectKey = path.resolve(String(item.projectPath || ''))
-    const launch = launchIndex.get(`${item.name}::${projectKey}`)
-    const autoPort = String(item.autoPort || (launch && launch.autoPort) || '').trim()
-    const devtoolsPort = String(item.devtoolsPort || (launch && launch.devtoolsPort) || '').trim()
-    const live = autoPort
-      ? await isAutomationEndpointLive({ ...baseConfig, autoPort }, { timeoutMs: 800 }).catch(() => false)
+    const liveRows = projectLiveLaunches.get(projectKey) || []
+    const uniqueLive = pickProjectUniqueLiveLaunch(liveRows)
+    const binding = resolveSessionRuntimeBinding(item, launchIndex, uniqueLive)
+    const live = binding.autoPort
+      ? await isAutomationEndpointLive({ ...baseConfig, autoPort: binding.autoPort }, { timeoutMs: 800 }).catch(() => false)
       : false
+    const runtimeAttached = Boolean(item.runtimeAttached) || Boolean(binding.attachedTo)
     return {
       ...item,
-      autoPort: autoPort || item.autoPort || '',
-      devtoolsPort: devtoolsPort || item.devtoolsPort || '',
+      autoPort: binding.autoPort || item.autoPort || '',
+      devtoolsPort: binding.devtoolsPort || item.devtoolsPort || '',
       createdAt: item.createdAt || '',
       updatedAt: item.updatedAt || '',
+      runtimeAttached,
+      runtimeOwnerSession: binding.attachedTo || item.runtimeOwnerSession || '',
+      attachedTo: binding.attachedTo || undefined,
       status: live ? 'live' : 'stale',
     }
   }))
 
+  // 默认隐藏门禁/e2e 残留的 stale 噪音；--noise 看全量
+  const showNoise = Boolean(options.noise)
+  let hiddenNoise = 0
+  if (!showNoise) {
+    const before = sessionsWithStatus.length
+    sessionsWithStatus = sessionsWithStatus.filter((item) => {
+      if (item.status === 'live') {
+        return true
+      }
+      // 有语义名的 stale（work / feat-a / project-xN）保留；gate/e2e/test 前缀且 stale 隐藏
+      if (isEphemeralNoiseSessionName(String(item.name || ''))) {
+        return false
+      }
+      return true
+    })
+    hiddenNoise = before - sessionsWithStatus.length
+  }
+  if (hiddenNoise > 0 && !message) {
+    message = `已隐藏 ${hiddenNoise} 条门禁/测试残留 session；需要时加 --noise 查看，或 session prune 清理。`
+  }
+
   if (options.json) {
     emit({
       sessions: sessionsWithStatus,
+      ...(hiddenNoise ? { hiddenNoise } : {}),
       ...(message ? { message } : {}),
     }, options)
     return
@@ -1950,13 +2178,17 @@ async function handleSessionList(options: AnyRecord = {}) {
   }
 
   emit({
-    lines: sessionsWithStatus.map((item) => {
-      const project = item.projectPath || '(unbound)'
-      const devtoolsProject = item.devtoolsProjectPath ? ` devtoolsProject=${item.devtoolsProjectPath}` : ''
-      const route = item.route || '(no route)'
-      const created = item.createdAt || '-'
-      return `${item.name} status=${item.status} created=${created} project=${project}${devtoolsProject} devtoolsPort=${item.devtoolsPort || '-'} autoPort=${item.autoPort || '-'} route=${route}`
-    }),
+    lines: [
+      ...sessionsWithStatus.map((item) => {
+        const project = item.projectPath || '(unbound)'
+        const devtoolsProject = item.devtoolsProjectPath ? ` devtoolsProject=${item.devtoolsProjectPath}` : ''
+        const route = item.route || '(no route)'
+        const created = item.createdAt || '-'
+        const attached = item.attachedTo ? ` attachedTo=${item.attachedTo}` : ''
+        return `${item.name} status=${item.status} created=${created} project=${project}${devtoolsProject} devtoolsPort=${item.devtoolsPort || '-'} autoPort=${item.autoPort || '-'}${attached} route=${route}`
+      }),
+      ...(message ? [message] : []),
+    ],
   }, options)
 }
 
@@ -2011,12 +2243,18 @@ async function handleSessionPrune(options: AnyRecord) {
 
   const sessions = await listSessionStates(baseConfig)
   const visibleSessions = sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
+  // 与 session list 同一套 binding：附着 session 无自身 launch 时回落到项目 live，避免误 prune
+  const { launchIndex, projectLiveLaunches } = await buildProjectLaunchIndexes(baseConfig, [projectFilter])
+  const liveRows = projectLiveLaunches.get(path.resolve(projectFilter)) || []
+  const uniqueLive = pickProjectUniqueLiveLaunch(liveRows)
   const sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
-    const live = item.autoPort
-      ? await isAutomationEndpointLive({ ...baseConfig, autoPort: item.autoPort }, { timeoutMs: 800 }).catch(() => false)
+    const binding = resolveSessionRuntimeBinding(item, launchIndex, uniqueLive)
+    const live = binding.autoPort
+      ? await isAutomationEndpointLive({ ...baseConfig, autoPort: binding.autoPort }, { timeoutMs: 800 }).catch(() => false)
       : false
     return {
       ...item,
+      autoPort: binding.autoPort || item.autoPort || '',
       status: live ? 'live' : 'stale',
     }
   }))
@@ -3169,7 +3407,9 @@ async function main(argv = process.argv.slice(2)) {
 
   let runtimeLock = null
   try {
-    const state = await resolveSession(resolvedOptions)
+    // 仅 open/connect/doctor 需要分配新 autoPort；其它命令只从 runtime 池回绑
+    const allocatePorts = command === 'open' || command === 'connect' || command === 'doctor'
+    const state = await resolveSession(resolvedOptions, { allocatePorts })
     if (shouldAcquireRuntimeLock(command, state)) {
       runtimeLock = await acquireSessionLock(runtimeLockName(state.config), state.config, { command: `runtime ${command}` })
     }

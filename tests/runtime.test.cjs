@@ -1287,6 +1287,61 @@ test('connectOrEnable waits for automation live after enable before connect', as
   assert.ok(calls.indexOf('connect') > calls.indexOf('live:2'))
 })
 
+test('discoverLiveAutomationPort finds first live port in range', async () => {
+  const { discoverLiveAutomationPort } = require('../dist/lib/runtime-connect.js')
+  const probed = []
+  const port = await discoverLiveAutomationPort({ autoPort: '9517' }, {
+    rangeStart: 9515,
+    rangeEnd: 9540,
+    maxProbes: 30,
+    skipTcp: true,
+    async isLive(cfg) {
+      const p = String(cfg.autoPort || '')
+      probed.push(p)
+      return p === '9533'
+    },
+  })
+  assert.equal(port, '9533')
+  assert.ok(probed.includes('9517'))
+  assert.ok(probed.includes('9533'))
+})
+
+test('connectOrEnable discovers alternate live port when preferred autoPort never becomes live', async () => {
+  const calls = []
+  const config = { autoPort: '9517' }
+  // 直接测 discover 路径：wait-live 立即失败（无 min wait），再扫 port
+  const result = await connectOrEnable(config, {
+    allowEnable: true,
+    forceEnable: true,
+    connectTimeoutMs: 12000,
+    minWaitMs: 0,
+    onProgress(phase) {
+      calls.push(`progress:${phase}`)
+    },
+  }, {
+    async connect(cfg) {
+      calls.push(`connect:${cfg.autoPort}`)
+      return { ok: true, port: cfg.autoPort }
+    },
+    enable() {
+      calls.push('enable')
+      return {}
+    },
+    async isLive(cfg) {
+      const port = String(cfg.autoPort || '')
+      calls.push(`live:${port}`)
+      return port === '9533'
+    },
+    // 跳过 minWait 的真实等待
+    async sleepFn() {},
+  })
+
+  assert.ok(result.ok, `calls=${calls.join(',')}`)
+  assert.equal(String(config.autoPort), '9533')
+  assert.ok(calls.includes('progress:discover-port'), `calls=${calls.join(',')}`)
+  assert.ok(calls.includes('connect:9533'))
+})
+
 test('connectOrEnable proceeds when port becomes live on final check after wait budget', async () => {
   const calls = []
   let liveChecks = 0

@@ -79,6 +79,8 @@ async function waitUntilAutomationLive(
   const minWaitMs = Math.max(0, Number(options.minWaitMs ?? ENABLE_AUTO_WAIT_MS))
   const pollMs = Math.max(100, Number(options.pollMs || LIVE_POLL_MS))
   const startedAt = Date.now()
+  let iterations = 0
+  const maxIterations = Math.max(3, Number(options.maxIterations || 40))
 
   if (minWaitMs > 0) {
     const remainingForMin = deadlineAt ? Math.max(0, Math.min(minWaitMs, deadlineAt - Date.now())) : minWaitMs
@@ -88,7 +90,11 @@ async function waitUntilAutomationLive(
   }
 
   while (true) {
+    iterations += 1
     if (deadlineAt && Date.now() >= deadlineAt) {
+      return false
+    }
+    if (iterations > maxIterations) {
       return false
     }
     const live = await liveCheck(config, {
@@ -99,7 +105,6 @@ async function waitUntilAutomationLive(
       return true
     }
     if (deadlineAt && Date.now() + pollMs >= deadlineAt) {
-      // 最后再探一次
       const last = await liveCheck(config, {
         timeoutMs: Math.max(200, deadlineAt - Date.now()),
         automator: options.automator,
@@ -107,7 +112,6 @@ async function waitUntilAutomationLive(
       return Boolean(last)
     }
     await sleepFn(pollMs)
-    // 无 deadline 时最多等 60s，防止测试/误用挂死
     if (!deadlineAt && Date.now() - startedAt > 60000) {
       return false
     }
@@ -294,6 +298,92 @@ async function isAutomationEndpointLive(config: Record<string, unknown>, options
       await cleanupMiniProgram(miniProgram)
     }
   }
+}
+
+async function isTcpPortOpen(port: number, host = '127.0.0.1', timeoutMs = 200): Promise<boolean> {
+  const net = require('node:net') as typeof import('node:net')
+  return await new Promise((resolve) => {
+    const socket = net.connect({ host, port })
+    const done = (ok: boolean) => {
+      socket.removeAllListeners()
+      try {
+        socket.destroy()
+      } catch (_) {}
+      resolve(ok)
+    }
+    socket.setTimeout(Math.max(50, timeoutMs), () => done(false))
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+  })
+}
+
+/**
+ * 在端口范围内发现已 live 的 automation WebSocket。
+ * DevTools `auto` 有时返回 ✔ 但指定 --auto-port 未监听，或迟到落到其它端口；
+ * 策略：① 先探针 preferred；② TCP 打开的端口再探针；③ 仍无则有限盲扫（skipTcp 或 TCP 全空时）。
+ */
+async function discoverLiveAutomationPort(
+  config: Record<string, unknown> = {},
+  options: Record<string, unknown> = {},
+): Promise<string> {
+  const preferred = String(config.autoPort || options.preferredPort || '').trim()
+  const start = Math.max(1, Number(options.rangeStart || 9515))
+  const end = Math.max(start, Number(options.rangeEnd || 9615))
+  const timeoutMs = Math.max(200, Number(options.timeoutMs || 600))
+  const tcpTimeoutMs = Math.max(50, Number(options.tcpTimeoutMs || 150))
+  const maxProbes = Math.max(1, Number(options.maxProbes || 40))
+  const liveCheck = (options.isLive as ((cfg: Record<string, unknown>, opts?: Record<string, unknown>) => Promise<boolean>) | undefined)
+    || isAutomationEndpointLive
+  const skipTcp = options.skipTcp === true
+
+  const tried = new Set<string>()
+  const probe = async (port: string): Promise<boolean> => {
+    if (!port || tried.has(port)) {
+      return false
+    }
+    tried.add(port)
+    return await liveCheck({ ...config, autoPort: port }, { timeoutMs }).catch(() => false)
+  }
+
+  if (preferred && await probe(preferred)) {
+    return preferred
+  }
+
+  const rangePorts: number[] = []
+  for (let port = start; port <= end; port += 1) {
+    rangePorts.push(port)
+  }
+
+  if (!skipTcp) {
+    for (const port of rangePorts) {
+      if (tried.size >= maxProbes) {
+        break
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const open = await isTcpPortOpen(port, '127.0.0.1', tcpTimeoutMs)
+      if (!open) {
+        continue
+      }
+      const key = String(port)
+      // eslint-disable-next-line no-await-in-loop
+      if (await probe(key)) {
+        return key
+      }
+    }
+  }
+
+  // TCP 全空或 skipTcp：有限顺序盲扫（测试与 DevTools 假成功时兜底）
+  for (const port of rangePorts) {
+    if (tried.size >= maxProbes) {
+      break
+    }
+    const key = String(port)
+    // eslint-disable-next-line no-await-in-loop
+    if (await probe(key)) {
+      return key
+    }
+  }
+  return ''
 }
 
 // ---- 探针 ----
@@ -591,29 +681,53 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
 
   // 3. 等到 automation 端口 live（最小等待 ENABLE_AUTO_WAIT，受 deadline 约束）
   onProgress && onProgress('wait-live')
-  const becameLive = await waitUntilAutomationLive(config, {
+  const preferredPort = String(config.autoPort || '').trim()
+  let becameLive = await waitUntilAutomationLive(config, {
     deadlineAt,
-    minWaitMs: ENABLE_AUTO_WAIT_MS,
+    minWaitMs: Number.isFinite(Number(options.minWaitMs)) ? Number(options.minWaitMs) : ENABLE_AUTO_WAIT_MS,
     sleepFn,
     isLive: liveCheck,
     automator: options.automator,
   })
-  if (!becameLive && String(config.autoPort || '').trim()) {
-    // 边界竞态：deadline 刚过 port 才 listen——再探一次，能连则继续（用户无需二次 open）
-    const lateLive = await liveCheck(config, {
+  if (!becameLive && preferredPort) {
+    // 边界竞态：deadline 刚过 port 才 listen——再探一次
+    becameLive = await liveCheck(config, {
       timeoutMs: 2000,
       automator: options.automator,
     }).catch(() => false)
-    if (!lateLive) {
-      throw new Error(
-        [
-          `冷启动未完成：automation 端口 autoPort=${config.autoPort} 在超时前仍未就绪`,
-          '（devtools auto 已返回，但 WebSocket 尚不可连——常见于 DevTools 仍在编译/拉起 cli server）。',
-          '建议：1) 确认开发者工具已登录且项目窗可见；2) 加大 --timeout 后再次 open（不要立刻 --fresh）；',
-          '3) 若 session list 已显示其它 live，直接 open 复用；4) 仍失败再看 devtools logs / 重启开发者工具。',
-        ].join(''),
-      )
+  }
+  // DevTools 有时 ✔ auto 但指定 port 未监听，实际挂在范围内其它 port（或迟到）
+  if (!becameLive) {
+    onProgress && onProgress('discover-port')
+    const remainingMs = deadlineAt ? Math.max(0, deadlineAt - Date.now()) : 8000
+    // 盲扫不依赖剩余 open deadline：auto 已返回后扫 port 是廉价自愈（TCP+短探针）
+    const discovered = await discoverLiveAutomationPort(config, {
+      preferredPort,
+      timeoutMs: 400,
+      tcpTimeoutMs: 120,
+      // 覆盖 AUTO_PORT_RANGE 常见段；preferred 失败后至少扫到 preferred+40
+      maxProbes: 50,
+      isLive: liveCheck,
+      automator: options.automator,
+    }).catch(() => '')
+    if (discovered) {
+      config.autoPort = discovered
+      metadata.discoveredAutoPort = discovered
+      metadata.preferredAutoPort = preferredPort || undefined
+      becameLive = true
+    } else if (remainingMs < 0) {
+      // keep becameLive false
     }
+  }
+  if (!becameLive && preferredPort) {
+    throw new Error(
+      [
+        `冷启动未完成：automation 端口 autoPort=${preferredPort} 在超时前仍未就绪`,
+        '（devtools auto 已返回，但 WebSocket 尚不可连——常见于 DevTools 仍在编译/拉起 cli server，或 automation 落在其它端口）。',
+        '建议：1) 确认开发者工具已登录且项目窗可见；2) 加大 --timeout 后再次 open（不要立刻 --fresh）；',
+        '3) 若 session list 已显示其它 live，直接 open 复用；4) 仍失败再看 devtools logs / 重启开发者工具。',
+      ].join(''),
+    )
   }
 
   // 4. connect WS
@@ -773,6 +887,7 @@ module.exports = {
   connectAutomationTool,
   connectWithRetry,
   isAutomationEndpointLive,
+  discoverLiveAutomationPort,
   summarizeProbeResult,
   callAutomationProbe,
   formatRuntimeNotReadyMessage,

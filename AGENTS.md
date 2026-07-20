@@ -21,6 +21,8 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 - When automation startup fails, explain the situation clearly and keep the real underlying DevTools CLI / runtime error visible. Do not replace root causes with generic project-wrapper exceptions.
 - Failures the tool cannot fix (login/token expiry, missing AppID, bad CLI path) need a clear human explanation plus the original error signal. Stable `code` / `next action` fields are optional helpers, not required product shape.
 - Same-project multi-session work is allowed, but each session must have explicit, visible session state and ports.
+- `session list` must surface usable autoPort/status for attached sessions (project live runtime), not only owner launch rows.
+- `doctor` is live-first: probe existing automation when possible; do not always re-run enableAutomation.
 - Default session views and destructive actions are project-scoped. `--all` is the explicit global escape hatch.
 
 ## Project Discovery
@@ -34,6 +36,8 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 
 - `session` is the agent work context; runtime is the real DevTools automation endpoint.
 - `open/connect` should reuse a unique live same-project runtime by default instead of forcing a fresh DevTools automation endpoint.
+- Multiple session/launch rows sharing the **same autoPort** count as one runtime.
+- autoPort is owned by the CLI (allocate + reserve + attach). Multiple different live ports are never a user decision: auto-attach to the newest; never surface SESSION_CONFLICT / ambiguous for port choice.
 - Attached sessions must say which owner runtime they attached to.
 - `--fresh` is the explicit escape hatch for trying to start a new runtime.
 - Closing an attached session should only unbind that session by default. Closing the owner runtime requires the owner session or an explicit runtime-level close.

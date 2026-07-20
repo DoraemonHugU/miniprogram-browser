@@ -41,6 +41,9 @@ const {
   isAutoProjectSessionName,
   pickAutoProjectSessionName,
   nextAutoProjectSessionName,
+  listRuntimeLaunches,
+  reconcileRuntimeLaunches,
+  isEphemeralNoiseSessionName,
 } = require('../dist/lib/session-store.js')
 
 test('projectSessionSlug prefers parent when leaf is miniprogram/weapp', () => {
@@ -813,22 +816,98 @@ test('selectAttachableRuntimeSession attaches only when there is one live same-p
     mode: 'attach',
     session: { name: 'owner-a', status: 'live', autoPort: '9527' },
   })
-  assert.deepEqual(selectAttachableRuntimeSession([
-    { name: 'owner-a', status: 'live', autoPort: '9527' },
-    { name: 'owner-b', status: 'live', autoPort: '9530' },
-  ]), {
-    mode: 'ambiguous',
-    sessions: [
-      { name: 'owner-a', status: 'live', autoPort: '9527' },
-      { name: 'owner-b', status: 'live', autoPort: '9530' },
-    ],
-  })
+  // 多不同 live port：自动选，不 ambiguous（无 updatedAt 时保持输入顺序首项）
+  const multiPort = selectAttachableRuntimeSession([
+    { name: 'owner-a', status: 'live', autoPort: '9527', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { name: 'owner-b', status: 'live', autoPort: '9530', updatedAt: '2026-06-01T00:00:00.000Z' },
+  ])
+  assert.equal(multiPort.mode, 'attach')
+  assert.equal(multiPort.session.autoPort, '9530')
+  assert.equal(multiPort.session.name, 'owner-b')
   assert.deepEqual(selectAttachableRuntimeSession([
     { name: 'stale-a', status: 'stale', autoPort: '9527' },
   ]), {
     mode: 'none',
     sessions: [],
   })
+})
+
+test('selectAttachableRuntimeSession treats multiple live rows on same autoPort as one runtime', () => {
+  // 多 session 附着同一 automation 端口：不应 SESSION_CONFLICT
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+    { name: 'work-now', status: 'live', autoPort: '9566' },
+  ]), {
+    mode: 'attach',
+    session: { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+  })
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+    { name: 'work-now', status: 'live', autoPort: '9566' },
+  ], 'agent-b'), {
+    mode: 'attach',
+    session: { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+  })
+})
+
+test('isEphemeralNoiseSessionName matches gate/e2e/test prefixes only', () => {
+  assert.equal(isEphemeralNoiseSessionName('gate-mrrt6mif'), true)
+  assert.equal(isEphemeralNoiseSessionName('e2e-a-abc'), true)
+  assert.equal(isEphemeralNoiseSessionName('test-fresh'), true)
+  assert.equal(isEphemeralNoiseSessionName('work'), false)
+  assert.equal(isEphemeralNoiseSessionName('earlyriser-x1'), false)
+  assert.equal(isEphemeralNoiseSessionName('feat-a'), false)
+})
+
+test('reconcileRuntimeLaunches marks expired starting rows as stale', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-proj-'))
+    fs.writeFileSync(path.join(projectPath, 'project.config.json'), JSON.stringify({ miniprogramRoot: './' }))
+    const cfg = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+    // record 会刷新 updatedAt；直接写 runtime-launches.json 才能模拟「很久以前的 starting」
+    const lockRoot = sessionLockRoot(cfg)
+    const registryPath = path.join(path.dirname(lockRoot), 'runtime-launches.json')
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
+    const old = '2020-01-01T00:00:00.000Z'
+    const nowIso = new Date().toISOString()
+    fs.writeFileSync(registryPath, JSON.stringify({
+      launches: [
+        {
+          id: 'zombie-1',
+          sessionName: 'zombie',
+          projectPath,
+          autoPort: '19590',
+          status: 'starting',
+          createdAt: old,
+          updatedAt: old,
+        },
+        {
+          id: 'fresh-1',
+          sessionName: 'fresh',
+          projectPath,
+          autoPort: '19591',
+          status: 'starting',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+      ],
+    }, null, 2))
+    const result = await reconcileRuntimeLaunches(cfg, { startingMaxAgeMs: 60_000 })
+    assert.equal(result.markedStale, 1)
+    const after = await listRuntimeLaunches(cfg)
+    const byId = Object.fromEntries(after.map((l) => [l.id, l]))
+    assert.equal(byId['zombie-1'].status, 'stale')
+    assert.equal(byId['fresh-1'].status, 'starting')
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
 })
 
 test('selectAttachableRuntimeSession prefers matching session name among multiple live runtimes', () => {
@@ -852,6 +931,12 @@ test('selectRuntimeLaunchForSession prefers same sessionName then unique live pr
 
   assert.equal(selectRuntimeLaunchForSession(launches, 'work', projectA).autoPort, '9521')
   assert.equal(selectRuntimeLaunchForSession(launches, 'missing', projectB).autoPort, '9530')
+  // 同 port 多 launch 视为唯一 runtime
+  const shared = [
+    { id: 'a', sessionName: 'owner', projectPath: projectA, status: 'live', autoPort: '9566' },
+    { id: 'b', sessionName: 'attached', projectPath: projectA, status: 'live', autoPort: '9566' },
+  ]
+  assert.equal(selectRuntimeLaunchForSession(shared, 'new-session', projectA).autoPort, '9566')
   assert.equal(selectRuntimeLaunchForSession(launches, 'missing', projectA), null)
   assert.equal(selectRuntimeLaunchForSession(launches, 'work', ''), null)
 })
