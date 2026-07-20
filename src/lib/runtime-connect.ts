@@ -719,13 +719,15 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
       // keep becameLive false
     }
   }
-  if (!becameLive && preferredPort) {
+  if (!becameLive) {
+    const portLabel = preferredPort || '(未分配)'
     throw new Error(
       [
-        `冷启动未完成：automation 端口 autoPort=${preferredPort} 在超时前仍未就绪`,
-        '（devtools auto 已返回，但 WebSocket 尚不可连——常见于 DevTools 仍在编译/拉起 cli server，或 automation 落在其它端口）。',
-        '建议：1) 确认开发者工具已登录且项目窗可见；2) 加大 --timeout 后再次 open（不要立刻 --fresh）；',
-        '3) 若 session list 已显示其它 live，直接 open 复用；4) 仍失败再看 devtools logs / 重启开发者工具。',
+        `冷启动未完成：devtools auto 已返回，但本机未发现可用 automation WebSocket`,
+        `（优先端口 autoPort=${portLabel}；已扫描 ${9515}-${9615} 仍无 live）。`,
+        '常见原因：开发者工具 automation/cli server 未真正起来（日志可见 start cli server error）、模拟器未打开、或多实例异常。',
+        '建议：1) 只保留一个开发者工具窗口并打开项目，确认模拟器页面可见；2) 不要立刻 --fresh，直接再 open 一次；',
+        '3) 仍失败则重启开发者工具后再 open；4) 需要细节时看 devtools logs。',
       ].join(''),
     )
   }
