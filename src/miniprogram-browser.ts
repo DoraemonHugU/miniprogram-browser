@@ -835,11 +835,23 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
   if (failureContext && failureContext.diagnostics) {
     openError.diagnostics = failureContext.diagnostics
   }
+  if (failureContext && failureContext.startupIssueCode) {
+    openError.startupIssueCode = failureContext.startupIssueCode
+  }
   if (!openError.code && openError.runtimeNotReady) {
     openError.code = 'APP_NOT_READY'
   }
   if (failureContext && failureContext.hint && (!openError.hint || openError.hint === genericTimeoutHint)) {
     openError.hint = failureContext.hint
+  }
+  if (
+    failureContext
+    && failureContext.startupIssueCode === 'DEVTOOLS_LOGIN_REQUIRED'
+    && failureContext.message
+    && openError.code === 'OPEN_TIMEOUT'
+  ) {
+    openError.message = failureContext.message
+    openError.next = 're-login-devtools'
   }
   if (!openError.log && failureContext && failureContext.log) {
     openError.log = failureContext.log
@@ -1263,6 +1275,9 @@ function shouldRetryOpenWithAnotherAutoPort(state: SessionState, options: AnyRec
   if (code === 'WINDOWS_SOCKET_EXHAUSTED') {
     return false
   }
+  if (String(error.startupIssueCode || '') === 'DEVTOOLS_LOGIN_REQUIRED') {
+    return false
+  }
   // 冷启动：指定 port 未 live / 扫端口暂空 → 允许同一次 open 内换 port 再 auto
   if (code === 'OPEN_TIMEOUT' || code === 'AUTOMATION_CONNECT_TIMEOUT' || code === 'DEVTOOLS_AUTOMATION_SERVER_FAILED') {
     return true
@@ -1542,8 +1557,8 @@ function summarizeDevtoolsStartupHints(logPayload: AnyRecord) {
   const rules = [
     {
       code: 'login-expired',
-      pattern: /INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|code:\s*10\b/iu,
-      message: 'DevTools 日志报告登录态失效（INVALID_LOGIN / access_token expired / 42001）；请在微信开发者工具中重新登录后再 open。',
+      pattern: /INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login|code:\s*10\b/iu,
+      message: 'DevTools 日志报告登录态失效（41001/42001/42002、access_token missing 或需要重新登录）；请在微信开发者工具中重新登录后再 open。',
     },
     {
       code: 'appid-missing',
@@ -1633,6 +1648,9 @@ function resolveStartupIssueMessage(hints: AnyRecord[] = [], code = '') {
     if (normalizedCode === 'APPID_MISSING') {
       return item.code === 'appid-missing'
     }
+    if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
+      return item.code === 'login-expired'
+    }
     return false
   })
 
@@ -1658,6 +1676,9 @@ function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine 
     if (normalizedCode === 'APPID_MISSING') {
       return item.code === 'appid-missing'
     }
+    if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
+      return item.code === 'login-expired'
+    }
     return false
   })
 
@@ -1669,6 +1690,12 @@ function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine 
 
 function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: AnyRecord = {}) {
   const summaryLine = String(options.summaryLine || '').trim()
+  if (/INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login|code:\s*10\b/iu.test(summaryLine)) {
+    return {
+      code: 'DEVTOOLS_LOGIN_REQUIRED',
+      hint: 'devtoolsLog=login-expired',
+    }
+  }
   if (/routeTo appLaunch timeout|triggerAppRouteDone timeout/iu.test(summaryLine)) {
     return {
       code: 'APP_LAUNCH_TIMEOUT',
@@ -1695,6 +1722,12 @@ function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: A
   }
 
   const codes = new Set((hints || []).map((item) => item && item.code).filter(Boolean))
+  if (codes.has('login-expired')) {
+    return {
+      code: 'DEVTOOLS_LOGIN_REQUIRED',
+      hint: 'devtoolsLog=login-expired',
+    }
+  }
   if (codes.has('app-launch-timeout')) {
     return {
       code: 'APP_LAUNCH_TIMEOUT',
@@ -1946,6 +1979,9 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
   if (startupHints.length) {
     diagnostics.startupHints = compactStartupHints(startupHints)
   }
+  if (startupClassification) {
+    diagnostics.startupIssueCode = startupClassification.code
+  }
 
   const resolution = summarizeOpenResolution(options, liveSameProjectSessions)
   const adoptBootstrap = resolution === 'adopt-via-devtools-port'
@@ -1964,6 +2000,10 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
 
   return {
     diagnostics,
+    startupIssueCode: startupClassification ? startupClassification.code : undefined,
+    message: startupClassification
+      ? resolveStartupIssueMessage(startupHints, startupClassification.code)
+      : undefined,
     code: startupClassification ? startupClassification.code : undefined,
     hint: facts.join('; '),
     log: logContext.log || undefined,

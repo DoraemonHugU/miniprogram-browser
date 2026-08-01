@@ -368,6 +368,13 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
     true,
   )
   assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      code: 'OPEN_TIMEOUT',
+      startupIssueCode: 'DEVTOOLS_LOGIN_REQUIRED',
+    }, 1),
+    false,
+  )
+  assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'connected', { code: 'OPEN_TIMEOUT' }, 1),
     false,
   )
@@ -542,6 +549,36 @@ test('classifyOpenFailureFromStartupHints treats cli-server-start-error as autom
   assert.deepEqual(classification, {
     code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
     hint: 'devtoolsLog=cli-server-start-error',
+  })
+})
+
+test('summarizeDevtoolsStartupHints recognizes current DevTools login failure signals', () => {
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        path: '/tmp/logs/2026-08-01-latest.log',
+        lines: [
+          '[ERROR] getNewTicket empty ticket',
+          '[ERROR] errcode= 41001 Error: 需要重新登录,access_token missing',
+          '[ERROR] start cli server error: [object Object]',
+        ],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints.map((item) => item.code), ['login-expired', 'cli-server-start-error'])
+  assert.match(hints[0].message, /重新登录/)
+})
+
+test('classifyOpenFailureFromStartupHints prioritizes login failure over automation server noise', () => {
+  const classification = classifyOpenFailureFromStartupHints([
+    { code: 'login-expired', sample: '[ERROR] errcode= 41001 需要重新登录,access_token missing' },
+    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
+  ])
+
+  assert.deepEqual(classification, {
+    code: 'DEVTOOLS_LOGIN_REQUIRED',
+    hint: 'devtoolsLog=login-expired',
   })
 })
 
