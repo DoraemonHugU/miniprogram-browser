@@ -15,6 +15,7 @@ const {
   releaseSessionLock,
   runtimeLockName,
   saveSessionState,
+  setActiveSession,
 } = require('../dist/lib/session-store.js')
 
 const repoRoot = path.resolve(__dirname, '..')
@@ -209,6 +210,37 @@ test('session list includes createdAt for seeded sessions', async () => {
   assert.equal(payload.sessions.length, 1)
   assert.equal(payload.sessions[0].name, 'timed')
   assert.match(String(payload.sessions[0].createdAt || ''), /^\d{4}-\d{2}-\d{2}T/)
+})
+
+test('status and session info expose the active session without starting a runtime', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const projectDir = createMiniProgramProject()
+  await seedSession(homeDir, { name: 'timed', projectPath: projectDir })
+  await withHome(homeDir, async () => {
+    await setActiveSession('timed', {
+      ...createDefaultConfig(),
+      projectPath: projectDir,
+    })
+  })
+
+  const status = runCli(['status', '--json'], { HOME: homeDir }, { cwd: projectDir })
+  const statusPayload = parseJsonOutput(status)
+  assert.equal(status.status, 0)
+  assert.equal(statusPayload.session, 'timed')
+  assert.equal(statusPayload.active, true)
+  assert.equal(statusPayload.status, 'stale')
+  assert.equal(statusPayload.runtime, 'none')
+
+  const list = runCli(['session', 'list', '--json'], { HOME: homeDir }, { cwd: projectDir })
+  const listPayload = parseJsonOutput(list)
+  assert.equal(list.status, 0)
+  assert.equal(listPayload.sessions[0].active, true)
+
+  const info = runCli(['session', 'info', 'timed', '--json'], { HOME: homeDir }, { cwd: projectDir })
+  const infoPayload = parseJsonOutput(info)
+  assert.equal(info.status, 0)
+  assert.equal(infoPayload.selection, 'explicit')
+  assert.equal(infoPayload.session, 'timed')
 })
 
 test('session list backfills autoPort for attached session from project live launch', async () => {

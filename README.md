@@ -130,12 +130,14 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 # 已安装时
 # 在小程序项目目录或同 Git 工作树里，通常可以省略 --project 与 --session
-# 省略 --session 时自动生成/复用 {project}-xN（如 earlyriser-x1）；同项目有多个不同 live runtime 时需显式指定
+# 省略 --session 时优先沿用最近成功 open/connect 的活动 session；没有活动 session 时才自动生成/复用 {project}-xN（如 earlyriser-x1）
 miniprogram-browser open
 miniprogram-browser open --project /path/to/miniprogram-root
 miniprogram-browser snapshot -i
 miniprogram-browser click @e1
 miniprogram-browser open --session work   # 需要并行工作台时再显式命名
+# 也可以为当前 Agent/shell 设置默认 session
+export MINIPROGRAM_BROWSER_SESSION=work
 miniprogram-browser doctor --json
 miniprogram-browser goto /pages/dashboard/index
 miniprogram-browser timeline
@@ -198,7 +200,8 @@ miniprogram-browser await stable --session demo
 ## 当前能力
 
 - 运行时语义快照与 `@eNN` refs
-- 多 session 并发；同一 session 串行；默认 attach 同项目唯一 live runtime；多个不同 live runtime 时要求 `--session`，不会按最新记录猜测；`--fresh` 是显式新 runtime 逃逸点
+- 多 session 并发；同一 session 串行；默认沿用活动 session 或 attach 同项目唯一 live runtime；多个不同 live runtime 且没有活动目标时要求 `--session`，不会按最新记录猜测；`--fresh` 是显式新 runtime 逃逸点
+- Agent 连续操作可在 `goto/click/fill` 后加 `--follow` 获取一次新的 refs 摘要；默认保持低噪声，不自动输出完整 Snapshot
 - **session 与 runtime 解耦**：session 存 route/refs 等用户上下文，不固化 `autoPort`；连接端口由 runtime 池管理，后续命令自动回绑
 - 默认项目级 session 管理；`session list --all` 是显式全局查看入口
 - 共享同一 `autoPort` 的命令通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime

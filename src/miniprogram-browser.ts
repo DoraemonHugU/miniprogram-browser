@@ -110,6 +110,8 @@ const {
   recordRuntimeLaunch,
   updateRuntimeLaunch,
   removeRuntimeLaunch,
+  getActiveSession,
+  setActiveSession,
   reconcileRuntimeLaunches,
   isEphemeralNoiseSessionName,
   saveSessionState,
@@ -333,10 +335,10 @@ function withDiscoveredProjectScope(options: AnyRecord, command: string): AnyRec
 }
 
 /**
- * 省略 --session 时：按项目生成/复用 {slug}-xN。
+ * 省略 --session 时：优先使用环境/项目活动 session，再按项目生成/复用 {slug}-xN。
  * - 默认复用已有最大序号自动 session
  * - open --fresh 且未显式 session 时分配下一个 xN
- * 不依赖 agent 名称。
+ * - MINIPROGRAM_BROWSER_SESSION 是显式的 Agent/工作树默认值
  */
 async function ensureImplicitSessionName(options: AnyRecord, command: string): Promise<AnyRecord> {
   if (options.sessionProvided) {
@@ -355,13 +357,36 @@ async function ensureImplicitSessionName(options: AnyRecord, command: string): P
   }
 
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
+  const allocateFresh = (command === 'open' || command === 'connect') && Boolean(options.fresh)
+  const envSession = String(process.env.MINIPROGRAM_BROWSER_SESSION || '').trim()
+  if (!allocateFresh && envSession && envSession !== 'default') {
+    return {
+      ...options,
+      session: envSession,
+      sessionProvided: false,
+      sessionSelectionSource: 'env',
+    }
+  }
+
+  const activeSession = await getActiveSession({
+    ...baseConfig,
+    projectPath,
+  })
+  if (!allocateFresh && activeSession && activeSession.sessionName) {
+    return {
+      ...options,
+      session: activeSession.sessionName,
+      sessionProvided: false,
+      sessionSelectionSource: 'active',
+    }
+  }
+
   const states = await listSessionStates({
     ...baseConfig,
     projectPath,
   })
   const existingNames = states.map((item: AnyRecord) => String(item.name || '')).filter(Boolean)
 
-  const allocateFresh = (command === 'open' || command === 'connect') && Boolean(options.fresh)
   const sessionName = allocateFresh
     ? nextAutoProjectSessionName(existingNames, projectPath)
     : pickAutoProjectSessionName(existingNames, projectPath)
@@ -371,6 +396,7 @@ async function ensureImplicitSessionName(options: AnyRecord, command: string): P
     session: sessionName,
     sessionProvided: false,
     sessionAutoAssigned: true,
+    sessionSelectionSource: 'auto',
   }
 }
 
@@ -392,7 +418,11 @@ async function resolveSession(options: AnyRecord, resolveOpts: { allocatePorts?:
   // 避免 ensureSessionPorts 重新分配空闲端口导致连到错误 endpoint。
   if (!explicitOverrides.autoPort && !options.fresh) {
     await bindSessionRuntimeFromPool(state, {
-      preferSessionName: Boolean(options.sessionProvided),
+      preferSessionName: Boolean(
+        options.sessionProvided
+        || options.sessionSelectionSource === 'active'
+        || options.sessionSelectionSource === 'env',
+      ),
     })
   }
 
@@ -999,7 +1029,9 @@ async function handleOpen(state: SessionState, options: AnyRecord) {
     timeoutMs: Number(options.lockTimeoutMs || process.env.MINIPROGRAM_BROWSER_LOCK_TIMEOUT_MS || 180000),
   })
   try {
-    return await handleOpenLocked(state, options)
+    const result = await handleOpenLocked(state, options)
+    await setActiveSession(state.name, state.config)
+    return result
   } finally {
     await releaseSessionLock(projectOpenLock)
   }
@@ -1032,7 +1064,12 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
   if (!currentEndpointLive && !options.fresh && !options.autoPort) {
     const attachResult = await resolveAttachableRuntime(state, options)
     if (attachResult.mode === 'ambiguous') {
-      throw createMultipleLiveRuntimeError(state, attachResult.sessions || [])
+      throw createMultipleLiveRuntimeError(state, attachResult.sessions || [], {
+        command: 'open',
+        selectionReason: options.sessionSelectionSource === 'active'
+          ? `active-session-not-live:${state.name}`
+          : 'no-active-session',
+      })
     }
     if (attachResult.mode === 'attach' && attachResult.session) {
       const sessionInfo = attachResult.session as AnyRecord
@@ -1345,12 +1382,16 @@ function emitOpenResult(result: AnyRecord, options: AnyRecord) {
   const pathLabel = result.path || (result.appReady === false ? '(warming up)' : '(no page)')
   const sessionName = options.session || ''
   const mode = String(result.mode || 'connected')
+  const sessionSelectionSource = String(
+    options.sessionProvided ? 'explicit' : (options.sessionSelectionSource || 'auto'),
+  )
   // 文本首行：人/agent 先扫 mode/session/path/autoPort；细节仍在 JSON 字段
   const parts = [
     `已连接 mode=${mode}`,
     `path=${pathLabel}`,
     sessionName ? `session=${sessionName}` : '',
     options.sessionAutoAssigned ? '(auto-session)' : '',
+    `sessionSource=${sessionSelectionSource}`,
     result.attachedTo ? `attachedTo=${result.attachedTo}` : '',
     result.rescuedFromStartFailure ? 'rescued=1' : '',
     `autoPort=${result.autoPort || '-'}`,
@@ -1367,6 +1408,7 @@ function emitOpenResult(result: AnyRecord, options: AnyRecord) {
     appReady: result.appReady,
     path: result.path,
     session: options.session || undefined,
+    sessionSelectionSource,
     sessionAutoAssigned: Boolean(options.sessionAutoAssigned) || undefined,
     stable: result.stable || undefined,
     stableTimeout: result.stableTimeout || undefined,
@@ -1443,10 +1485,12 @@ async function resolveAttachableRuntime(state: SessionState, options: AnyRecord 
     createdAt: item.createdAt || '',
     updatedAt: item.updatedAt || '',
   }))
-  const selected = selectAttachableRuntimeSession(
-    attachableSessions,
-    options.sessionProvided ? state.name : '',
-  )
+  const preferredSession = options.sessionProvided
+    || options.sessionSelectionSource === 'active'
+    || options.sessionSelectionSource === 'env'
+    ? state.name
+    : ''
+  const selected = selectAttachableRuntimeSession(attachableSessions, preferredSession)
   if (selected.mode !== 'attach') {
     return selected
   }
@@ -1457,7 +1501,7 @@ async function resolveAttachableRuntime(state: SessionState, options: AnyRecord 
   }
 }
 
-function createMultipleLiveRuntimeError(state: SessionState, sessions: AnyRecord[]) {
+function createMultipleLiveRuntimeError(state: SessionState, sessions: AnyRecord[], options: AnyRecord = {}) {
   const candidates = (sessions || []).map((item: AnyRecord) => ({
     name: String(item.name || item.sessionName || '').trim(),
     autoPort: String(item.autoPort || '').trim(),
@@ -1471,18 +1515,25 @@ function createMultipleLiveRuntimeError(state: SessionState, sessions: AnyRecord
     ].filter(Boolean).join(' ')
     return `  ${item.name}${details ? `  ${details}` : ''}`
   })
+  const command = String(options.command || 'snapshot').trim()
+  const nextCommands = candidates.map((item: AnyRecord) => `miniprogram-browser ${command} --session ${item.name}`)
+  nextCommands.push('miniprogram-browser open --session new --fresh')
   const error = new Error([
     '当前项目存在多个 live runtime，无法安全判断目标。',
     '请显式使用 --session <name> 选择已有 runtime，或使用 --fresh 新开 runtime。',
     '可选 session:',
     ...candidateLines,
+    '可直接执行:',
+    ...nextCommands.map((item) => `  ${item}`),
   ].join('\n')) as unknown as AnyRecord
   error.code = 'MULTIPLE_LIVE_RUNTIMES'
   error.hint = '已有 runtime 不需要手动指定 autoPort；先用 session list 查看当前项目的 session。'
   error.next = 'session list'
   error.diagnostics = {
     projectPath: state.config.projectPath,
+    selectionReason: options.selectionReason || 'no-unique-live-runtime',
     liveSameProjectRuntimes: candidates,
+    nextCommands,
   }
   return error
 }
@@ -2206,6 +2257,130 @@ function pickProjectUniqueLiveLaunch(liveRows: AnyRecord[] = []): AnyRecord | nu
   return [...byPort.values()][0]
 }
 
+async function buildSessionStatusEntries(options: AnyRecord = {}): Promise<{
+  entries: AnyRecord[]
+  projectFilter: string
+  message: string
+}> {
+  const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
+  const sessions = await listSessionStates(baseConfig)
+  let projectFilter = ''
+  let message = ''
+  if (!options.all) {
+    if (options.project) {
+      projectFilter = resolveMiniProgramProjectInfo(options.project).projectPath
+    } else {
+      const currentProject = discoverMiniProgramProjectFromCwd(process.cwd())
+      projectFilter = currentProject ? currentProject.projectPath : ''
+    }
+    if (!projectFilter) {
+      message = '当前目录没有发现小程序项目；请传 --project <path>，或用 session list --all 查看全局 session。'
+    }
+  }
+
+  const visibleSessions = projectFilter
+    ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
+    : (options.all ? sessions : [])
+  const projectPaths: string[] = [...new Set<string>(visibleSessions
+    .map((item: AnyRecord) => path.resolve(String(item.projectPath || projectFilter || '')))
+    .filter(Boolean))]
+  const { launchIndex, projectLiveLaunches } = await buildProjectLaunchIndexes(baseConfig, projectPaths)
+  const activeByProject = new Map<string, string>()
+  for (const projectPath of projectPaths) {
+    const active = await getActiveSession({ ...baseConfig, projectPath })
+    if (active && active.sessionName) {
+      activeByProject.set(projectPath, String(active.sessionName))
+    }
+  }
+
+  const entries = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
+    const projectKey = path.resolve(String(item.projectPath || ''))
+    const liveRows = projectLiveLaunches.get(projectKey) || []
+    const uniqueLive = pickProjectUniqueLiveLaunch(liveRows)
+    const binding = resolveSessionRuntimeBinding(item, launchIndex, uniqueLive)
+    const live = binding.autoPort
+      ? await isAutomationEndpointLive({ ...baseConfig, autoPort: binding.autoPort }, { timeoutMs: 800 }).catch(() => false)
+      : false
+    const attachedTo = binding.attachedTo || String(item.runtimeOwnerSession || '').trim()
+    const runtimeOwnerSession = attachedTo || (binding.autoPort ? item.name : '')
+    return {
+      session: item.name,
+      active: activeByProject.get(projectKey) === item.name,
+      status: live ? 'live' : 'stale',
+      projectPath: item.projectPath || '',
+      route: item.route || '',
+      autoPort: binding.autoPort || item.autoPort || '',
+      devtoolsPort: binding.devtoolsPort || item.devtoolsPort || '',
+      runtime: binding.autoPort ? (attachedTo ? 'attached' : 'owner') : 'none',
+      runtimeOwnerSession,
+      attachedTo,
+      createdAt: item.createdAt || '',
+      updatedAt: item.updatedAt || '',
+    }
+  }))
+
+  return { entries, projectFilter, message }
+}
+
+async function handleSessionInfo(options: AnyRecord = {}, requestedName = '') {
+  const targetName = String(requestedName || options.session || '').trim()
+  const result = await buildSessionStatusEntries(options)
+  const candidates = result.entries.map((item: AnyRecord) => String(item.session || ''))
+  const activeEntry = result.entries.find((item: AnyRecord) => item.active)
+  const matching = targetName
+    ? result.entries.filter((item: AnyRecord) => item.session === targetName)
+    : (activeEntry ? [activeEntry] : [])
+
+  if (matching.length !== 1) {
+    const error = new Error(
+      targetName
+        ? `未找到 session "${targetName}"；请先用 session list 查看当前项目候选。`
+        : '当前项目没有活动 session；请先执行 open --session <name>，或传 session info <name>。',
+    ) as unknown as AnyRecord
+    error.code = targetName ? 'SESSION_NOT_FOUND' : 'NO_ACTIVE_SESSION'
+    error.hint = result.message || '先用 session list 查看当前项目 session。'
+    error.next = 'session list'
+    error.diagnostics = {
+      projectPath: result.projectFilter || undefined,
+      requestedSession: targetName || undefined,
+      activeSession: activeEntry ? activeEntry.session : '',
+      candidates,
+    }
+    throw error
+  }
+
+  const entry = matching[0]
+  const payload: AnyRecord = {
+    ...entry,
+    selection: targetName ? 'explicit' : 'active',
+  }
+  const session = String(payload.session || '')
+  const active = Boolean(payload.active)
+  const status = String(payload.status || 'stale')
+  const runtime = String(payload.runtime || 'none')
+  const projectPath = String(payload.projectPath || '')
+  const route = String(payload.route || '')
+  const runtimeOwnerSession = String(payload.runtimeOwnerSession || '')
+  const attachedTo = String(payload.attachedTo || '')
+  const autoPort = String(payload.autoPort || '')
+  const devtoolsPort = String(payload.devtoolsPort || '')
+  const createdAt = String(payload.createdAt || '')
+  const updatedAt = String(payload.updatedAt || '')
+  if (options.json) {
+    emit(payload, options)
+    return
+  }
+
+  emit({
+    lines: [
+      `session=${session} active=${active ? 'true' : 'false'} status=${status} runtime=${runtime}`,
+      `project=${projectPath || '-'} route=${route || '(no route)'}`,
+      `owner=${runtimeOwnerSession || '-'} attachedTo=${attachedTo || '-'} autoPort=${autoPort || '-'} devtoolsPort=${devtoolsPort || '-'}`,
+      `created=${createdAt || '-'} updated=${updatedAt || '-'} selection=${String(payload.selection || '')}`,
+    ],
+  }, options)
+}
+
 async function handleSessionList(options: AnyRecord = {}) {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
   const sessions = await listSessionStates(baseConfig)
@@ -2240,6 +2415,16 @@ async function handleSessionList(options: AnyRecord = {}) {
     baseConfig,
     visibleSessions.map((item: AnyRecord) => String(item.projectPath || projectFilter || '')),
   )
+  const activeByProject = new Map<string, string>()
+  const listProjectPaths: string[] = [...new Set<string>(visibleSessions
+    .map((item: AnyRecord) => path.resolve(String(item.projectPath || projectFilter || '')))
+    .filter(Boolean))]
+  for (const projectPath of listProjectPaths) {
+    const active = await getActiveSession({ ...baseConfig, projectPath })
+    if (active && active.sessionName) {
+      activeByProject.set(projectPath, String(active.sessionName))
+    }
+  }
 
   let sessionsWithStatus = await Promise.all(visibleSessions.map(async (item: AnyRecord) => {
     const projectKey = path.resolve(String(item.projectPath || ''))
@@ -2252,6 +2437,7 @@ async function handleSessionList(options: AnyRecord = {}) {
     const runtimeAttached = Boolean(item.runtimeAttached) || Boolean(binding.attachedTo)
     return {
       ...item,
+      active: activeByProject.get(projectKey) === item.name,
       autoPort: binding.autoPort || item.autoPort || '',
       devtoolsPort: binding.devtoolsPort || item.devtoolsPort || '',
       createdAt: item.createdAt || '',
@@ -2306,7 +2492,8 @@ async function handleSessionList(options: AnyRecord = {}) {
         const route = item.route || '(no route)'
         const created = item.createdAt || '-'
         const attached = item.attachedTo ? ` attachedTo=${item.attachedTo}` : ''
-        return `${item.name} status=${item.status} created=${created} project=${project}${devtoolsProject} devtoolsPort=${item.devtoolsPort || '-'} autoPort=${item.autoPort || '-'}${attached} route=${route}`
+        const active = item.active ? ' active=true' : ''
+        return `${item.name}${active} status=${item.status} created=${created} project=${project}${devtoolsProject} devtoolsPort=${item.devtoolsPort || '-'} autoPort=${item.autoPort || '-'}${attached} route=${route}`
       }),
       ...(message ? [message] : []),
     ],
@@ -2571,8 +2758,9 @@ async function handleRelaunch(state: SessionState, route: string, options: AnyRe
   })
 
   markPendingVisualAction(state, 'goto', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
   await saveSessionState(state)
-  emit(payload, options)
+  emit(attachFollowupPayload(payload, followup), options)
 }
 
 async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef: string | null = null) {
@@ -2638,6 +2826,43 @@ async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef:
   emit(summarizeSnapshotPayload(payload, options), options)
 }
 
+async function collectFollowupSnapshot(state: SessionState, options: AnyRecord): Promise<AnyRecord> {
+  const snapshot = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
+    const page = await getCurrentPage(miniProgram)
+    const result = await snapshotInteractive(page, state, null, {
+      compact: Boolean(options.compact),
+      depth: options.depth === undefined ? undefined : Number(options.depth),
+    })
+    Object.assign(state, result.state)
+    return {
+      path: page.path,
+      records: result.records,
+      lines: result.lines,
+    }
+  })
+
+  return summarizeSnapshotPayload({
+    state: { route: snapshot.path },
+    records: snapshot.records,
+    lines: snapshot.lines,
+  }, options)
+}
+
+function attachFollowupPayload(payload: AnyRecord, followup: AnyRecord | null): AnyRecord {
+  if (!followup) {
+    return payload
+  }
+
+  const message = `${payload.message || '操作完成'}；已刷新 snapshot route=${followup.route || payload.path || '-'} count=${followup.count || 0}`
+  return {
+    ...payload,
+    message,
+    followup,
+    // 文本模式优先打印新的 refs；JSON 模式同时保留结构化 followup 字段。
+    lines: [message, ...(Array.isArray(followup.lines) ? followup.lines : [])],
+  }
+}
+
 async function handleQuery(state: SessionState, mode: string, value: string, options: AnyRecord, scopeRef: string | null = null) {
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
@@ -2684,8 +2909,9 @@ async function handleTap(state: SessionState, target: string, options: AnyRecord
   })
 
   markPendingVisualAction(state, 'click', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
   await saveSessionState(state)
-  emit(payload, options)
+  emit(attachFollowupPayload(payload, followup), options)
 }
 
 async function handleInput(state: SessionState, target: string, value: string, options: AnyRecord, scopeRef: string | null = null) {
@@ -2700,8 +2926,9 @@ async function handleInput(state: SessionState, target: string, value: string, o
   })
 
   markPendingVisualAction(state, 'fill', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
   await saveSessionState(state)
-  emit(payload, options)
+  emit(attachFollowupPayload(payload, followup), options)
 }
 
 async function handleAwaitCommand(state: SessionState, rawCondition: string, options: AnyRecord, scopeRef: string | null = null) {
@@ -3484,6 +3711,16 @@ async function main(argv = process.argv.slice(2)) {
     return
   }
 
+  if (command === 'session' && (positional[1] === 'info' || positional[1] === 'status')) {
+    await handleSessionInfo(scopedOptions, positional[2])
+    return
+  }
+
+  if (command === 'status') {
+    await handleSessionInfo(scopedOptions, positional[1])
+    return
+  }
+
   if (command === 'session' && (positional[1] === 'prune' || positional[1] === 'cleanup')) {
     await handleSessionPrune(scopedOptions)
     return
@@ -3560,7 +3797,14 @@ async function main(argv = process.argv.slice(2)) {
     ) {
       const runtimeSelection = await resolveAttachableRuntime(state, resolvedOptions)
       if (runtimeSelection.mode === 'ambiguous') {
-        throw createMultipleLiveRuntimeError(state, runtimeSelection.sessions || [])
+        throw createMultipleLiveRuntimeError(state, runtimeSelection.sessions || [], {
+          command,
+          selectionReason: resolvedOptions.sessionSelectionSource === 'active'
+            ? `active-session-not-live:${state.name}`
+            : resolvedOptions.sessionSelectionSource === 'env'
+              ? `env-session-not-live:${state.name}`
+              : 'no-active-session',
+        })
       }
     }
     if (shouldAcquireRuntimeLock(command, state)) {
@@ -3601,6 +3845,10 @@ module.exports = {
   summarizeDevtoolsStartupHints,
   summarizeOpenResolution,
   createMultipleLiveRuntimeError,
+  ensureImplicitSessionName,
+  buildSessionStatusEntries,
+  handleSessionInfo,
+  attachFollowupPayload,
   shouldClearFailedOpenSession,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,

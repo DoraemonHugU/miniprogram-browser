@@ -38,9 +38,11 @@ function buildHelpText() {
   call page <method> [...args] 调用当前页方法
 
 会话与连接:
-  open                         优先 attach 唯一 live runtime；多 runtime 需明确 session；否则启动新 runtime
+  open                         优先沿用活动 session/attach 唯一 live runtime；多 runtime 无活动目标时明确 session；否则启动新 runtime
   connect                      open 的别名
   session list                 列出当前项目已绑定的 session
+  session info [<name>]        查看活动或指定 session 的当前状态
+  status [<name>]              session info 的短别名
   session prune                清理当前项目 stale session 和 orphan launch
   session kill <name>          关闭并解绑当前项目下的指定 session
   close                        关闭或解绑当前 session；attached session 默认只解绑
@@ -55,16 +57,18 @@ function buildHelpText() {
   input                        fill 的别名
 
 常用选项:
-  --session <name>             session 名称；省略时按项目自动生成/复用 {project}-xN；多 runtime 时需显式
+  --session <name>             session 名称；省略时优先沿用活动 session，再按项目生成/复用 {project}-xN；多 runtime 且无活动目标时需显式
   --json                       以 JSON 输出
   --project <path>             当前 shell 可读的小程序项目根目录；可由当前 Git 工作树自动发现
   --fresh                      open 时强制请求新 runtime；失败不会静默降级为 attach
   --mode <page|visual|annotate|layout> 截图模式，默认 layout
   --no-ref                     截图时不绘制 @eN 标签
   --await <condition>          动作后显式等待条件成立
+  --follow                     动作完成后生成一次新的 refs 摘要（默认关闭，避免输出膨胀）
   --no-await                   关闭命令默认隐式等待
   --wait <ms>                  等待时间或截图超时，截图默认 30000ms
   --timeout <ms>               await / doctor / protocol 的超时
+  MINIPROGRAM_BROWSER_SESSION  显式设置当前 shell/Agent 的默认 session（命令行 --session 优先）
   --limit <n>                  logs/exceptions 默认输出条数
   --sections <a,b,c>           app inspect 指定输出分区
   --all                        app inspect 输出全部分区
@@ -104,8 +108,9 @@ function buildCommandHelpText(command: unknown): string {
   确保当前 session 绑定到一个可用的小程序 runtime。
 
 关键点:
-  - 可省略 --session：按项目名自动生成/复用 {project}-xN（如 earlyriser-x1）；--fresh 且未显式 session 时分配下一个 xN
-  - 显式 --session 仍可用于并行工作台（work/debug 等）
+  - 可省略 --session：优先沿用项目活动 session；没有活动 session 时才按项目名生成/复用 {project}-xN（如 earlyriser-x1）
+  - 也可用 MINIPROGRAM_BROWSER_SESSION 设置 Agent/工作树默认 session；命令行 --session 优先
+  - 显式 --session 仍可用于并行工作台（work/debug 等），成功 open/connect 后会成为该项目活动 session
   - --project 可由当前目录/Git 工作树自动发现
   - fresh session 下 autoPort 默认自动分配；显式 --auto-port 只在 fresh 启动时生效，attach 到已有 runtime 时会沿用 owner autoPort
   - 不要把 devtoolsPort 当默认隔离边界；显式 --devtools-port 只用于高级诊断/逃逸
@@ -146,10 +151,10 @@ function buildCommandHelpText(command: unknown): string {
       return `goto/relaunch
 
 用法:
-  miniprogram-browser goto <route> --session <name> [--wait <ms>] [--await <condition>] [--timeout <ms>]
+  miniprogram-browser goto <route> --session <name> [--wait <ms>] [--await <condition>] [--timeout <ms>] [--follow]
 
 作用:
-  重启到指定路由，并等待页面稳定。
+  重启到指定路由，并等待页面稳定；传 --follow 时在动作完成后返回一次新的 refs 摘要。
 `
     case 'snapshot':
       return `snapshot
@@ -175,20 +180,20 @@ function buildCommandHelpText(command: unknown): string {
       return `click/tap
 
 用法:
-  miniprogram-browser click <target> --session <name> [--wait <ms>] [--await <condition>] [--timeout <ms>]
+  miniprogram-browser click <target> --session <name> [--wait <ms>] [--await <condition>] [--timeout <ms>] [--follow]
 
 作用:
-  点击 ref 或 selector，并在同页未跳转时给出必要提示。
+  点击 ref 或 selector，并在同页未跳转时给出必要提示；传 --follow 时返回动作后的新 refs 摘要。
 `
     case 'fill':
     case 'input':
       return `fill/input
 
 用法:
-  miniprogram-browser fill <target> <text> --session <name>
+  miniprogram-browser fill <target> <text> --session <name> [--follow]
 
 作用:
-  向 ref 或 selector 输入文本。
+  向 ref 或 selector 输入文本；传 --follow 时返回输入后的新 refs 摘要。
 `
     case 'get':
       return `get
@@ -366,12 +371,27 @@ function buildCommandHelpText(command: unknown): string {
   - --capsule 可在 layout/visual 图上叠加右上角微信胶囊
   - 不传路径时保存到系统临时目录下的短文件名；同名冲突会自动追加 -1、-2……
 `
+    case 'status':
+      return `status
+
+用法:
+  miniprogram-browser status [<name>] [--project <path>] [--json]
+  miniprogram-browser session info [<name>] [--project <path>] [--json]
+
+作用:
+  只读查看活动或指定 session 的状态，不启动 DevTools、不分配端口。
+
+输出:
+  session/active/status、project/route、runtime owner/attachedTo、autoPort/devtoolsPort、created/updated
+`
     case 'session':
       return `session
 
 用法:
   miniprogram-browser session list [--json] [--noise]
   miniprogram-browser session list --all [--json] [--noise]
+  miniprogram-browser session info [<name>] [--json]
+  miniprogram-browser status [<name>] [--json]
   miniprogram-browser session prune [--json]
   miniprogram-browser session kill <name> [--json]
   miniprogram-browser session close <name> [--json]
@@ -380,7 +400,7 @@ function buildCommandHelpText(command: unknown): string {
   查看或终止 session。默认按当前小程序项目隔离；从同一 Git 仓库的 sibling 目录执行时，也会自动发现 apps/miniprogram。
 
 说明:
-  - session list 默认只显示当前项目，状态包含 live/stale
+  - session list 默认只显示当前项目，状态包含 live/stale；session info/status 默认查看活动 session
   - 默认隐藏 gate/e2e/test 前缀的 stale 残留；加 --noise 看全量
   - 当前目录无法发现小程序项目时，默认返回空并提示；--all 才查看全局注册表
   - session prune 只清理当前项目 stale session 和本 CLI 记录的 orphan launch；会尝试关闭对应 DevTools 项目窗口

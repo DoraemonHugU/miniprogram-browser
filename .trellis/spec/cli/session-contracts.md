@@ -55,6 +55,16 @@ const ASSERTION_KEYS = ['projectPath']
 
 ### 隐式 session 命名（省略 --session）
 
+项目状态额外维护一个轻量的 `activeSession` 指针，只保存 session 名称和更新时间，不保存 `autoPort`。显式 `open/connect --session <name>` 成功后更新该指针；普通 `snapshot/click/path` 等命令不会因为显式传参而改写它，避免并行 Agent 互相抢默认目标。
+
+省略 `--session` 的解析优先级：
+
+1. `MINIPROGRAM_BROWSER_SESSION` 环境默认值；
+2. 当前项目仍可用的活动 session；
+3. 既有 `{slug}-xN` 自动 session 复用/分配逻辑。
+
+活动 session 只提供目标偏好，仍须经过 Runtime 池的 live 探测；活动目标失效时，单一 live Runtime 可以安全回退，多 Runtime 必须返回歧义，不能按更新时间选择。
+
 ```ts
 // 不使用 default / agent 名
 // 基于项目路径 slug + 序号：
@@ -133,7 +143,7 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 - `session list` / `session prune` 解析 autoPort 优先级：session 字段 → 同 sessionName launch → `runtimeOwnerSession` 的 launch → **同项目唯一 live launch**；附着 session 无自身 launch 行时也应回填 live 端口与 `attachedTo`。
 - **autoPort 由 CLI 自管**：分配 / 预留 / 附着；使用者日常不选 port。
 - **同 autoPort 多条 live launch/session 视为同一 runtime**。
-- **多个不同 live autoPort**：显式 session 命中则 attach；否则返回 `ambiguous` / `MULTIPLE_LIVE_RUNTIMES`，在人话提示和 JSON diagnostics 中列出候选 session；不按 `updatedAt` 选择“最新”，也不要求用户手填 autoPort。
+- **多个不同 live autoPort**：显式 session 或活动 session 命中则 attach；否则返回 `ambiguous` / `MULTIPLE_LIVE_RUNTIMES`，在人话提示和 JSON diagnostics 中列出候选 session、选择原因和可复制命令；不按 `updatedAt` 选择“最新”，也不要求用户手填 autoPort。
 - **噪音收敛**：`reconcileRuntimeLaunches` 把过期 `starting`（默认 >3min）标 `stale`；探测失败的 starting 立即 stale。`session list` 默认隐藏 `gate/e2e/test` 前缀的 stale；`--noise` 看全量。
 - 同项目 `open` 串行：`locks/__open_project__.lock`，避免双 auto。
 - `OPEN_TIMEOUT` 不被 WeappLog 的 `cli-server-start-error` 覆盖 code。

@@ -21,11 +21,11 @@
 
 ### 2.2 全局选项（稳定）
 
-- `--session <name>`：显式工作台；省略时按项目自动 `{slug}-xN`（见 session-contracts）。同项目存在多个不同 live runtime 且没有命中目标时，必须显式指定 session
+- `--session <name>`：显式工作台；省略时优先沿用项目活动 session，其次按项目自动 `{slug}-xN`（见 session-contracts）。同项目存在多个不同 live runtime 且没有活动/显式命中目标时，必须显式指定 session
 - `--project <path>`：可省略（cwd/Git 唯一发现）
 - `--json`：机器可读
 - `--fresh`：强制新 runtime（open）
-- `--await` / `--no-await` / `--timeout` / `--wait`
+- `--await` / `--no-await` / `--timeout` / `--wait` / `--follow`
 
 ### 2.3 非公共面
 
@@ -84,6 +84,7 @@ open [ --project ] [ --session ]
 2. **页面结构可能变化后（点击后导航、列表刷新、弹层开关等）必须重新 `snapshot -i`，不得沿用旧号碰运气。**
 3. **路由变化后，旧页 `@e` 全部作废**（实现会 `Ref route mismatch`）。
 4. **收到 stale / unknown ref / selector 失效时：禁止重试同一旧 `@e`；重新 snapshot 再操作。**
+5. `--follow` 仅在显式请求时于 `goto/click/fill` 后生成一次新的 refs 摘要；默认操作输出保持低噪声。
 5. **`@e` 仅在产生它的 session 内有效**；换 session 必须重新 snapshot。
 6. **ASCII 图中的数字 = `@eN` 的编号 N**；命令里仍写完整 `@eN`。文案以语义树为准，不以图内文字为准（图默认不渲染文案）。
 

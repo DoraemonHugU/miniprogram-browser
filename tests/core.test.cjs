@@ -44,7 +44,15 @@ const {
   listRuntimeLaunches,
   reconcileRuntimeLaunches,
   isEphemeralNoiseSessionName,
+  getActiveSession,
+  setActiveSession,
+  clearActiveSession,
 } = require('../dist/lib/session-store.js')
+
+const {
+  ensureImplicitSessionName,
+  buildSessionStatusEntries,
+} = require('../dist/miniprogram-browser.js')
 
 test('projectSessionSlug prefers parent when leaf is miniprogram/weapp', () => {
   assert.equal(projectSessionSlug('/mnt/d/xuexi/projects/earlyRiser/apps/miniprogram'), 'earlyriser')
@@ -79,6 +87,120 @@ test('nextAutoProjectSessionName allocates next free index', () => {
     nextAutoProjectSessionName(['earlyriser-x1', 'earlyriser-x2', 'work'], '/work/earlyRiser/apps/miniprogram'),
     'earlyriser-x3',
   )
+})
+
+test('project active session is persistent, project-scoped, and clearable', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-active-project-'))
+    const config = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+
+    assert.equal(await getActiveSession(config), null)
+    await setActiveSession('work', config)
+    const active = await getActiveSession(config)
+    assert.equal(active.sessionName, 'work')
+    assert.match(active.updatedAt, /^\d{4}-\d{2}-\d{2}T/u)
+    assert.equal(await clearActiveSession('other', config), false)
+    assert.equal(await clearActiveSession('work', config), true)
+    assert.equal(await getActiveSession(config), null)
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
+})
+
+test('implicit session resolution prefers the project active session and env override', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  const previousDefault = process.env.MINIPROGRAM_BROWSER_SESSION
+  process.env.HOME = homeDir
+  delete process.env.MINIPROGRAM_BROWSER_SESSION
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-active-project-'))
+    const config = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+    await setActiveSession('work', config)
+
+    const active = await ensureImplicitSessionName({ project: projectPath }, 'snapshot')
+    assert.equal(active.session, 'work')
+    assert.equal(active.sessionSelectionSource, 'active')
+
+    process.env.MINIPROGRAM_BROWSER_SESSION = 'env-default'
+    const fromEnv = await ensureImplicitSessionName({ project: projectPath }, 'snapshot')
+    assert.equal(fromEnv.session, 'env-default')
+    assert.equal(fromEnv.sessionSelectionSource, 'env')
+
+    const explicit = await ensureImplicitSessionName({
+      project: projectPath,
+      session: 'explicit',
+      sessionProvided: true,
+    }, 'snapshot')
+    assert.equal(explicit.session, 'explicit')
+    assert.equal(explicit.sessionSelectionSource, undefined)
+
+    const fresh = await ensureImplicitSessionName({ project: projectPath, fresh: true }, 'open')
+    assert.match(fresh.session, /-x1$/u)
+    assert.equal(fresh.sessionSelectionSource, 'auto')
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+    if (previousDefault === undefined) {
+      delete process.env.MINIPROGRAM_BROWSER_SESSION
+    } else {
+      process.env.MINIPROGRAM_BROWSER_SESSION = previousDefault
+    }
+  }
+})
+
+test('session status projection is read-only and exposes active runtime context', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-status-project-'))
+    fs.mkdirSync(path.join(projectPath, 'miniprogram'), { recursive: true })
+    fs.writeFileSync(path.join(projectPath, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'miniprogram' }))
+    fs.writeFileSync(path.join(projectPath, 'miniprogram', 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
+    const config = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+    const state = createEmptySessionState({ sessionName: 'work', config })
+    state.route = '/pages/index/index'
+    await saveSessionState(state)
+    await setActiveSession('work', config)
+
+    const before = await getActiveSession(config)
+    const result = await buildSessionStatusEntries({ project: projectPath })
+    const after = await getActiveSession(config)
+
+    assert.equal(result.entries.length, 1)
+    assert.deepEqual(result.entries[0], {
+      session: 'work',
+      active: true,
+      status: 'stale',
+      projectPath,
+      route: '/pages/index/index',
+      autoPort: '',
+      devtoolsPort: '',
+      runtime: 'none',
+      runtimeOwnerSession: '',
+      attachedTo: '',
+      createdAt: result.entries[0].createdAt,
+      updatedAt: result.entries[0].updatedAt,
+    })
+    assert.deepEqual(after, before)
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
 })
 
 test('nextRefName generates agent-browser style refs', () => {

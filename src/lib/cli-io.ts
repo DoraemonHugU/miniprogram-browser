@@ -49,6 +49,7 @@ function parseArgs(argv: string[]): ParsedCliArgs {
     'map',
     'visual',
     'noise',
+    'follow',
   ])
 
   function readOptionValue(flag: string, index: number): string {

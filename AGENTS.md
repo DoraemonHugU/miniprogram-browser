@@ -22,6 +22,7 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 - Failures the tool cannot fix (login/token expiry, missing AppID, bad CLI path) need a clear human explanation plus the original error signal. Stable `code` / `next action` fields are optional helpers, not required product shape.
 - Same-project multi-session work is allowed, but each session must have explicit, visible session state and ports.
 - `session list` must surface usable autoPort/status for attached sessions (project live runtime), not only owner launch rows.
+- `open/connect --session <name>` 成功后会记录项目活动 session；省略 `--session` 时优先沿用活动 session，`MINIPROGRAM_BROWSER_SESSION` 可作为显式 Agent 默认值。
 - `doctor` is live-first: probe existing automation when possible; do not always re-run enableAutomation.
 - Default session views and destructive actions are project-scoped. `--all` is the explicit global escape hatch.
 

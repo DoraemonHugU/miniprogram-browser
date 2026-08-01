@@ -20,6 +20,7 @@ const {
   shouldClearFailedOpenSession,
   summarizeTimelinePayload,
   summarizeSnapshotPayload,
+  attachFollowupPayload,
 } = require('../dist/miniprogram-browser.js')
 
 test('buildHelpText groups commands by priority and purpose', () => {
@@ -111,6 +112,32 @@ test('buildCommandHelpText returns project-scoped session management details', (
   assert.match(help, /项目|project/)
   assert.match(help, /live|stale/)
   assert.match(help, /orphan launch/)
+  assert.match(help, /session info/)
+  assert.match(help, /活动 session/)
+})
+
+test('buildCommandHelpText returns read-only status details', () => {
+  const help = buildCommandHelpText('status')
+
+  assert.match(help, /只读/)
+  assert.match(help, /owner\/attachedTo/)
+  assert.match(help, /不启动 DevTools/)
+})
+
+test('attachFollowupPayload keeps fresh refs visible in text and JSON shapes', () => {
+  const payload = attachFollowupPayload(
+    { message: '已点击 @e1', path: '/pages/detail/index' },
+    {
+      route: '/pages/detail/index',
+      count: 1,
+      lines: ['@e2 button detail'],
+      records: [{ ref: '@e2' }],
+    },
+  )
+
+  assert.match(payload.message, /已刷新 snapshot/)
+  assert.deepEqual(payload.lines, [payload.message, '@e2 button detail'])
+  assert.deepEqual(payload.followup.records, [{ ref: '@e2' }])
 })
 
 test('parseFocusRefs normalizes comma separated focus refs', () => {
@@ -174,13 +201,14 @@ test('parseArgs supports explicit fresh runtime escape hatch', () => {
   assert.equal(parsed.options.fresh, true)
 })
 
-test('parseArgs supports explicit await and disabling implicit await', () => {
-  const parsed = parseArgs(['click', '@e1', '--session', 'demo', '--await', 'route-settled', '--no-await'])
+test('parseArgs supports explicit await, follow-up snapshot, and disabling implicit await', () => {
+  const parsed = parseArgs(['click', '@e1', '--session', 'demo', '--await', 'route-settled', '--no-await', '--follow'])
 
   assert.deepEqual(parsed.positional, ['click', '@e1'])
   assert.equal(parsed.options.session, 'demo')
   assert.equal(parsed.options.await, 'route-settled')
   assert.equal(parsed.options.noAwait, true)
+  assert.equal(parsed.options.follow, true)
 })
 
 test('buildCliErrorPayload keeps the error envelope short and stable', () => {
@@ -264,8 +292,15 @@ test('createMultipleLiveRuntimeError lists session candidates without exposing p
   assert.match(error.message, /--session <name>/)
   assert.match(error.message, /work.*autoPort=9431/)
   assert.match(error.message, /debug.*autoPort=9432/)
+  assert.match(error.message, /miniprogram-browser snapshot --session work/)
+  assert.match(error.message, /miniprogram-browser open --session new --fresh/)
   assert.match(error.hint, /不需要手动指定 autoPort/)
   assert.equal(error.next, 'session list')
+  assert.deepEqual(error.diagnostics.nextCommands, [
+    'miniprogram-browser snapshot --session work',
+    'miniprogram-browser snapshot --session debug',
+    'miniprogram-browser open --session new --fresh',
+  ])
   assert.deepEqual(error.diagnostics.liveSameProjectRuntimes.map((item) => item.name), ['work', 'debug'])
 })
 

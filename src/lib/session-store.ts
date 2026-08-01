@@ -441,6 +441,60 @@ function runtimeLaunchRegistryFilePath(config: AnyRecord = {}): string {
   return path.join(projectStateRoot(config), 'runtime-launches.json')
 }
 
+function activeSessionFilePath(config: AnyRecord = {}): string {
+  return path.join(projectStateRoot(config), 'active-session.json')
+}
+
+interface ActiveSessionState {
+  sessionName: string
+  updatedAt: string
+}
+
+async function getActiveSession(config: AnyRecord = {}): Promise<ActiveSessionState | null> {
+  if (!normalizeProjectPath(config && config.projectPath)) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(activeSessionFilePath(config), 'utf8')) as AnyRecord
+    const sessionName = String((parsed && (parsed.sessionName || parsed.name)) || '').trim()
+    if (!sessionName) {
+      return null
+    }
+    return {
+      sessionName,
+      updatedAt: String((parsed && parsed.updatedAt) || '').trim(),
+    }
+  } catch (_: unknown) {
+    return null
+  }
+}
+
+async function setActiveSession(sessionName: string, config: AnyRecord = {}): Promise<void> {
+  const normalizedProjectPath = normalizeProjectPath(config && config.projectPath)
+  const normalizedSessionName = String(sessionName || '').trim()
+  if (!normalizedProjectPath || !normalizedSessionName) {
+    return
+  }
+
+  const filePath = activeSessionFilePath({ ...config, projectPath: normalizedProjectPath })
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, JSON.stringify({
+    sessionName: normalizedSessionName,
+    updatedAt: new Date().toISOString(),
+  }, null, 2))
+}
+
+async function clearActiveSession(sessionName: string, config: AnyRecord = {}): Promise<boolean> {
+  const active = await getActiveSession(config)
+  if (!active || active.sessionName !== String(sessionName || '').trim()) {
+    return false
+  }
+
+  await rm(activeSessionFilePath(config), { force: true })
+  return true
+}
+
 function normalizeRuntimeLaunchId(value: unknown): string {
   return String(value || '')
     .trim()
@@ -1438,6 +1492,7 @@ async function clearSessionState(sessionName: string, config: AnyRecord = {}): P
   const resolvedConfig = await resolveSessionConfig(sessionName, config)
   await rm(sessionFilePath(sessionName, resolvedConfig), { force: true })
   await unregisterSessionProject(sessionName, resolvedConfig)
+  await clearActiveSession(sessionName, resolvedConfig)
 }
 
 module.exports = {
@@ -1461,6 +1516,9 @@ module.exports = {
   listSessionStates,
   loadOtherSessionConfigs,
   listRuntimeLaunches,
+  getActiveSession,
+  setActiveSession,
+  clearActiveSession,
   reconcileRuntimeLaunches,
   isEphemeralNoiseSessionName,
   runtimeLockName,

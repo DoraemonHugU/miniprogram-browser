@@ -43,7 +43,7 @@ npx miniprogram-browser ...
 ## 核心心智
 
 1. `open` 绑定的是一个**小程序工作会话（session）**，不是浏览器 URL
-2. 同一项目下，`open` 默认复用唯一可用的开发者工具实例；如果有多个不同 live runtime，不按“最新”猜测，需用 `--session` 选定；没有可复用实例，或你显式 `--fresh` 时，才会尝试新开
+2. 同一项目下，`open` 默认优先沿用活动 session，再复用唯一可用的开发者工具实例；如果有多个不同 live runtime 且没有活动目标，不按“最新”猜测，需用 `--session` 选定；没有可复用实例，或你显式 `--fresh` 时，才会尝试新开
 3. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
 4. 常规使用不要自己再手拼开发者工具的 `cli open`；路径、信任项目、端口等由本 CLI 处理
 5. 绑定后先 `path` 或 `app inspect` 确认当前状态
@@ -89,7 +89,7 @@ miniprogram-browser snapshot -i --layout
 # 若本机未配置开发者工具 CLI 路径，再设置（路径按本机安装位置修改）
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
-# 最短路径：可省略 --session（会按项目自动生成/复用类似 myapp-x1 的名字；多 live runtime 时请显式指定 session）
+# 最短路径：可省略 --session（优先沿用活动 session；首次使用时按项目自动生成/复用类似 myapp-x1 的名字；多 live runtime 且无活动目标时请显式指定 session）
 miniprogram-browser open --project /path/to/miniprogram-root
 miniprogram-browser snapshot -i
 miniprogram-browser click @e1 --await route-change
@@ -151,6 +151,8 @@ miniprogram-browser screenshot --session feat-a --mode layout --await visible:.p
 miniprogram-browser wait 1200 --session feat-a
 ```
 
+如果 Agent 需要在一次操作后立即拿到新页面状态，可给 `goto`、`click` 或 `fill` 加 `--follow`。它会在动作完成后重新生成一次 refs 摘要；默认不自动跟随，避免每次操作都把完整页面树塞回上下文。
+
 建议：
 
 - `open` 默认等待稳定（运行时响应、路径/页面栈短暂稳定等）
@@ -210,7 +212,8 @@ export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tm
 
 ### 怎么选名字
 
-- **可省略 `--session`**：CLI 会按项目生成/复用类似 `myapp-x1` 的名字；`open --fresh` 且仍省略时，往往会再开一个新的自动名（如 `myapp-x2`）。这个自动名只解决 session 身份，不会在多个不同 live runtime 时替你猜目标
+- **可省略 `--session`**：CLI 优先继续项目活动 session；没有活动 session 时才按项目生成/复用类似 `myapp-x1` 的名字。`open --fresh` 且仍省略时，往往会再开一个新的自动名（如 `myapp-x2`）。这个自动名只解决 session 身份，不会在多个不同 live runtime 时替你猜目标
+- **Agent 默认值**：需要按工作树或 Agent 固定目标时可设置 `MINIPROGRAM_BROWSER_SESSION=work`；命令行显式 `--session` 优先
 - **显式命名**（推荐有语义）：`--session work`、`debug`、`feat-a`，便于并行与沟通
 - 不要依赖无意义的全局固定名当「唯一默认台」去硬撞
 
@@ -253,7 +256,8 @@ miniprogram-browser open --session agent-task-a --fresh
 - 多个 session 可附着同一（或不同）automation 端口；端口由 CLI 自动分配与避让，日常不必手填。若同一项目同时有多个不同 live runtime，使用 `--session <name>` 选择目标；需要隔离实例时再用 `--fresh`
 - `close --session <name>`：默认结束该工作台；若只是附着别人的实例，通常**不会**关掉底层开发者工具窗口
 - 需要关掉底层实例时，用 owner session 关闭，或按 CLI 帮助使用显式 runtime 关闭选项
-- `session list`：默认当前项目；`session list --all` 看全部；输出含 `created`（创建时间）、status/autoPort；**附着到他人 runtime 的 session 也会回填 live 端口与 `attachedTo`**
+- `session list`：默认当前项目；`session list --all` 看全部；输出含 `created`（创建时间）、active/status/autoPort；**附着到他人 runtime 的 session 也会回填 live 端口与 `attachedTo`**。`session info`/`status` 默认查看活动 session
+- `status`（或 `session info`）：只读确认活动/指定 session 的 live 状态、当前 route、Runtime owner/attachedTo 和端口；不会启动 DevTools 或分配新端口
 - 默认隐藏 `gate-*` / `e2e-*` / `test-*` 等门禁残留的 stale 行；需要全量时加 `--noise`；清理用 `session prune`
 - `session prune`：清理当前项目里过期/无效 session 记录，并尽量关掉对应工具窗口（不扫其他项目）
 - `session kill <name>` / `session close <name>`：针对当前项目下的同名 session
