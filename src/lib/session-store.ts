@@ -996,12 +996,22 @@ function runtimeLockName(config: Record<string, unknown> = {}): string {
 /**
  * 选择可附着的 live runtime。
  * 多条 session 记录若共享同一 autoPort，视为**同一底层 runtime**（多工作台附着）。
- * 多个不同 live autoPort 时取 updatedAt 最新的，**不报 ambiguous**。
+ * 多个不同 live autoPort 且没有显式 session 时返回 ambiguous，禁止按时间猜测目标。
  */
 function selectAttachableRuntimeSession(
-  sessions: { status?: string; autoPort?: string; name?: string; sessionName?: string; updatedAt?: string }[] = [],
+  sessions: {
+    status?: string
+    autoPort?: string
+    name?: string
+    sessionName?: string
+    projectPath?: string
+    route?: string
+    devtoolsPort?: string
+    createdAt?: string
+    updatedAt?: string
+  }[] = [],
   preferredSessionName = '',
-): { mode: string; session?: AnyRecord; sessions?: AnyRecord[] } {
+): { mode: 'none' | 'attach' | 'ambiguous'; session?: AnyRecord; sessions?: AnyRecord[] } {
   const liveSessions = (sessions || []).filter((item: AnyRecord) => item && item.status === 'live' && item.autoPort)
   const preferred = String(preferredSessionName || '').trim()
   if (preferred) {
@@ -1035,13 +1045,17 @@ function selectAttachableRuntimeSession(
       sessions: [],
     }
   }
-  // 1 个或多个不同 live 端口：都自动选，不冲突。多 port 时取 updatedAt 最新。
+  // 只有一个底层 runtime 时可以无歧义复用；多个 runtime 必须让调用方展示候选。
   if (uniqueRuntimes.length > 1) {
     uniqueRuntimes.sort((a, b) => {
-      const tA = String(a.updatedAt || a.createdAt || '').trim()
-      const tB = String(b.updatedAt || b.createdAt || '').trim()
-      return tB.localeCompare(tA)
+      const nameA = String(a.name || a.sessionName || '').trim()
+      const nameB = String(b.name || b.sessionName || '').trim()
+      return nameA.localeCompare(nameB)
     })
+    return {
+      mode: 'ambiguous',
+      sessions: uniqueRuntimes,
+    }
   }
   return {
     mode: 'attach',

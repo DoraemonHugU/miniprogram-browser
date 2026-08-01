@@ -37,7 +37,7 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 - `session` is the agent work context; runtime is the real DevTools automation endpoint.
 - `open/connect` should reuse a unique live same-project runtime by default instead of forcing a fresh DevTools automation endpoint.
 - Multiple session/launch rows sharing the **same autoPort** count as one runtime.
-- autoPort is owned by the CLI (allocate + reserve + attach). Multiple different live ports are never a user decision: auto-attach to the newest; never surface SESSION_CONFLICT / ambiguous for port choice.
+- autoPort is owned by the CLI (allocate + reserve + attach). Users do not choose ports. Multiple different live ports are a target ambiguity: when no explicit session matches, show the candidate sessions and require `--session`; never silently choose the newest.
 - Attached sessions must say which owner runtime they attached to.
 - `--fresh` is the explicit escape hatch for trying to start a new runtime.
 - Closing an attached session should only unbind that session by default. Closing the owner runtime requires the owner session or an explicit runtime-level close.

@@ -38,7 +38,7 @@ function buildHelpText() {
   call page <method> [...args] 调用当前页方法
 
 会话与连接:
-  open                         优先 attach 唯一 live runtime；否则启动新 runtime
+  open                         优先 attach 唯一 live runtime；多 runtime 需明确 session；否则启动新 runtime
   connect                      open 的别名
   session list                 列出当前项目已绑定的 session
   session prune                清理当前项目 stale session 和 orphan launch
@@ -47,7 +47,7 @@ function buildHelpText() {
   path                         输出当前页面路径
   relaunch <route>             重启到指定路由
   wait <target|ms>             等待 ref、selector 或固定毫秒
-  screenshot [path]            截图并输出文件路径
+  screenshot [path]            截图并输出文件路径（省略 path 时使用系统临时目录）
   help                         输出帮助
 
 兼容别名:
@@ -55,7 +55,7 @@ function buildHelpText() {
   input                        fill 的别名
 
 常用选项:
-  --session <name>             session 名称；省略时按项目自动生成/复用 {project}-xN
+  --session <name>             session 名称；省略时按项目自动生成/复用 {project}-xN；多 runtime 时需显式
   --json                       以 JSON 输出
   --project <path>             当前 shell 可读的小程序项目根目录；可由当前 Git 工作树自动发现
   --fresh                      open 时强制请求新 runtime；失败不会静默降级为 attach
@@ -113,7 +113,7 @@ function buildCommandHelpText(command: unknown): string {
   - open 默认等待 stable：App runtime 响应、页面路径/页面栈短暂稳定，并尝试读取通用视图树
   - 如果 Tool 层已连通但 App 仍在 warmup，open 会保留 session 并返回 appReady=false；业务动作前显式执行 await app-ready
   - 如果当前项目没有已启动的小程序 runtime，attach 不会发生，open 会走启动路径
-  - 同项目存在多个 live runtime 时不会静默选择；请显式使用目标 session 或传 --fresh
+  - 同项目存在多个不同 live runtime 时不会按“最新”静默选择；请显式使用目标 session 或传 --fresh
   - --fresh 表示“必须新起”；失败时不会偷偷 attach 到已有 runtime
   - DevTools debug 里的 ws connect <port> 是 CLI 自己的 /upgrade 长连接端口，不是 automation ws 端口
   - 同一 session 串行执行；不同 session 可以并发
@@ -364,7 +364,7 @@ function buildCommandHelpText(command: unknown): string {
   - --no-ref 会隐藏图片里的 @eN 标签，但不会影响 focus 框或 session/ref 解析
   - layout 默认用语义布局；加 --raw 可切到更底层的运行时节点布局
   - --capsule 可在 layout/visual 图上叠加右上角微信胶囊
-  - 不传路径时保存到默认截图目录
+  - 不传路径时保存到系统临时目录下的短文件名；同名冲突会自动追加 -1、-2……
 `
     case 'session':
       return `session

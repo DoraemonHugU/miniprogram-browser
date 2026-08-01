@@ -1,6 +1,10 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
+const {
+  allocateTempScreenshotPath,
+} = require('./temp-artifacts')
+
 type AnyRecord = Record<string, unknown>
 
 interface RectPct {
@@ -136,7 +140,13 @@ async function createVisualProbe({
   captureScreenshot?: (instance: MiniProgramLike, outputPath: string) => Promise<string>
   createImageAdapter?: (targetPath: string) => Promise<{ bitmap: BitmapLike }>
 }): Promise<Record<string, unknown>> {
-  const targetPath = screenshotPath || path.join((config.tempScreenshotDir as string) || '/tmp', `visual-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+  const targetPath = screenshotPath || await allocateTempScreenshotPath({
+    directory: config.tempScreenshotDir,
+    projectPath: config.projectPath,
+    sessionName: config.sessionName,
+    route: page.path,
+    mode: 'visual-probe',
+  })
   const performCapture = captureScreenshot || (async (instance: MiniProgramLike, outputPath: string) => {
     await instance.screenshot({ path: outputPath })
     return outputPath

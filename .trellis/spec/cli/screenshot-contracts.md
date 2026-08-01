@@ -1,7 +1,7 @@
 # CLI 截图 / 视觉契约（code-spec）
 
 > 适用范围：`miniprogram-browser screenshot`、`snapshot` 的视觉与结构输出通道。
-> 维护者：改动 `src/miniprogram-browser.ts` 的 `handleScreenshot` / `handleSnapshot`、`src/lib/visual.ts`、`src/lib/runtime.ts` 的 `captureScreenshotToPath` 时，必须同步本文件。
+> 维护者：改动 `src/miniprogram-browser.ts` 的 `handleScreenshot` / `handleSnapshot`、`src/lib/visual.ts`、`src/lib/runtime.ts` 的 `captureScreenshotToPath` 或 `src/lib/temp-artifacts.ts` 时，必须同步本文件。
 
 ## 1. Scope / Trigger
 
@@ -23,6 +23,9 @@ async function captureScreenshotToPath(miniProgram, targetPath, timeoutMs = 1500
 // src/lib/visual.ts —— 稳定通道（纯 JS，不调官方截图）
 async function captureLayoutScreenshot({ targetPath, config, refs, ... })
 async function captureVisualScreenshot({ miniProgram, targetPath, config, timeoutMs, pageCapture })
+
+// src/lib/temp-artifacts.ts —— 未指定输出路径时的产物分配
+async function allocateTempScreenshotPath({ directory, projectName, sessionName, route, mode, ... })
 ```
 
 ## 3. Contracts
@@ -57,6 +60,13 @@ async function captureVisualScreenshot({ miniProgram, targetPath, config, timeou
 - 该 probe 走 `captureScreenshotToPath(..., 2500)`（真实像素，2500ms，`src/miniprogram-browser.ts`）。
 - **含义**：`snapshot` 默认（不带 `--visual`）是**零真实像素**的纯文本 + ASCII 输出；真实像素探针升级为显式 `--visual` 触发，不再是隐蔽默认行为。
 
+### 3.4 默认截图产物路径与文件名
+
+- `screenshot` 未指定输出路径时，使用 `os.tmpdir()/miniprogram-browser`（Linux 默认即 `/tmp/miniprogram-browser`）；已配置的 `tempScreenshotDir` 仍可作为内部目录覆盖。
+- 默认文件名采用短、可读的组合：`mpb-<project>-<session>-<route-tail>-<route-hash>-<mode>.png`。项目、session、路由会压缩为安全 slug，路由保留尾部片段并附短 hash，避免路径过长和同路由碰撞。
+- 分配基础名时使用原子 `open(path, 'wx')`；若文件已存在，依次尝试 `-1`、`-2`……，并发进程不会互相覆盖。显式输出路径不改名、不参与该避让策略。
+- `snapshot --visual` 的内部视觉探针也使用同一分配器，避免用时间戳和随机长文件名制造不可读产物。
+
 ## 4. Validation & Error Matrix
 
 | 条件 | 结果 |
@@ -65,6 +75,7 @@ async function captureVisualScreenshot({ miniProgram, targetPath, config, timeou
 | `--focus` 引用不存在的 ref | `resolveFocusTargets` 抛 `Unknown focus refs: ...`（`src/lib/visual.ts:757`） |
 | 官方截图超时 | `captureScreenshotToPath` 抛超时错误（page/visual/annotate 失败；layout 不受影响） |
 | `--trust-project` 传入 | `parseArgs` 正向分支置 `options.trustProject = true`（`src/lib/cli-io.ts`）；反向 `--no-trust-project` 置 `false`。二者均为可选 escape hatch，默认信任。 |
+| 未指定截图路径 | 写入系统临时目录，使用短组合名；已有同名文件则自动递增后缀，不覆盖旧文件 |
 
 ## 5. Good / Base / Bad Cases
 
@@ -75,6 +86,7 @@ async function captureVisualScreenshot({ miniProgram, targetPath, config, timeou
 ## 6. Tests Required
 
 - `tests/skill-docs.test.cjs` 已守卫「SKILL.md 引用的命令 / flag / await 条件必须被 CLI 实现」——新增模式或 flag 必须同步文档，否则 `npm test` 失败。
+- `tests/temp-artifacts.test.cjs` 覆盖默认临时目录、短文件名、已有文件递增和并发分配唯一性。
 - 已实现的守卫（当前 `npm test` 全绿覆盖）：
   - `handleScreenshot` 默认 `mode = 'layout'`（cli-help.ts 文本 + 源码 `options.mode || 'layout'`）。
   - `snapshot` 默认 ASCII 图：`--no-map` 关闭、`--visual` 显式触发真实像素探针（`tests/skill-docs.test.cjs` 的 `KNOWN_HIDDEN_FLAGS` 已不含 `--trust-project`，改为真正验证该 flag 由 CLI 实现）。

@@ -59,7 +59,7 @@ const ASSERTION_KEYS = ['projectPath']
 // 不使用 default / agent 名
 // 基于项目路径 slug + 序号：
 //   earlyRiser/apps/miniprogram → earlyriser-x1
-// 复用：已有最大 earlyriser-xN
+// 复用：已有最大 earlyriser-xN；这只是隐式 session 名，不是多 runtime 时的选择信号
 // 新开：open --fresh 且未显式 session → earlyriser-x{N+1}
 projectSessionSlug(projectPath)
 pickAutoProjectSessionName(existingNames, projectPath)
@@ -77,12 +77,14 @@ open --session work --project X
    → 磁盘读取 session（可能不存在 → 创建空 session）
    → stripRuntimeFields() 清理旧文件残留的运行时字段
    → bindSessionRuntimeFromPool()：按 sessionName/project 从 runtime 池瞬态回绑 autoPort
-     （优先同 sessionName live；否则同项目唯一 live）
+     （显式 session 优先同名 live；省略 session 时仅在同项目唯一 live runtime 时回绑）
+     （多个不同 live runtime → 保留候选，返回 ambiguous，不按时间猜测）
    → ensureSessionPorts()：仅在仍无 autoPort 时分配新端口
 
 2. findRuntime(X)  [open 路径]
    → 查 RuntimeLaunchRecord: project=X, status=live
-   ├─ 有（同 session 优先） → attach（拿到 autoPort 直接连 WebSocket）
+   ├─ 有且目标无歧义（显式 session 优先） → attach（拿到 autoPort 直接连 WebSocket）
+   ├─ 有多个不同 live runtime 且未命中显式 session → 返回 `MULTIPLE_LIVE_RUNTIMES` 与候选
    └─ 无 → assignPorts() 分配新 autoPort → devtools auto → 记 runtime record
 
 3. connect(ws://127.0.0.1:{autoPort})
@@ -131,12 +133,12 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 - `session list` / `session prune` 解析 autoPort 优先级：session 字段 → 同 sessionName launch → `runtimeOwnerSession` 的 launch → **同项目唯一 live launch**；附着 session 无自身 launch 行时也应回填 live 端口与 `attachedTo`。
 - **autoPort 由 CLI 自管**：分配 / 预留 / 附着；使用者日常不选 port。
 - **同 autoPort 多条 live launch/session 视为同一 runtime**。
-- **多个不同 live autoPort**：`selectAttachableRuntimeSession` 取 `updatedAt` 最新自动 attach；**永不** `SESSION_CONFLICT` / `ambiguous`。失败诊断里的 live 列表只放 JSON diagnostics，不进主 hint。
+- **多个不同 live autoPort**：显式 session 命中则 attach；否则返回 `ambiguous` / `MULTIPLE_LIVE_RUNTIMES`，在人话提示和 JSON diagnostics 中列出候选 session；不按 `updatedAt` 选择“最新”，也不要求用户手填 autoPort。
 - **噪音收敛**：`reconcileRuntimeLaunches` 把过期 `starting`（默认 >3min）标 `stale`；探测失败的 starting 立即 stale。`session list` 默认隐藏 `gate/e2e/test` 前缀的 stale；`--noise` 看全量。
 - 同项目 `open` 串行：`locks/__open_project__.lock`，避免双 auto。
 - `OPEN_TIMEOUT` 不被 WeappLog 的 `cli-server-start-error` 覆盖 code。
-- started 失败后非 `--fresh` 可救援 attach 到同项目其它 live port。
-- 冷启动失败自愈（在 cleanup 之前）：① 本 `autoPort` 已 live → connect-only 成功；② 同项目其它 live → attach；仅自愈失败才 close/清 session。
+- started 失败后非 `--fresh` 可救援 attach 到同一 `autoPort` 或同项目唯一其它 live runtime；多个不同 live runtime 仍要求显式 session。
+- 冷启动失败自愈（在 cleanup 之前）：① 本 `autoPort` 已 live → connect-only 成功；② 同项目唯一其它 live → attach；仅自愈失败才 close/清 session。
 - wait-live 预算耗尽后仍做一次 late live 探测，减少边界竞态导致的假失败。
 
 
@@ -249,7 +251,7 @@ autoPort 冲突检查在运行时分配时由 `validateSessionPortConflicts` 处
   - `prepareSessionStateForSave`：保存后的 `config` 中不含 `autoPort`/`devtoolsPort`
   - `loadSessionState`：从含 autoPort 的旧 JSON 加载后，内存中 `config.autoPort` 为空
   - `stripRuntimeFields`：输入含运行时字段的输出不含这些字段
-  - `selectAttachableRuntimeSession`：同 port 去重后始终 attach（多 port 取最新 updatedAt）；有 preferred sessionName → 同名优先
+  - `selectAttachableRuntimeSession`：同 port 去重后始终 attach；多 port 且未命中 preferred sessionName 返回 `ambiguous`；有 preferred sessionName → 同名优先
   - `selectRuntimeLaunchForSession`：同 sessionName 优先；无同名时同项目唯一 live port 可回绑
 
 ## 7. Wrong vs Correct

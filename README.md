@@ -130,7 +130,7 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 # 已安装时
 # 在小程序项目目录或同 Git 工作树里，通常可以省略 --project 与 --session
-# 省略 --session 时自动生成/复用 {project}-xN（如 earlyriser-x1）
+# 省略 --session 时自动生成/复用 {project}-xN（如 earlyriser-x1）；同项目有多个不同 live runtime 时需显式指定
 miniprogram-browser open
 miniprogram-browser open --project /path/to/miniprogram-root
 miniprogram-browser snapshot -i
@@ -198,7 +198,7 @@ miniprogram-browser await stable --session demo
 ## 当前能力
 
 - 运行时语义快照与 `@eNN` refs
-- 多 session 并发；同一 session 串行；默认 attach 同项目唯一 live runtime；`--fresh` 是显式新 runtime 逃逸点
+- 多 session 并发；同一 session 串行；默认 attach 同项目唯一 live runtime；多个不同 live runtime 时要求 `--session`，不会按最新记录猜测；`--fresh` 是显式新 runtime 逃逸点
 - **session 与 runtime 解耦**：session 存 route/refs 等用户上下文，不固化 `autoPort`；连接端口由 runtime 池管理，后续命令自动回绑
 - 默认项目级 session 管理；`session list --all` 是显式全局查看入口
 - 共享同一 `autoPort` 的命令通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime
@@ -216,7 +216,7 @@ miniprogram-browser await stable --session demo
 - 必须已登录微信开发者工具；登录 token 过期时无法启用自动化（无游客模式绕过）。失败时会给出人话说明，并保留 DevTools 原始错误
 - fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` / `devtools logs` 判断是否真的失败
 - 如果 fresh 启动阶段已经看到页面显示，但 `open` 仍未成功，优先短等 5 到 10 秒，再重跑同一个 `open`；不要立刻再次 `--fresh`
-- `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳
+- `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳；若同时存在多个 live runtime，先用 `session list` 再显式传 `--session <name>`
 - 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工已打开的实例建议先 `doctor --project <path> --devtools-port <port>`
 - 如果 fresh 启动已经显示 `Using AppID: ...`，但后续仍连不上 automation，这通常不是路径或 AppID 问题，而是 DevTools 自身的 `cli server` / 编译链路仍未起来
 - 如果真实 `screenshot` 偶发超时，优先切到 `screenshot --mode layout`，其次再看 `snapshot -i --layout`；不要把 `close/open` 或重启 DevTools 当默认修复手段
@@ -312,6 +312,7 @@ miniprogram-browser screenshot out.png --session demo --mode layout -c
 - 可继续叠加 `--focus` 高亮
 - `--no-ref` 时隐藏图片里的 `@eN` 标签，但不影响 focus 框
 - 可选 `--capsule` 叠加右上角微信胶囊
+- 未指定输出路径时写入系统临时目录（Linux 默认 `/tmp/miniprogram-browser`），使用短的项目/session/路由组合名；冲突自动追加 `-1`、`-2`……
 
 ## Skill 集成
 

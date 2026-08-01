@@ -21,7 +21,7 @@
 
 ### 2.2 全局选项（稳定）
 
-- `--session <name>`：显式工作台；省略时按项目自动 `{slug}-xN`（见 session-contracts）
+- `--session <name>`：显式工作台；省略时按项目自动 `{slug}-xN`（见 session-contracts）。同项目存在多个不同 live runtime 且没有命中目标时，必须显式指定 session
 - `--project <path>`：可省略（cwd/Git 唯一发现）
 - `--json`：机器可读
 - `--fresh`：强制新 runtime（open）
@@ -100,6 +100,7 @@ ASCII  = 辅（区域框 + 编号锚点；LOD + 避让）
 ```text
 显式 --session <name> 一等公民（并行工作台）
 省略 → 项目语义名 {slug}-xN 生成/复用
+多个不同 live runtime 且无显式目标 → 返回候选 session，不按 `updatedAt` 选择“最新”
 禁止把 default 当产品默认名
 autoPort 不落 session 文件；成功可回显
 ```

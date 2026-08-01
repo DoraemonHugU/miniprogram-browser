@@ -809,21 +809,20 @@ test('runtimeLockName serializes sessions attached to the same automation port',
   assert.equal(runtimeLockName({ autoPort: '' }), '')
 })
 
-test('selectAttachableRuntimeSession attaches only when there is one live same-project runtime', () => {
+test('selectAttachableRuntimeSession requires an explicit session when live runtimes are ambiguous', () => {
   assert.deepEqual(selectAttachableRuntimeSession([
     { name: 'owner-a', status: 'live', autoPort: '9527' },
   ]), {
     mode: 'attach',
     session: { name: 'owner-a', status: 'live', autoPort: '9527' },
   })
-  // 多不同 live port：自动选，不 ambiguous（无 updatedAt 时保持输入顺序首项）
+  // 多不同 live port：不按 updatedAt 猜测目标，返回候选 runtime
   const multiPort = selectAttachableRuntimeSession([
     { name: 'owner-a', status: 'live', autoPort: '9527', updatedAt: '2026-01-01T00:00:00.000Z' },
     { name: 'owner-b', status: 'live', autoPort: '9530', updatedAt: '2026-06-01T00:00:00.000Z' },
   ])
-  assert.equal(multiPort.mode, 'attach')
-  assert.equal(multiPort.session.autoPort, '9530')
-  assert.equal(multiPort.session.name, 'owner-b')
+  assert.equal(multiPort.mode, 'ambiguous')
+  assert.deepEqual(multiPort.sessions.map((item) => item.name), ['owner-a', 'owner-b'])
   assert.deepEqual(selectAttachableRuntimeSession([
     { name: 'stale-a', status: 'stale', autoPort: '9527' },
   ]), {
@@ -1202,4 +1201,3 @@ test('enrichOpenFailure maps cold-start not-ready message to OPEN_TIMEOUT', asyn
   const enriched = await enrichOpenFailure(error, state, { timeout: 5000 })
   assert.equal(enriched.code, 'OPEN_TIMEOUT')
 })
-

@@ -73,6 +73,10 @@ const {
 } = require('./lib/ascii-map')
 
 const {
+  allocateTempScreenshotPath,
+} = require('./lib/temp-artifacts')
+
+const {
   emit,
   emitProgress,
   parseArgs,
@@ -118,6 +122,7 @@ const {
   runtimeLockName,
   selectAttachableRuntimeSession,
   shouldShutdownRuntimeOnClose,
+  projectSessionSlug,
   pickAutoProjectSessionName,
   nextAutoProjectSessionName,
 } = require('./lib/session-store')
@@ -386,7 +391,9 @@ async function resolveSession(options: AnyRecord, resolveOpts: { allocatePorts?:
   // session 不固化 autoPort：后续命令先从 runtime 池按 sessionName 回绑，
   // 避免 ensureSessionPorts 重新分配空闲端口导致连到错误 endpoint。
   if (!explicitOverrides.autoPort && !options.fresh) {
-    await bindSessionRuntimeFromPool(state)
+    await bindSessionRuntimeFromPool(state, {
+      preferSessionName: Boolean(options.sessionProvided),
+    })
   }
 
   // open/connect/doctor 才允许分配新 autoPort；path/snapshot 等只回绑，避免「假端口 9517 不可用」误导
@@ -412,7 +419,10 @@ async function resolveSession(options: AnyRecord, resolveOpts: { allocatePorts?:
  * 优先匹配同 sessionName 的 live launch；否则同项目唯一 live autoPort。
  * 探测失败的 launch 标记为 stale，继续尝试同 session 的其他候选。
  */
-async function bindSessionRuntimeFromPool(state: SessionState, options: { requireLive?: boolean } = {}): Promise<boolean> {
+async function bindSessionRuntimeFromPool(
+  state: SessionState,
+  options: { requireLive?: boolean; preferSessionName?: boolean } = {},
+): Promise<boolean> {
   const projectPath = String(state.config.projectPath || '').trim()
   if (!projectPath) {
     return false
@@ -424,7 +434,7 @@ async function bindSessionRuntimeFromPool(state: SessionState, options: { requir
   const requireLive = options.requireLive !== false
   const launches = await listRuntimeLaunches({ ...state.config, projectPath })
   const resolvedProject = path.resolve(projectPath)
-  const preferred = String(state.name || '').trim()
+  const preferred = options.preferSessionName === false ? '' : String(state.name || '').trim()
   const candidates = launches.filter((item: AnyRecord) => {
     if (!item || !item.autoPort) {
       return false
@@ -438,7 +448,9 @@ async function bindSessionRuntimeFromPool(state: SessionState, options: { requir
   })
 
   // 同 sessionName 优先
-  const own = candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred)
+  const own = preferred
+    ? candidates.filter((item: AnyRecord) => String(item.sessionName || '').trim() === preferred)
+    : []
   let tryList: AnyRecord[] = own
   if (tryList.length === 0) {
     // 无同名：按 autoPort 去重后仅允许唯一 live runtime
@@ -898,7 +910,7 @@ async function tryHealOpenAfterStartFailure(state: SessionState, options: AnyRec
   }
 
   // 2) 同项目其它 live runtime
-  const attachResult = await resolveAttachableRuntime(state)
+  const attachResult = await resolveAttachableRuntime(state, options)
   if (attachResult.mode === 'attach' && attachResult.session) {
     const sessionInfo = attachResult.session as AnyRecord
     const autoPort = String(sessionInfo.autoPort || '').trim()
@@ -1018,7 +1030,10 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
     ? await isAutomationEndpointLive(state.config, { timeoutMs: 1000 }).catch(() => false)
     : false
   if (!currentEndpointLive && !options.fresh && !options.autoPort) {
-    const attachResult = await resolveAttachableRuntime(state)
+    const attachResult = await resolveAttachableRuntime(state, options)
+    if (attachResult.mode === 'ambiguous') {
+      throw createMultipleLiveRuntimeError(state, attachResult.sessions || [])
+    }
     if (attachResult.mode === 'attach' && attachResult.session) {
       const sessionInfo = attachResult.session as AnyRecord
       const autoPort = sessionInfo.autoPort as string | undefined
@@ -1369,7 +1384,7 @@ function emitOpenResult(result: AnyRecord, options: AnyRecord) {
   }, options)
 }
 
-async function resolveAttachableRuntime(state: SessionState) {
+async function resolveAttachableRuntime(state: SessionState, options: AnyRecord = {}) {
   const projectPath = path.resolve(state.config.projectPath || '')
   if (!projectPath) {
     return { mode: 'none', sessions: [] }
@@ -1425,9 +1440,13 @@ async function resolveAttachableRuntime(state: SessionState) {
     devtoolsPort: item.devtoolsPort || '',
     status: item.status || 'stale',
     route: item.route || '',
+    createdAt: item.createdAt || '',
     updatedAt: item.updatedAt || '',
   }))
-  const selected = selectAttachableRuntimeSession(attachableSessions, state.name)
+  const selected = selectAttachableRuntimeSession(
+    attachableSessions,
+    options.sessionProvided ? state.name : '',
+  )
   if (selected.mode !== 'attach') {
     return selected
   }
@@ -1436,6 +1455,36 @@ async function resolveAttachableRuntime(state: SessionState) {
     mode: 'attach',
     session: selected.session,
   }
+}
+
+function createMultipleLiveRuntimeError(state: SessionState, sessions: AnyRecord[]) {
+  const candidates = (sessions || []).map((item: AnyRecord) => ({
+    name: String(item.name || item.sessionName || '').trim(),
+    autoPort: String(item.autoPort || '').trim(),
+    route: String(item.route || '').trim(),
+    devtoolsPort: String(item.devtoolsPort || '').trim(),
+  })).filter((item: AnyRecord) => item.name)
+  const candidateLines = candidates.map((item: AnyRecord) => {
+    const details = [
+      item.route ? `route=${item.route}` : '',
+      item.autoPort ? `autoPort=${item.autoPort}` : '',
+    ].filter(Boolean).join(' ')
+    return `  ${item.name}${details ? `  ${details}` : ''}`
+  })
+  const error = new Error([
+    '当前项目存在多个 live runtime，无法安全判断目标。',
+    '请显式使用 --session <name> 选择已有 runtime，或使用 --fresh 新开 runtime。',
+    '可选 session:',
+    ...candidateLines,
+  ].join('\n')) as unknown as AnyRecord
+  error.code = 'MULTIPLE_LIVE_RUNTIMES'
+  error.hint = '已有 runtime 不需要手动指定 autoPort；先用 session list 查看当前项目的 session。'
+  error.next = 'session list'
+  error.diagnostics = {
+    projectPath: state.config.projectPath,
+    liveSameProjectRuntimes: candidates,
+  }
+  return error
 }
 
 function summarizeDevtoolsStartupHints(logPayload: AnyRecord) {
@@ -1685,15 +1734,26 @@ function summarizeAutomationProbeHint(condition: AnyRecord, probe: AnyRecord) {
   return `phase=${condition.kind}`
 }
 
+function countUniqueLiveRuntimePorts(liveSameProjectSessions: AnyRecord[] = []) {
+  return new Set(
+    (Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions : [])
+      .map((item: AnyRecord) => String(item && item.autoPort || '').trim())
+      .filter(Boolean),
+  ).size
+}
+
 /**
- * open 失败诊断用的 resolution 标签（内部观测，不是使用者决策点）。
- * 端口由 CLI 自管自避让；多个 live port 也只标 attachable，从不 ambiguous。
+ * open 失败诊断用的 resolution 标签。
+ * 端口仍由 CLI 自管；多个不同 live port 是 session 选择歧义，而不是让用户选择端口。
  */
 function summarizeOpenResolution(options: AnyRecord, liveSameProjectSessions: AnyRecord[] = []) {
-  const liveCount = Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions.length : 0
-  if (liveCount >= 1) {
+  const liveRuntimeCount = countUniqueLiveRuntimePorts(liveSameProjectSessions)
+  if (liveRuntimeCount >= 1) {
     if (options && options.autoPort) {
       return 'attach-blocked-by-auto-port'
+    }
+    if (liveRuntimeCount > 1) {
+      return 'ambiguous'
     }
     return 'attachable'
   }
@@ -1704,12 +1764,11 @@ function summarizeOpenResolution(options: AnyRecord, liveSameProjectSessions: An
 }
 
 /**
- * 可选 next 提示：只在使用者显式挡了 attach 路径时给（--fresh / --auto-port）。
- * 多个 live 端口不是使用者问题，不推 session list。
+ * open 失败时给出下一步；多个 live runtime 时要求用 session 选择目标。
  */
 function resolveOpenFailureNextAction(options: AnyRecord, liveSameProjectSessions: AnyRecord[] = []) {
-  const liveCount = Array.isArray(liveSameProjectSessions) ? liveSameProjectSessions.length : 0
-  if (liveCount < 1) {
+  const liveRuntimeCount = countUniqueLiveRuntimePorts(liveSameProjectSessions)
+  if (liveRuntimeCount < 1) {
     return ''
   }
   if (options && options.fresh) {
@@ -1717,6 +1776,9 @@ function resolveOpenFailureNextAction(options: AnyRecord, liveSameProjectSession
   }
   if (options && options.autoPort) {
     return 'open without --auto-port'
+  }
+  if (liveRuntimeCount > 1) {
+    return 'session list; then use --session <name>'
   }
   return ''
 }
@@ -2553,7 +2615,13 @@ async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef:
 
     let visual = null
     if (options.visual && shouldAttemptVisualProbe(state, page.path, scopeRef, options)) {
-      const visualProbePath = path.join(state.config.tempScreenshotDir, `visual-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+      const visualProbePath = await allocateTempScreenshotPath({
+        directory: state.config.tempScreenshotDir,
+        projectName: projectSessionSlug(state.config.projectPath),
+        sessionName: state.name,
+        route: page.path,
+        mode: 'visual-probe',
+      })
       const currentProbe = await captureVisualProbeForSnapshot(miniProgram, page, state, records, visualProbePath)
       visual = maybeBuildImplicitVisualChange(state, currentProbe)
     }
@@ -3016,11 +3084,25 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
     const mode = options.mode || 'layout'
     const focusRefs = parseFocusRefs(options.focus)
     const timeoutMs = Number(options.wait || 30000)
-    const name = outputPath
-      ? path.isAbsolute(outputPath)
+    let name: string
+    if (outputPath) {
+      name = path.isAbsolute(outputPath)
         ? outputPath
         : path.join(process.cwd(), outputPath)
-      : path.join(state.config.tempScreenshotDir, `shot-${Date.now()}.png`)
+    } else {
+      const currentPage = await getCurrentPage(miniProgram).catch(() => null)
+      const currentRoute = String((currentPage && currentPage.path) || state.route || 'unknown')
+      if (currentRoute && currentRoute !== 'unknown') {
+        state.route = currentRoute
+      }
+      name = await allocateTempScreenshotPath({
+        directory: state.config.tempScreenshotDir,
+        projectName: projectSessionSlug(state.config.projectPath),
+        sessionName: state.name,
+        route: currentRoute,
+        mode,
+      })
+    }
 
     async function resolveRefs() {
       const page = await getCurrentPage(miniProgram)
@@ -3469,6 +3551,18 @@ async function main(argv = process.argv.slice(2)) {
     // 仅 open/connect/doctor 需要分配新 autoPort；其它命令只从 runtime 池回绑
     const allocatePorts = command === 'open' || command === 'connect' || command === 'doctor'
     const state = await resolveSession(resolvedOptions, { allocatePorts })
+    if (
+      !resolvedOptions.sessionProvided
+      && !resolvedOptions.autoPort
+      && command !== 'open'
+      && command !== 'connect'
+      && command !== 'doctor'
+    ) {
+      const runtimeSelection = await resolveAttachableRuntime(state, resolvedOptions)
+      if (runtimeSelection.mode === 'ambiguous') {
+        throw createMultipleLiveRuntimeError(state, runtimeSelection.sessions || [])
+      }
+    }
     if (shouldAcquireRuntimeLock(command, state)) {
       runtimeLock = await acquireSessionLock(runtimeLockName(state.config), state.config, { command: `runtime ${command}` })
     }
@@ -3506,6 +3600,7 @@ module.exports = {
   classifyOpenFailureFromStartupHints,
   summarizeDevtoolsStartupHints,
   summarizeOpenResolution,
+  createMultipleLiveRuntimeError,
   shouldClearFailedOpenSession,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,

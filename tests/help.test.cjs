@@ -12,6 +12,7 @@ const {
   resolveOpenFailureNextAction,
   shouldRetryOpenWithAnotherAutoPort,
   summarizeOpenResolution,
+  createMultipleLiveRuntimeError,
   summarizeDevtoolsStartupHints,
   classifyOpenFailureFromStartupHints,
   shouldAttemptVisualProbe,
@@ -237,16 +238,35 @@ test('summarizeOpenResolution distinguishes attachable and start-required startu
   assert.equal(summarizeOpenResolution({ devtoolsPort: '23986' }, []), 'adopt-via-devtools-port')
   assert.equal(summarizeOpenResolution({}, [{ name: 'owner', autoPort: '9431' }]), 'attachable')
   assert.equal(summarizeOpenResolution({ autoPort: '9555' }, [{ name: 'owner', autoPort: '9431' }]), 'attach-blocked-by-auto-port')
-  // 多个 live 端口由 CLI 自选，仍标 attachable，不再 ambiguous
-  assert.equal(summarizeOpenResolution({}, [{ name: 'a' }, { name: 'b' }]), 'attachable')
+  // 多个不同 live 端口需要 session 选择；同端口多行仍只算一个 runtime
+  assert.equal(summarizeOpenResolution({}, [{ name: 'a', autoPort: '9431' }, { name: 'b', autoPort: '9432' }]), 'ambiguous')
+  assert.equal(summarizeOpenResolution({}, [{ name: 'a', autoPort: '9431' }, { name: 'b', autoPort: '9431' }]), 'attachable')
 })
 
 test('resolveOpenFailureNextAction only suggests attach fallback when the request was fresh or auto-port pinned', () => {
   assert.equal(resolveOpenFailureNextAction({}, []), '')
   assert.equal(resolveOpenFailureNextAction({ fresh: true }, [{ name: 'owner', autoPort: '9431' }]), 'open without --fresh')
   assert.equal(resolveOpenFailureNextAction({ autoPort: '9555' }, [{ name: 'owner', autoPort: '9431' }]), 'open without --auto-port')
-  // 多 live 不是使用者决策点，不推 session list
-  assert.equal(resolveOpenFailureNextAction({}, [{ name: 'a' }, { name: 'b' }]), '')
+  assert.equal(
+    resolveOpenFailureNextAction({}, [{ name: 'a', autoPort: '9431' }, { name: 'b', autoPort: '9432' }]),
+    'session list; then use --session <name>',
+  )
+})
+
+test('createMultipleLiveRuntimeError lists session candidates without exposing port selection as the action', () => {
+  const error = createMultipleLiveRuntimeError({ config: { projectPath: '/tmp/shop' } }, [
+    { name: 'work', autoPort: '9431', route: '/pages/home/index' },
+    { name: 'debug', autoPort: '9432', route: '/pages/settings/index' },
+  ])
+
+  assert.equal(error.code, 'MULTIPLE_LIVE_RUNTIMES')
+  assert.match(error.message, /多个 live runtime/)
+  assert.match(error.message, /--session <name>/)
+  assert.match(error.message, /work.*autoPort=9431/)
+  assert.match(error.message, /debug.*autoPort=9432/)
+  assert.match(error.hint, /不需要手动指定 autoPort/)
+  assert.equal(error.next, 'session list')
+  assert.deepEqual(error.diagnostics.liveSameProjectRuntimes.map((item) => item.name), ['work', 'debug'])
 })
 
 test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startup failures', () => {

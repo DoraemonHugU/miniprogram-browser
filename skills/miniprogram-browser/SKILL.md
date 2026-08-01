@@ -43,7 +43,7 @@ npx miniprogram-browser ...
 ## 核心心智
 
 1. `open` 绑定的是一个**小程序工作会话（session）**，不是浏览器 URL
-2. 同一项目下，`open` 默认会尽量复用已经可用的开发者工具实例；只有没有可复用实例，或你显式 `--fresh` 时，才会尝试新开
+2. 同一项目下，`open` 默认复用唯一可用的开发者工具实例；如果有多个不同 live runtime，不按“最新”猜测，需用 `--session` 选定；没有可复用实例，或你显式 `--fresh` 时，才会尝试新开
 3. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
 4. 常规使用不要自己再手拼开发者工具的 `cli open`；路径、信任项目、端口等由本 CLI 处理
 5. 绑定后先 `path` 或 `app inspect` 确认当前状态
@@ -89,7 +89,7 @@ miniprogram-browser snapshot -i --layout
 # 若本机未配置开发者工具 CLI 路径，再设置（路径按本机安装位置修改）
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
-# 最短路径：可省略 --session（会按项目自动生成/复用类似 myapp-x1 的名字）
+# 最短路径：可省略 --session（会按项目自动生成/复用类似 myapp-x1 的名字；多 live runtime 时请显式指定 session）
 miniprogram-browser open --project /path/to/miniprogram-root
 miniprogram-browser snapshot -i
 miniprogram-browser click @e1 --await route-change
@@ -210,7 +210,7 @@ export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tm
 
 ### 怎么选名字
 
-- **可省略 `--session`**：CLI 会按项目生成/复用类似 `myapp-x1` 的名字；`open --fresh` 且仍省略时，往往会再开一个新的自动名（如 `myapp-x2`）
+- **可省略 `--session`**：CLI 会按项目生成/复用类似 `myapp-x1` 的名字；`open --fresh` 且仍省略时，往往会再开一个新的自动名（如 `myapp-x2`）。这个自动名只解决 session 身份，不会在多个不同 live runtime 时替你猜目标
 - **显式命名**（推荐有语义）：`--session work`、`debug`、`feat-a`，便于并行与沟通
 - 不要依赖无意义的全局固定名当「唯一默认台」去硬撞
 
@@ -250,7 +250,7 @@ miniprogram-browser open --session agent-task-a --fresh
 ### 并发与关闭
 
 - 同一 session 内命令会串行；不同 session 可并行
-- 多个 session 可附着同一（或不同）automation 端口；端口由 CLI 自动分配与选择，日常不必关心。需要隔离实例时再用 `--fresh`
+- 多个 session 可附着同一（或不同）automation 端口；端口由 CLI 自动分配与避让，日常不必手填。若同一项目同时有多个不同 live runtime，使用 `--session <name>` 选择目标；需要隔离实例时再用 `--fresh`
 - `close --session <name>`：默认结束该工作台；若只是附着别人的实例，通常**不会**关掉底层开发者工具窗口
 - 需要关掉底层实例时，用 owner session 关闭，或按 CLI 帮助使用显式 runtime 关闭选项
 - `session list`：默认当前项目；`session list --all` 看全部；输出含 `created`（创建时间）、status/autoPort；**附着到他人 runtime 的 session 也会回填 live 端口与 `attachedTo`**
@@ -382,7 +382,7 @@ miniprogram-browser app inspect --all
 
 路径：
 
-- 不传路径：默认截图目录（仓库常见为 `artifacts/screenshots`）
+- 不传路径：系统临时目录下的短组合名（默认 Linux 路径为 `/tmp/miniprogram-browser`）；同名时自动追加 `-1`、`-2`……
 - 传路径：保存到指定位置（建议可追溯目录，便于对照日志）
 
 截图前：
