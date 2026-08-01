@@ -87,7 +87,7 @@ async function allocateTempScreenshotPath({ directory, projectName, sessionName,
 
 - `tests/skill-docs.test.cjs` 已守卫「SKILL.md 引用的命令 / flag / await 条件必须被 CLI 实现」——新增模式或 flag 必须同步文档，否则 `npm test` 失败。
 - `tests/temp-artifacts.test.cjs` 覆盖默认临时目录、短文件名、已有文件递增和并发分配唯一性。
-- 已实现的守卫（当前 `npm test` 全绿覆盖）：
+- 已实现的守卫（由相关测试覆盖）：
   - `handleScreenshot` 默认 `mode = 'layout'`（cli-help.ts 文本 + 源码 `options.mode || 'layout'`）。
   - `snapshot` 默认 ASCII 图：`--no-map` 关闭、`--visual` 显式触发真实像素探针（`tests/skill-docs.test.cjs` 的 `KNOWN_HIDDEN_FLAGS` 已不含 `--trust-project`，改为真正验证该 flag 由 CLI 实现）。
   - `--trust-project` 正向解析（`tests/help.test.cjs` 断言 `options.trustProject === true`）。
