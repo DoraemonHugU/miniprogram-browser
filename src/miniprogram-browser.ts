@@ -846,12 +846,15 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
   }
   if (
     failureContext
-    && failureContext.startupIssueCode === 'DEVTOOLS_LOGIN_REQUIRED'
+    && (failureContext.startupIssueCode === 'DEVTOOLS_LOGIN_REQUIRED'
+      || failureContext.startupIssueCode === 'DEVTOOLS_PLUGIN_MISSING')
     && failureContext.message
     && openError.code === 'OPEN_TIMEOUT'
   ) {
     openError.message = failureContext.message
-    openError.next = 're-login-devtools'
+    openError.next = failureContext.startupIssueCode === 'DEVTOOLS_PLUGIN_MISSING'
+      ? 'repair-devtools-plugin'
+      : 're-login-devtools'
   }
   if (!openError.log && failureContext && failureContext.log) {
     openError.log = failureContext.log
@@ -1275,7 +1278,7 @@ function shouldRetryOpenWithAnotherAutoPort(state: SessionState, options: AnyRec
   if (code === 'WINDOWS_SOCKET_EXHAUSTED') {
     return false
   }
-  if (String(error.startupIssueCode || '') === 'DEVTOOLS_LOGIN_REQUIRED') {
+  if (['DEVTOOLS_LOGIN_REQUIRED', 'DEVTOOLS_PLUGIN_MISSING'].includes(String(error.startupIssueCode || ''))) {
     return false
   }
   // 冷启动：指定 port 未 live / 扫端口暂空 → 允许同一次 open 内换 port 再 auto
@@ -1566,6 +1569,11 @@ function summarizeDevtoolsStartupHints(logPayload: AnyRecord) {
       message: 'DevTools 日志报告 appid missing / 41002；请确认 DevTools 实际打开的项目配置中 AppID 被正确读取。',
     },
     {
+      code: 'devtools-plugin-missing',
+      pattern: /\[ideplugin\].*(?:manifest\.json|version).*not installed|ideplugin.*not installed/iu,
+      message: 'DevTools automation 插件未安装或未加载（ideplugin manifest not installed）；请确认使用同一安装目录下的 DevTools CLI，重启或修复微信开发者工具后再 open。',
+    },
+    {
       code: 'app-launch-timeout',
       pattern: /routeTo appLaunch timeout|triggerAppRouteDone timeout/iu,
       message: 'DevTools 日志报告 appLaunch 超时；项目可能编译后没有进入可用 App runtime。',
@@ -1651,6 +1659,9 @@ function resolveStartupIssueMessage(hints: AnyRecord[] = [], code = '') {
     if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
       return item.code === 'login-expired'
     }
+    if (normalizedCode === 'DEVTOOLS_PLUGIN_MISSING') {
+      return item.code === 'devtools-plugin-missing'
+    }
     return false
   })
 
@@ -1679,6 +1690,9 @@ function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine 
     if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
       return item.code === 'login-expired'
     }
+    if (normalizedCode === 'DEVTOOLS_PLUGIN_MISSING') {
+      return item.code === 'devtools-plugin-missing'
+    }
     return false
   })
 
@@ -1694,6 +1708,18 @@ function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: A
     return {
       code: 'DEVTOOLS_LOGIN_REQUIRED',
       hint: 'devtoolsLog=login-expired',
+    }
+  }
+  if ((hints || []).some((item) => item && item.code === 'devtools-plugin-missing')) {
+    return {
+      code: 'DEVTOOLS_PLUGIN_MISSING',
+      hint: 'devtoolsLog=devtools-plugin-missing',
+    }
+  }
+  if (/\[ideplugin\].*(?:manifest\.json|version).*not installed|ideplugin.*not installed/iu.test(summaryLine)) {
+    return {
+      code: 'DEVTOOLS_PLUGIN_MISSING',
+      hint: 'devtoolsLog=devtools-plugin-missing',
     }
   }
   if (/routeTo appLaunch timeout|triggerAppRouteDone timeout/iu.test(summaryLine)) {
@@ -1726,6 +1752,12 @@ function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: A
     return {
       code: 'DEVTOOLS_LOGIN_REQUIRED',
       hint: 'devtoolsLog=login-expired',
+    }
+  }
+  if (codes.has('devtools-plugin-missing')) {
+    return {
+      code: 'DEVTOOLS_PLUGIN_MISSING',
+      hint: 'devtoolsLog=devtools-plugin-missing',
     }
   }
   if (codes.has('app-launch-timeout')) {
@@ -1770,7 +1802,7 @@ async function collectDevtoolsStartupHints(state: SessionState, options: AnyReco
     const payload = await collectDevtoolsLogs(state.config, {
       limit: 220,
       files: 6,
-      grep: 'appid missing|41002|routeTo appLaunch timeout|triggerAppRouteDone timeout|start cli server error|10055|INVALID_LOGIN|access_token',
+      grep: 'appid missing|41002|routeTo appLaunch timeout|triggerAppRouteDone timeout|start cli server error|ideplugin|manifest\.json.*not installed|10055|INVALID_LOGIN|access_token',
     })
     const files = Array.isArray(payload.files)
       ? (payload.files as AnyRecord[]).filter((file: AnyRecord) => {

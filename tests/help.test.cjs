@@ -375,6 +375,13 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
     false,
   )
   assert.equal(
+    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
+      code: 'OPEN_TIMEOUT',
+      startupIssueCode: 'DEVTOOLS_PLUGIN_MISSING',
+    }, 1),
+    false,
+  )
+  assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'connected', { code: 'OPEN_TIMEOUT' }, 1),
     false,
   )
@@ -532,7 +539,7 @@ test('summarizeDevtoolsStartupHints does not fall back to stderr when current ti
       {
         path: '/tmp/logs/2026-05-03-11-41-03.log',
         lines: [
-          '[ERROR] [ideplugin] get devtools manifest.json catch error Error: not installed',
+          '[INFO] [ideplugin] extension heartbeat ok',
         ],
       },
     ],
@@ -579,6 +586,35 @@ test('classifyOpenFailureFromStartupHints prioritizes login failure over automat
   assert.deepEqual(classification, {
     code: 'DEVTOOLS_LOGIN_REQUIRED',
     hint: 'devtoolsLog=login-expired',
+  })
+})
+
+test('summarizeDevtoolsStartupHints recognizes missing automation plugin signals', () => {
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        path: '/tmp/logs/2026-08-01-plugin.log',
+        lines: [
+          '[ERROR] [ideplugin] get devtools manifest.json catch error Error: not installed',
+          '[ERROR] start cli server error: [object Object]',
+        ],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints.map((item) => item.code), ['devtools-plugin-missing', 'cli-server-start-error'])
+  assert.match(hints[0].message, /插件|plugin/i)
+})
+
+test('classifyOpenFailureFromStartupHints prioritizes missing plugin over generic server noise', () => {
+  const classification = classifyOpenFailureFromStartupHints([
+    { code: 'devtools-plugin-missing', sample: '[ERROR] [ideplugin] manifest.json not installed' },
+    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
+  ])
+
+  assert.deepEqual(classification, {
+    code: 'DEVTOOLS_PLUGIN_MISSING',
+    hint: 'devtoolsLog=devtools-plugin-missing',
   })
 })
 
