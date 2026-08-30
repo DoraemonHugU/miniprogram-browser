@@ -60,6 +60,7 @@ const {
   waitForMiniProgramStable,
   extractLogSummary,
 } = require('../dist/lib/runtime.js')
+const { buildWindowsBatchCommand } = require('../dist/lib/runtime-cli.js')
 const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
 
 function createState() {
@@ -1338,6 +1339,35 @@ test('formatAutomationCliError explains login token expiry and keeps raw', () =>
   assert.match(error.raw, /INVALID_LOGIN,access_token expired/)
 })
 
+test('parseAutomationCliFailure keeps AppID-not-found code 10 distinct from login expiry', () => {
+  const raw = [
+    '[info] long connection established',
+    '[error] {',
+    '  code: 10,',
+    "  message: 'Error: 不存在此 AppID 请检查后重新输入 (code 10)'",
+    '}',
+  ].join('\n')
+  const failure = parseAutomationCliFailure({ status: 1, raw }, {})
+
+  assert.ok(failure)
+  assert.match(failure.message, /AppID|不存在/u)
+  assert.doesNotMatch(failure.message, /登录态失效|access_token|INVALID_LOGIN/iu)
+  assert.match(failure.raw, /不存在此 AppID/u)
+})
+
+test('formatAutomationCliError explains an explicit re-login code 10 as login failure', () => {
+  const raw = [
+    '[error] {',
+    '  code: 10,',
+    "  message: 'Error: 需要重新登录 (code 10)'",
+    '}',
+  ].join('\n')
+  const error = formatAutomationCliError(raw)
+
+  assert.match(error.message, /登录/u)
+  assert.match(error.raw, /需要重新登录/u)
+})
+
 test('parseAutomationCliFailure explains INVALID_LOGIN from CLI output with raw preserved', () => {
   const raw = [
     '√ IDE server started successfully, listening on http://127.0.0.1:63870',
@@ -1364,6 +1394,13 @@ test('parseAutomationCliFailure does not treat successful auto log with Fetching
   assert.equal(parseAutomationCliFailure({ status: 0, raw }, {}), null)
   assert.equal(parseAutomationCliFailure({ status: 1, raw }, {}), null)
   assert.equal(explainDevtoolsFailureRaw(raw), null)
+
+  const touristRaw = [
+    '✔ Using AppID: touristappid',
+    '✔ auto',
+    '[info] long connection established',
+  ].join('\n')
+  assert.equal(parseAutomationCliFailure({ status: 0, raw: touristRaw }, {}), null)
 })
 
 test('parseAutomationCliFailure still explains real AppID missing without Using AppID success', () => {
@@ -1649,13 +1686,32 @@ test('enableAutomation invokes the current Windows cli.bat entry without requiri
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0].command, 'cmd.exe')
-  assert.deepEqual(calls[0].args.slice(0, 4), [
+  assert.deepEqual(calls[0].args.slice(0, 3), [
     '/d',
+    '/s',
     '/c',
-    'F:\\tools\\wechat-devtools\\cli.bat',
-    'auto',
   ])
+  assert.equal(calls[0].args[3], buildWindowsBatchCommand('F:\\tools\\wechat-devtools\\cli.bat', [
+    'auto',
+    '--project',
+    'F:\\demo\\apps\\miniprogram',
+    '--auto-port',
+    '9421',
+    '--debug',
+  ]))
   assert.equal(calls[0].options.cwd, tempDir)
+  assert.equal(calls[0].options.windowsVerbatimArguments, true)
+})
+
+test('buildWindowsBatchCommand quotes spaces and Chinese as complete cmd.exe argv', () => {
+  assert.equal(
+    buildWindowsBatchCommand('F:\\tools\\wechat devtools\\cli.bat', [
+      'auto',
+      '--project',
+      'F:\\demo\\public demo 中文',
+    ]),
+    '""F:\\tools\\wechat devtools\\cli.bat" "auto" "--project" "F:\\demo\\public demo 中文""',
+  )
 })
 
 test('validateAutomationCliConfig prefers cli.bat and falls back to the legacy cli.js bundle', () => {
@@ -2667,6 +2723,7 @@ test('connectWithRetry returns connected miniProgram', async () => {
 
 test('withMiniProgram forwards allowRuntimeNotReady to the runtime connection layer', async () => {
   const observed = {}
+  const subscribedEvents = []
   let evaluateCalled = false
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-with-mini-'))
   const state = {
@@ -2686,7 +2743,9 @@ test('withMiniProgram forwards allowRuntimeNotReady to the runtime connection la
 
   const miniProgram = {
     __mpbRuntimeReady: false,
-    on() {},
+    on(eventName) {
+      subscribedEvents.push(eventName)
+    },
     removeListener() {},
     disconnect() {},
     async evaluate() {
@@ -2725,6 +2784,7 @@ test('withMiniProgram forwards allowRuntimeNotReady to the runtime connection la
     assert.equal(result, 'ok')
     assert.equal(observed.options.allowRuntimeNotReady, true)
     assert.equal(evaluateCalled, false)
+    assert.deepEqual(subscribedEvents, [])
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

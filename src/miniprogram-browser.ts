@@ -1545,17 +1545,25 @@ function createMultipleLiveRuntimeError(state: SessionState, sessions: AnyRecord
   return error
 }
 
+const DEVTOOLS_LOGIN_FAILURE_PATTERN = /INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login/iu
+const DEVTOOLS_APPID_NOT_FOUND_PATTERN = /不存在此\s*AppID|AppID[^\r\n]*(?:does not exist|not found)/iu
+
 function summarizeDevtoolsStartupHints(logPayload: AnyRecord) {
   const rules = [
     {
       code: 'login-expired',
-      pattern: /INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login|code:\s*10\b/iu,
+      pattern: DEVTOOLS_LOGIN_FAILURE_PATTERN,
       message: 'DevTools 日志报告登录态失效（41001/42001/42002、access_token missing 或需要重新登录）；请在微信开发者工具中重新登录后再 open。',
     },
     {
       code: 'appid-missing',
       pattern: /appid missing|41002/iu,
       message: 'DevTools 日志报告 appid missing / 41002；请确认 DevTools 实际打开的项目配置中 AppID 被正确读取。',
+    },
+    {
+      code: 'appid-not-found',
+      pattern: DEVTOOLS_APPID_NOT_FOUND_PATTERN,
+      message: 'DevTools 日志报告项目 AppID 不存在或当前状态不可用；请核对 project.config。若为 touristappid，不要改用生产 AppID 绕过。',
     },
     {
       code: 'devtools-plugin-missing',
@@ -1643,7 +1651,7 @@ function resolveStartupIssueMessage(hints: AnyRecord[] = [], code = '') {
       return item.code === 'cli-server-start-error'
     }
     if (normalizedCode === 'APPID_MISSING') {
-      return item.code === 'appid-missing'
+      return item.code === 'appid-missing' || item.code === 'appid-not-found'
     }
     if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
       return item.code === 'login-expired'
@@ -1674,7 +1682,7 @@ function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine 
       return item.code === 'cli-server-start-error'
     }
     if (normalizedCode === 'APPID_MISSING') {
-      return item.code === 'appid-missing'
+      return item.code === 'appid-missing' || item.code === 'appid-not-found'
     }
     if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
       return item.code === 'login-expired'
@@ -1693,10 +1701,16 @@ function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine 
 
 function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: AnyRecord = {}) {
   const summaryLine = String(options.summaryLine || '').trim()
-  if (/INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login|code:\s*10\b/iu.test(summaryLine)) {
+  if (DEVTOOLS_LOGIN_FAILURE_PATTERN.test(summaryLine)) {
     return {
       code: 'DEVTOOLS_LOGIN_REQUIRED',
       hint: 'devtoolsLog=login-expired',
+    }
+  }
+  if (DEVTOOLS_APPID_NOT_FOUND_PATTERN.test(summaryLine)) {
+    return {
+      code: 'APPID_MISSING',
+      hint: 'devtoolsLog=appid-not-found',
     }
   }
   if ((hints || []).some((item) => item && item.code === 'devtools-plugin-missing')) {

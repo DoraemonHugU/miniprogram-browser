@@ -9,6 +9,17 @@
 
 type ErrorWithMeta = Error & { raw?: string; cause?: unknown; hint?: string; code?: string }
 
+const EXPLICIT_LOGIN_FAILURE_PATTERN = /INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login/iu
+const EXPLICIT_APPID_FAILURE_PATTERN = /\bappid missing\b|errcode\s*=\s*41002|不存在此\s*AppID|AppID[^\r\n]*(?:does not exist|not found)/iu
+
+function hasExplicitLoginFailureSignal(message: string): boolean {
+  return EXPLICIT_LOGIN_FAILURE_PATTERN.test(String(message || ''))
+}
+
+function hasExplicitAppIdFailureSignal(message: string): boolean {
+  return EXPLICIT_APPID_FAILURE_PATTERN.test(String(message || ''))
+}
+
 function detectAutomationStartupIssue(rawMessage: string): { message: string; raw: string } | null {
   const message = String(rawMessage || '').trim()
   if (!message) {
@@ -42,7 +53,7 @@ function hasAutomationCliSuccessSignal(rawMessage: string): boolean {
     return false
   }
   // 明确致命信号优先于成功外观（例如成功 Using 之后又 INVALID_LOGIN 极少见，但 41002 真失败更常见）
-  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|errcode\s*=\s*41002|\bappid missing\b/iu.test(message)) {
+  if (hasExplicitLoginFailureSignal(message) || hasExplicitAppIdFailureSignal(message)) {
     return false
   }
   return /Using AppID:\s*wx\w+/iu.test(message)
@@ -66,7 +77,7 @@ function summarizeDevtoolsCliRaw(rawMessage: string, options: { maxLines?: numbe
     return raw
   }
 
-  const signalPattern = /\[error\]|INVALID_LOGIN|access_token|errcode\s*=|41002|42001|appid missing|Using AppID|start cli server error|QR_PATH|code:\s*1[07]\b|wait IDE port timeout|must be restarted|TypeError|Cannot read propert|long connection established|[✔√]\s*auto\b/iu
+  const signalPattern = /\[error\]|INVALID_LOGIN|access_token|errcode\s*=|41002|42001|appid missing|不存在此\s*AppID|需要重新登录|请先登录|Using AppID|start cli server error|QR_PATH|code:\s*1[07]\b|wait IDE port timeout|must be restarted|TypeError|Cannot read propert|long connection established|[✔√]\s*auto\b/iu
   const signalLines: string[] = []
   const otherLines: string[] = []
   for (const line of lines) {
@@ -132,18 +143,14 @@ function explainDevtoolsFailureRaw(rawMessage: string): string | null {
     return null
   }
 
-  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|code:\s*10\b/iu.test(message)) {
-    return '微信开发者工具登录态失效（access_token 过期 / INVALID_LOGIN）。自动化无法在未登录状态下启用；请在 DevTools 中重新登录后再 open/connect。底层原始错误见 raw。'
+  if (hasExplicitLoginFailureSignal(message)) {
+    return '微信开发者工具登录态不可用（未登录、需要重新登录、access_token 过期或 INVALID_LOGIN）。自动化无法在该状态下启用；请在 DevTools 中登录后再 open/connect。底层原始错误见 raw。'
   }
 
-  // 真 AppID 失败：必须有 41002 / appid missing 等明确失败信号；
+  // 真 AppID 失败：必须有 41002 / appid missing / 不存在此 AppID 等明确失败信号；
   // 仅有 `Fetching AppID () permissions` 是成功路径也会出现的进度日志。
-  if (/\bappid missing\b|errcode\s*=\s*41002/iu.test(message)) {
-    return 'DevTools 未能读取到有效 AppID（常见 41002 / appid missing）。请确认项目 project.config 中 AppID 配置正确，并在开发者工具中能正常打开该项目。底层原始错误见 raw。'
-  }
-
-  if (/not login|islogin.*false|please login|请先登录/iu.test(message)) {
-    return '微信开发者工具当前未登录。请先完成 DevTools 登录，再重试 open/connect。底层原始错误见 raw。'
+  if (hasExplicitAppIdFailureSignal(message)) {
+    return 'DevTools 拒绝了项目 AppID（不存在此 AppID / 41002 / appid missing）。请确认 project.config 中的 AppID 与当前 DevTools 状态匹配；若使用 touristappid，GUI 游客模式可用不代表 CLI open 已启动可自动化的 App runtime，也不要改用生产 AppID 绕过。底层原始错误见 raw。'
   }
 
   return null
@@ -216,7 +223,8 @@ function parseAutomationCliFailure(result: { error?: Error; raw?: string; stdout
   // 登录失效等关键失败：优先人话，raw 保留完整底层输出
   const explained = explainDevtoolsFailureRaw(raw)
   if (explained) {
-    const signalLine = raw.split(/\r?\n/u).find((line) => /INVALID_LOGIN|access_token|41002|42001|code:\s*10\b/iu.test(line))
+    const signalLine = raw.split(/\r?\n/u).find((line) => hasExplicitLoginFailureSignal(line) || hasExplicitAppIdFailureSignal(line))
+      || raw.split(/\r?\n/u).find((line) => /code:\s*10\b/iu.test(line))
       || raw.split(/\r?\n/u).find((line) => /^\s*\[error\]/iu.test(line))
       || raw
     return {

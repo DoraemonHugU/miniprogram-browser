@@ -138,7 +138,7 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 ### 3.1.4 open 冷启动时序与 cleanup
 
 - enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
-- Windows/WSL 盘符路径冷启动使用官方 CLI `open → auto`；`open` 返回的 IDE service port 可记录，但 `auto` 不继续强塞 `--port`。WSL 分配 automation port 时不得先从 Linux 侧 bind，避免 mirrored networking 把短暂占用映射给随后启动的 Windows DevTools。
+- Windows/WSL 盘符路径冷启动使用官方 CLI `open → auto`；`open` 返回的 IDE service port 可记录，但 `auto` 不继续强塞 `--port`。`cli.bat` 必须通过单个、逐项引用 argv 的 `cmd.exe /S /C` 命令串执行，避免空格/中文项目路径在 Windows 二次解析时被截断。WSL 分配 automation port 时不得先从 Linux 侧 bind，避免 mirrored networking 把短暂占用映射给随后启动的 Windows DevTools。
 - open/doctor 的 `--timeout` 是完整操作总预算；live probe、`enableAutomation`、late probe、discover 与 connect 必须接收当时的剩余预算，禁止内部固定最小 timeout 反向突破 deadline。
 - started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
 - session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间。
@@ -171,6 +171,8 @@ await withMiniProgram(state, task) // allowEnable 默认 false
 ### 3.1.3 DevTools raw 分类与启动 hints
 
 - `Fetching AppID () permissions` **不是** AppID 失败信号；成功 auto 也会打印。真失败看 `41002` / `appid missing` 等。
+- 裸 `code: 10` 不作为登录失败判据；必须结合原文区分 `INVALID_LOGIN` / `需要重新登录` 与 `不存在此 AppID`。
+- GUI 游客模式、Tool endpoint、App runtime 是三层状态。`touristappid` 只约束公开测试数据，不保证免登录 automation；仅 Tool 可连时不得订阅会触发 `App.enableLog` 的 App 级事件，也不得宣称页面命令可用。
 - open 失败 diagnostics 的 WeappLog hints 应 **时间过滤**（默认近 10 分钟 mtime），避免陈旧 41002 挂到本次失败。
 
 ### 3.2 持久化过滤

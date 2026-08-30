@@ -792,7 +792,10 @@ async function withMiniProgram(state: Record<string, unknown>, task: (miniProgra
     runtimeEvents.exceptionEvents.push(normalizeExceptionEvent(payload))
   }
 
-  if (typeof miniProgram.on === 'function') {
+  // miniprogram-automator 的 console 订阅会隐式发送 App.enableLog。
+  // Tool-only endpoint 尚无 App runtime 时不能注册，否则连接关闭后该内部
+  // fire-and-forget Promise 会以未处理 rejection 泄漏 Connection closed 堆栈。
+  if (runtimeReady && typeof miniProgram.on === 'function') {
     miniProgram.on('console', onConsole)
     miniProgram.on('exception', onException)
   }
@@ -803,10 +806,10 @@ async function withMiniProgram(state: Record<string, unknown>, task: (miniProgra
     }
     return await task(miniProgram)
   } finally {
-    if (typeof miniProgram.off === 'function') {
+    if (runtimeReady && typeof miniProgram.off === 'function') {
       miniProgram.off('console', onConsole)
       miniProgram.off('exception', onException)
-    } else if (typeof miniProgram.removeListener === 'function') {
+    } else if (runtimeReady && typeof miniProgram.removeListener === 'function') {
       miniProgram.removeListener('console', onConsole)
       miniProgram.removeListener('exception', onException)
     }

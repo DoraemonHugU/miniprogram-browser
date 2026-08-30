@@ -271,6 +271,20 @@ function validateAutomationCliConfig(config: AnyRecord, options: AnyRecord = {})
   }
 }
 
+function quoteWindowsBatchArgument(value: string): string {
+  const normalized = String(value || '')
+  if (/["\r\n\0]/u.test(normalized)) {
+    throw new Error('Windows DevTools CLI arguments cannot contain quotes or line breaks.')
+  }
+  return `"${normalized}"`
+}
+
+function buildWindowsBatchCommand(cliPath: string, args: string[]): string {
+  const command = [cliPath, ...args].map((value) => quoteWindowsBatchArgument(value)).join(' ')
+  // cmd.exe /S /C 的首尾引号属于命令包装，内部每个参数仍独立引用。
+  return `"${command}"`
+}
+
 function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = {}): AnyRecord {
   validateAutomationCliConfig(config, options)
   const cliDirectory = path.dirname(String(config.cliPath || ''))
@@ -285,10 +299,13 @@ function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = 
   if (hasWindowsBundle && /\.bat$/iu.test(cliPath)) {
     // Node 官方约束：Windows 不能把 .bat 当作独立可执行文件，需由 cmd.exe 启动。
     // https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows
-    result = runner('cmd.exe', ['/d', '/c', windowsCliArg, ...args], {
+    // /C 会再次解析命令行，必须把完整命令作为一个参数传入，并显式引用
+    // cli.bat 与每个 argv；否则带空格/中文的项目路径会在 cmd.exe 层被截断。
+    result = runner('cmd.exe', ['/d', '/s', '/c', buildWindowsBatchCommand(windowsCliArg, args)], {
       cwd: cliDirectory,
       encoding: 'utf8',
       timeout: timeoutMs,
+      windowsVerbatimArguments: true,
       windowsHide: true,
     })
   } else if (hasWindowsBundle) {
@@ -485,6 +502,7 @@ module.exports = {
   buildDevtoolsOpenArgs,
   shouldOpenProjectBeforeAutomation,
   validateAutomationCliConfig,
+  buildWindowsBatchCommand,
   runDevtoolsCli,
   runAutomationCli,
   openDevtoolsProject,

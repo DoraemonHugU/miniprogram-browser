@@ -56,7 +56,9 @@ open [ --project ] [ --session ]
 
 当前已验证的 DevTools `2.02.2608060` 中，`miniprogram-automator` 的 `confirmModal` / `cancelModal` 返回空结果但不关闭可见弹窗。在该能力能用真实官方自动化路径验收前，不将弹窗确认/取消暴露为 L0 命令，也不用 `eval/setData`、OCR 或 GUI 驱动伪造通过。
 
-Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
+Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；调用时必须把完整命令作为一个 `cmd.exe /S /C` 参数并逐项引用 argv，保证空格/中文项目路径不被二次解析截断。旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
+
+macOS 和 WSL UNC 路径直接执行平台适用的 `auto`，Windows/WSL 盘符路径的 `open → auto` 是冷启动时序差异，不是登录或权限差异。公开 Demo 的 `touristappid` 只用于隔离生产身份与数据；GUI 游客模式、Tool endpoint 可连、App runtime ready 必须分层判断。只有 App runtime ready 才能宣称 `open` 成功并执行 `path` / `snapshot`，不得仅凭 `✔ auto` 伪报成功。
 
 ### 3.2 失败路径（产品）
 
@@ -79,6 +81,7 @@ Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 
 - DevTools 成功 `auto` 也会打印 `Fetching AppID () permissions`，随后才有 `Using AppID: wx…` / `✔ auto`。
 - **禁止**仅凭 `Fetching AppID () permissions` 判定 AppID 缺失。
 - 真失败须有明确信号：`errcode=41002` / `appid missing` 等，且无成功 `Using AppID`。
+- 裸 `code: 10` 不决定错误类型：`INVALID_LOGIN` / `需要重新登录` 属于登录失败；`不存在此 AppID` 属于 AppID 打开失败。原始文本优先于数字 code。
 - 实现：`hasAutomationCliSuccessSignal` / `explainDevtoolsFailureRaw` / `parseAutomationCliFailure`（`runtime-cli-shared.ts`）。
 - automation WebSocket 和 `App.*` 成功、但 `Page.getElements` / `Element.getWXML` 超时，必须在有限时间内返回 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE` 并保留原始协议超时；不得返回空 snapshot 或要求改用生产 AppID。
 
@@ -151,6 +154,9 @@ autoPort 不落 session 文件；成功可回显
 | 多个同文案、同 selector 控件 | 按当前结构 occurrence 精确解析；不得退回第一个同文案元素 |
 | 依赖 `dist/lib` 私有导出 | 不在兼容承诺内 |
 | 登录失效等 | 人话 + raw；工具不伪造成功 |
+| `code: 10 / 需要重新登录` | 登录态不可用的人话说明 + raw |
+| `code: 10 / 不存在此 AppID` | AppID 打开失败的人话说明 + raw；不得误报 access token 过期 |
+| Tool endpoint live、App runtime 未就绪 | 不订阅 App 级事件、不伪报成功；保留 `connected=true` / `appReady=false` 诊断 |
 | 成功 auto 日志含 `Fetching AppID () permissions` | **不得**判 AppID 失败；`parseAutomationCliFailure` → null |
 | 真 41002 / appid missing（无 Using AppID 成功） | 人话 AppID 问题 + 保留 raw 真因 |
 | `App.*` 可用但 `Page.*` / `Element.*` 超时 | `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE` + 原始方法/timeout；不伪造空 snapshot |
@@ -181,6 +187,8 @@ autoPort 不落 session 文件；成功可回显
 - 冷启动/失败分类：`tests/runtime.test.cjs`
   - 成功 raw（Fetching + Using AppID + ✔ auto）→ `parseAutomationCliFailure` null
   - 真 41002 → 仍人话 AppID + raw
+  - `code 10 / 不存在此 AppID` 与 `code 10 / 需要重新登录` 分类互不混淆
+  - Tool-only endpoint 不注册会隐式触发 `App.enableLog` 的 console/exception 监听
   - `summarizeDevtoolsCliRaw` 保留 error 行且有行数上界
   - `connectOrEnable({ allowEnable: false })` 非 live → 提示先 open
 - 若未来对输出字段做代码 enforcement，另开任务
