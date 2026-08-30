@@ -19,12 +19,18 @@ function resolveProject() {
   const candidate = String(process.env.MINIPROGRAM_BROWSER_GATE_PROJECT || '').trim()
   if (candidate) {
     const resolved = path.resolve(candidate)
-    if (fs.existsSync(path.join(resolved, 'project.config.json'))) {
-      return resolved
-    }
     const nested = path.join(resolved, 'miniprogram')
-    if (fs.existsSync(path.join(nested, 'project.config.json'))) {
-      return nested
+    for (const projectPath of [resolved, nested]) {
+      const configPath = path.join(projectPath, 'project.config.json')
+      if (!fs.existsSync(configPath)) {
+        continue
+      }
+      try {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+        if (config.appid === 'touristappid') {
+          return projectPath
+        }
+      } catch (_) {}
     }
   }
   return ''
@@ -115,7 +121,7 @@ function createHarness(options = {}) {
       skip(`DevTools CLI not found: ${devtoolsCli}`)
     }
     if (!project) {
-      skip('no gate project; set MINIPROGRAM_BROWSER_GATE_PROJECT')
+      skip('no touristappid gate project; set MINIPROGRAM_BROWSER_GATE_PROJECT to a synthetic public Demo')
     }
   }
 
@@ -141,6 +147,30 @@ function createHarness(options = {}) {
     return payload
   }
 
+  function installSessionCleanup(initialSessions = []) {
+    const sessions = new Set(initialSessions.filter(Boolean).map(String))
+    let active = true
+
+    function add(sessionName) {
+      if (sessionName) sessions.add(String(sessionName))
+    }
+
+    function run() {
+      if (!active) return []
+      active = false
+      const results = []
+      for (const sessionName of sessions) {
+        const result = runCli(['session', 'kill', sessionName, '--project', project, '--json'], {}, { killMs: 30000 })
+        results.push({ sessionName, status: result.status })
+        log(tag, `cleanup ${sessionName} status=${result.status}`)
+      }
+      return results
+    }
+
+    process.once('exit', run)
+    return { add, run }
+  }
+
   return {
     tag,
     repoRoot,
@@ -156,6 +186,7 @@ function createHarness(options = {}) {
     assertOk,
     ensureEnv,
     openSession,
+    installSessionCleanup,
   }
 }
 

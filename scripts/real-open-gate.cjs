@@ -10,6 +10,7 @@ h.ensureEnv()
 
 const project = h.project
 const session = `gate-${Date.now().toString(36)}`
+const cleanup = h.installSessionCleanup([session])
 
 h.log(`cli=${h.devtoolsCli}`)
 h.log(`project=${project}`)
@@ -36,7 +37,7 @@ h.assertOk(snapResult.status === 0, 'snapshot failed', { status: snapResult.stat
 h.log('snapshot ok')
 
 h.log('step: session kill (unbind gate session)')
-h.runCli(['session', 'kill', session, '--project', project, '--json'])
+cleanup.run()
 
 h.log(`PASS: open→path→snapshot session=${session} mode=${mode || '-'} autoPort=${autoPort || '-'}`)
 process.exit(0)

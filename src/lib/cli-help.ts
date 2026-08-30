@@ -373,7 +373,7 @@ function buildCommandHelpText(command: unknown): string {
   miniprogram-browser native <method> [...args] --session <name> [--await <condition>] [--timeout <ms>]
 
 作用:
-  调用开发者工具暴露的原生控制能力，例如 confirmModal / cancelModal / navigateLeft。
+  调用开发者工具暴露的低层原生控制能力。返回值不代表宿主 UI 一定生效，必须结合页面变化或截图验证。
 `
     case 'call':
       return `call

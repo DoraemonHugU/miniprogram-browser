@@ -52,6 +52,10 @@ open [ --project ] [ --session ]
 
 `goto` 必须直接发起底层路由动作，再按目标路由轮询确认，不得退回 `miniprogram-automator` 内置的固定 3 秒 route sleep。`back` 优先调用 DevTools 原生返回并验证 route；原生返回假成功时，使用无固定 3 秒等待的小程序页面栈回退。`swipe` 对普通元素优先发送 touch 序列；原生 `swiper` 在 DevTools 不执行组件默认行为时，回退到 automator 提供的 `swipeTo` 组件动作，仍不得用 `eval/setData` 改写业务状态。该边界与 [uni-app 自动化 API 对 `swipeTo` 的组件限定](https://uniapp.dcloud.net.cn/worktile/auto/api.html#element-swipeto) 一致。automation 启用后默认立即探测 live 端口，未就绪才在总 deadline 内轮询；`doctor --wait` 只限制状态轮询窗口，`--wait 0` 表示单次探测。这一取舍参考 agent-browser 的 [核心 snapshot/action 循环](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/SKILL.md) 与 [条件等待命令](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/references/commands.md)，但保留微信开发者工具冷启动所需的独立长预算。
 
+真机 L0 门禁覆盖左右滑动、原生 swiper、长按、页面/容器滚动、瞬时状态与返回，并在成功或失败退出时清理自己的 session。
+
+当前已验证的 DevTools `2.02.2608060` 中，`miniprogram-automator` 的 `confirmModal` / `cancelModal` 返回空结果但不关闭可见弹窗。在该能力能用真实官方自动化路径验收前，不将弹窗确认/取消暴露为 L0 命令，也不用 `eval/setData`、OCR 或 GUI 驱动伪造通过。
+
 Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
 
 ### 3.2 失败路径（产品）
@@ -181,7 +185,7 @@ autoPort 不落 session 文件；成功可回显
   - `connectOrEnable({ allowEnable: false })` 非 live → 提示先 open
 - 若未来对输出字段做代码 enforcement，另开任务
 - 三框架公开 Demo：`tests/public-demo.test.cjs` 与 `tests/framework-demos.test.cjs` 固化共同路由、控件、重复列表、导航及合成数据边界；Taro/uni-app 另做显式构建和真实 DevTools gate
-- 真实交互与变化等待：`tests/runtime-actions.test.cjs` 覆盖优先 touch 的 swipe、原生 swiper 组件回退、页面/容器滚动、back 回退与 WXML change；真实 DevTools gate 验证公开 Demo 的实际状态变化
+- 真实交互与变化等待：`tests/runtime-actions.test.cjs` 覆盖优先 touch 的 swipe、原生 swiper 组件回退、页面/容器滚动、back 回退与 WXML change；真实 DevTools gate 在公开 Demo 上硬验证左右滑动、长按、页面/容器滚动、瞬时状态与返回后的实际状态变化
 
 ## 7. Wrong vs Correct
 

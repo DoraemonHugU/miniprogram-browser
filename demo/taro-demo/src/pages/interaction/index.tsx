@@ -11,13 +11,25 @@ import {
 import './index.css'
 
 const scrollItems = Array.from({ length: 8 }, (_, index) => `Synthetic row ${index + 1}`)
+type TouchPoint = { clientX?: number; pageX?: number }
+type TouchEventLike = { touches?: TouchPoint[]; changedTouches?: TouchPoint[] }
+
+function touchX(points: TouchPoint[] | undefined) {
+  return Number(points?.[0]?.clientX ?? points?.[0]?.pageX ?? 0)
+}
 
 export default function Interaction() {
   const [status, setStatus] = useState('Ready')
   const [swiperIndex, setSwiperIndex] = useState(0)
+  const [swipeStatus, setSwipeStatus] = useState('ready')
+  const [scrollTop, setScrollTop] = useState(0)
+  const [pageScrollTop, setPageScrollTop] = useState(0)
   const [transientStatus, setTransientStatus] = useState('Transient hidden')
   const [bottomTapCount, setBottomTapCount] = useState(0)
   const transientTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const swipeStartX = useRef(0)
+
+  Taro.usePageScroll(({ scrollTop: nextScrollTop }) => setPageScrollTop(Math.round(nextScrollTop)))
 
   useEffect(() => () => {
     if (transientTimer.current) clearTimeout(transientTimer.current)
@@ -27,7 +39,7 @@ export default function Interaction() {
     if (transientTimer.current) clearTimeout(transientTimer.current)
     setTransientStatus('Transient visible')
     setStatus('Transient state shown')
-    transientTimer.current = setTimeout(() => setTransientStatus('Transient hidden'), 1200)
+    transientTimer.current = setTimeout(() => setTransientStatus('Transient hidden'), 2400)
   }
 
   const openModal = async () => {
@@ -45,11 +57,14 @@ export default function Interaction() {
       <Text className='status' id='interaction-status'>Status: {status}</Text>
 
       <Text className='section-title'>Scrollable container</Text>
-      <ScrollView id='interaction-scroll' className='scroll-panel' scrollY>
+      <ScrollView id='interaction-scroll' className='scroll-panel' scrollY onScroll={(event) => {
+        setScrollTop(Math.round(Number(event.detail.scrollTop || 0)))
+      }}>
         {scrollItems.map((item) => <View className='scroll-item' key={item}>{item}</View>)}
       </ScrollView>
+      <Text className='status' id='interaction-scroll-status'>Container scrollTop: {scrollTop}</Text>
 
-      <Text className='section-title'>Swipe target</Text>
+      <Text className='section-title'>Swiper target</Text>
       <Swiper id='interaction-swiper' className='swiper' indicatorDots onChange={(event) => {
         setSwiperIndex(event.detail.current)
         setStatus(`Swiped to slide ${event.detail.current + 1}`)
@@ -59,6 +74,17 @@ export default function Interaction() {
         <SwiperItem><View className='slide slide-c'>Synthetic slide 3</View></SwiperItem>
       </Swiper>
       <Text className='status' id='interaction-swiper-status'>Swiper index: {swiperIndex}</Text>
+
+      <Text className='section-title'>View swipe target</Text>
+      <View id='interaction-swipe-target' className='swipe-target'
+        onTouchStart={(event: TouchEventLike) => { swipeStartX.current = touchX(event.touches) }}
+        onTouchEnd={(event: TouchEventLike) => {
+          const direction = touchX(event.changedTouches) < swipeStartX.current ? 'left' : 'right'
+          setSwipeStatus(direction)
+          setStatus(`View swiped ${direction}`)
+        }}
+      >Swipe this view left or right</View>
+      <Text className='status' id='interaction-swipe-status'>Swipe: {swipeStatus}</Text>
 
       <View id='interaction-longpress' className='gesture-target' onLongPress={() => setStatus('Long press received')}>Long press target</View>
       <Button id='interaction-modal' onClick={openModal}>Open modal</Button>
@@ -71,6 +97,7 @@ export default function Interaction() {
         setStatus('Bottom action tapped')
       }}>Bottom page action</Button>
       <Text className='status' id='interaction-bottom-status'>Bottom taps: {bottomTapCount}</Text>
+      <Text className='status' id='interaction-page-scroll-status'>Page scrollTop: {pageScrollTop}</Text>
     </View>
   )
 }

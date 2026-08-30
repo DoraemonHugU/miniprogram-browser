@@ -32,7 +32,8 @@
 .slide-b { background: #7c3aed; }
 .slide-c { background: #0f766e; }
 
-.gesture-target {
+.gesture-target,
+.swipe-target {
   background: #ffffff;
   border: 2rpx dashed #2563eb;
   border-radius: 12rpx;

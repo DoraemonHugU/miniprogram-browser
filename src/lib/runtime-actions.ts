@@ -103,6 +103,17 @@ function touchPoint(x: number, y: number): AnyRecord {
   }
 }
 
+function touchEventPayload(touches: AnyRecord[], changedTouches: AnyRecord[]): AnyRecord {
+  // automator typings expose changeTouches; current DevTools gesture handlers read the
+  // standard changedTouches name. Send both until the upstream protocol converges.
+  // https://developers.weixin.qq.com/miniprogram/dev/devtools/auto/element.html
+  return {
+    touches,
+    changeTouches: changedTouches,
+    changedTouches,
+  }
+}
+
 async function performElementSwipe(element: AnyRecord, rawDirection: unknown, rawDistance: unknown): Promise<AnyRecord> {
   const direction = normalizeActionDirection(rawDirection)
   const requestedDistance = normalizeActionDistance(rawDistance, 180)
@@ -157,17 +168,17 @@ async function performElementSwipe(element: AnyRecord, rawDirection: unknown, ra
     ? numericValue(await swiperElement.property('current'))
     : null
 
-  await actionElement.touchstart({ touches: [start], changeTouches: [start] })
+  await actionElement.touchstart(touchEventPayload([start], [start]))
   await sleep(30)
   for (const progress of [0.34, 0.67, 1]) {
     const point = touchPoint(
       startX + (endX - startX) * progress,
       startY + (endY - startY) * progress,
     )
-    await actionElement.touchmove({ touches: [point], changeTouches: [point] })
+    await actionElement.touchmove(touchEventPayload([point], [point]))
     await sleep(30)
   }
-  await actionElement.touchend({ touches: [], changeTouches: [end] })
+  await actionElement.touchend(touchEventPayload([], [end]))
 
   if (isNativeSwiper && currentBefore !== null) {
     await sleep(80)

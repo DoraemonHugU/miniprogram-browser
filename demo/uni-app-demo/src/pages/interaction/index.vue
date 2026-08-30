@@ -5,17 +5,22 @@
     <text id="interaction-status" class="status">Status: {{ status }}</text>
 
     <text class="section-title">Scrollable container</text>
-    <scroll-view id="interaction-scroll" class="scroll-panel" scroll-y>
+    <scroll-view id="interaction-scroll" class="scroll-panel" scroll-y @scroll="onScroll">
       <view v-for="item in scrollItems" :key="item" class="scroll-item">{{ item }}</view>
     </scroll-view>
+    <text id="interaction-scroll-status" class="status">Container scrollTop: {{ scrollTop }}</text>
 
-    <text class="section-title">Swipe target</text>
+    <text class="section-title">Swiper target</text>
     <swiper id="interaction-swiper" class="swiper" indicator-dots @change="onSwiperChange">
       <swiper-item><view class="slide slide-a">Synthetic slide 1</view></swiper-item>
       <swiper-item><view class="slide slide-b">Synthetic slide 2</view></swiper-item>
       <swiper-item><view class="slide slide-c">Synthetic slide 3</view></swiper-item>
     </swiper>
     <text id="interaction-swiper-status" class="status">Swiper index: {{ swiperIndex }}</text>
+
+    <text class="section-title">View swipe target</text>
+    <view id="interaction-swipe-target" class="swipe-target" @touchstart="onSwipeStart" @touchend="onSwipeEnd">Swipe this view left or right</view>
+    <text id="interaction-swipe-status" class="status">Swipe: {{ swipeStatus }}</text>
 
     <view id="interaction-longpress" class="gesture-target" @longpress="onLongpress">Long press target</view>
     <button id="interaction-modal" @tap="onOpenModal">Open modal</button>
@@ -25,23 +30,49 @@
     <view class="page-spacer">Page scroll test area</view>
     <button id="interaction-bottom" @tap="onBottomTap">Bottom page action</button>
     <text id="interaction-bottom-status" class="status">Bottom taps: {{ bottomTapCount }}</text>
+    <text id="interaction-page-scroll-status" class="status">Page scrollTop: {{ pageScrollTop }}</text>
   </view>
 </template>
 
 <script setup lang="ts">
 import { onUnmounted, ref } from "vue";
+import { onPageScroll } from "@dcloudio/uni-app";
 
 const status = ref("Ready");
 const swiperIndex = ref(0);
+const swipeStatus = ref("ready");
+const scrollTop = ref(0);
+const pageScrollTop = ref(0);
 const transientStatus = ref("Transient hidden");
 const bottomTapCount = ref(0);
 const scrollItems = Array.from({ length: 8 }, (_, index) => `Synthetic row ${index + 1}`);
 let transientTimer: ReturnType<typeof setTimeout> | undefined;
+let swipeStartX = 0;
+
+onPageScroll(({ scrollTop: nextScrollTop }) => {
+  pageScrollTop.value = Math.round(nextScrollTop);
+});
 
 function onSwiperChange(event: Event) {
   const current = (event as Event & { detail: { current: number } }).detail.current;
   swiperIndex.value = current;
   status.value = `Swiped to slide ${current + 1}`;
+}
+
+function onScroll(event: Event) {
+  const nextScrollTop = (event as Event & { detail: { scrollTop: number } }).detail.scrollTop;
+  scrollTop.value = Math.round(nextScrollTop);
+}
+
+function onSwipeStart(event: TouchEvent) {
+  swipeStartX = event.touches[0]?.clientX ?? event.touches[0]?.pageX ?? 0;
+}
+
+function onSwipeEnd(event: TouchEvent) {
+  const endX = event.changedTouches[0]?.clientX ?? event.changedTouches[0]?.pageX ?? 0;
+  const direction = endX < swipeStartX ? "left" : "right";
+  swipeStatus.value = direction;
+  status.value = `View swiped ${direction}`;
 }
 
 function onLongpress() {
@@ -64,7 +95,7 @@ function onShowTransient() {
   status.value = "Transient state shown";
   transientTimer = setTimeout(() => {
     transientStatus.value = "Transient hidden";
-  }, 1200);
+  }, 2400);
 }
 
 function onBottomTap() {
@@ -112,7 +143,8 @@ onUnmounted(() => {
 .slide-b { background: #7c3aed; }
 .slide-c { background: #0f766e; }
 
-.gesture-target {
+.gesture-target,
+.swipe-target {
   background: #ffffff;
   border: 2rpx dashed #2563eb;
   border-radius: 12rpx;

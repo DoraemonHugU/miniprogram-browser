@@ -64,7 +64,7 @@ npm test
 # export WECHAT_DEVTOOLS_CLI=...
 # export MINIPROGRAM_BROWSER_GATE_PROJECT=...
 npm run test:real-open-gate
-npm run test:l0-e2e           # L0 旅程+分支（goto/session/click…）
+npm run test:l0-e2e           # L0 旅程+交互（session/goto/swipe/scroll/back…）
 node dist/miniprogram-browser.js help
 ```
 
@@ -175,7 +175,7 @@ miniprogram-browser screenshot --mode annotate
 npx miniprogram-browser help
 ```
 
-仓库内提供三套只含合成数据、使用 `touristappid` 的公开回归项目。它们都提供 Catalog、Controls、Lists、Navigation、Detail 和 Interaction 六条相同路由，CLI 不区分其上游框架：
+仓库内提供三套只含合成数据、使用 `touristappid` 的公开回归项目。它们都提供 Catalog、Controls、Lists、Navigation、Detail 和 Interaction 六条相同路由，CLI 不区分其上游框架。真机门禁会在调用 DevTools 前核验 `project.config.json`，只接受 `appid` 为 `touristappid` 的合成项目：
 
 - `demo/public-demo`：微信原生源码，可直接打开。
 - `demo/taro-demo`：Taro React + TypeScript；先执行 `npm ci --prefix demo/taro-demo` 和 `npm run build:weapp --prefix demo/taro-demo`。
@@ -338,6 +338,10 @@ miniprogram-browser click @e1 --session demo --wait 500
 `--timeout <ms>` 只是 `await / --await` 的最长等待时间，条件满足会提前返回；它不是固定 sleep。
 
 `--await change` 必须挂在 `click/fill/scroll/swipe/longpress` 等动作上，因为它需要动作前基线；独立 `await change` 会明确报错。`stable` 只表示 route/page-stack 暂时安静且视图可读取，不代表业务数据一定完成。
+
+### 系统弹窗的当前边界
+
+当前已验证的微信开发者工具 `2.02.2608060` 上，`miniprogram-automator` 的 `native.confirmModal()` / `native.cancelModal()` 会返回空结果，但不会关闭可见的 `wx.showModal` 弹窗。因此 CLI 不把它们伪装成已可靠的主路径；智能体触发这类弹窗后应截图并请用户处理，再继续调试。
 
 `change` 能在采样时捕捉第一次 WXML 变化，但不会把动作期间的 Toast、loading 等连续状态自动留档；动作级变化证据仍是研究候选，边界与验收标准见 [Roadmap](ROADMAP.md#research-candidate动作级瞬时变化证据)。
 

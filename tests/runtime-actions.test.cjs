@@ -32,6 +32,26 @@ test('performElementSwipe sends a real touch sequence inside the element bounds'
   const startX = calls[0][1].touches[0].pageX
   const endX = calls.at(-1)[1].changeTouches[0].pageX
   assert.ok(startX > endX)
+  assert.deepEqual(calls.at(-1)[1].changedTouches, calls.at(-1)[1].changeTouches)
+})
+
+test('performElementSwipe preserves rightward changedTouches for real gesture handlers', async () => {
+  const calls = []
+  const element = {
+    tagName: 'view',
+    async size() { return { width: 300, height: 180 } },
+    async offset() { return { left: 10, top: 20 } },
+    async touchstart(payload) { calls.push(['start', payload]) },
+    async touchmove(payload) { calls.push(['move', payload]) },
+    async touchend(payload) { calls.push(['end', payload]) },
+  }
+
+  await performElementSwipe(element, 'right', 180)
+
+  const startX = calls[0][1].touches[0].clientX
+  const end = calls.at(-1)[1]
+  assert.ok(end.changedTouches[0].clientX > startX)
+  assert.deepEqual(end.changedTouches, end.changeTouches)
 })
 
 test('performElementSwipe uses the native swiper action when touch events do not move it', async () => {

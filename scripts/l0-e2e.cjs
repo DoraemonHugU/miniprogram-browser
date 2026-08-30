@@ -1,5 +1,5 @@
 /**
- * L0 真机 E2E：覆盖主路径与关键分支（attach / goto / snapshot / session / get）。
+ * L0 真机 E2E：仅使用 touristappid Demo，覆盖 session 复用、导航与真实交互。
  *
  * 退出码：0 pass · 1 fail · 2 skip
  *
@@ -23,6 +23,7 @@ const project = h.project
 const stamp = Date.now().toString(36)
 const sessionA = `e2e-a-${stamp}`
 const sessionB = `e2e-b-${stamp}`
+const cleanup = h.installSessionCleanup([sessionA, sessionB])
 const gotoRoute = String(process.env.MINIPROGRAM_BROWSER_E2E_GOTO_ROUTE || '/pages/controls/index').trim()
 const homeRoute = '/pages/index/index'
 
@@ -49,6 +50,12 @@ function runJson(args, label) {
     return { ok: false, result, payload, label }
   }
   return { ok: true, result, payload, label }
+}
+
+function readText(selector, label) {
+  const read = runJson(['get', 'text', selector, '--session', sessionA, '--project', project, '--json'], label)
+  h.assertOk(read.ok, label, read.payload || read.result)
+  return String((read.payload && read.payload.text) || '')
 }
 
 // ---------- cases ----------
@@ -226,14 +233,182 @@ function runJson(args, label) {
   caseResult(id, true, 'ok')
 }
 
-// 14) open --fresh branch (optional heavy): only if E2E_FRESH=1
+// 14) complex public Interaction journey: real touch, scroll, transient state and back.
+{
+  const id = 'interaction.goto'
+  const route = '/pages/interaction/index'
+  const r = runJson([
+    'goto', route,
+    '--session', sessionA,
+    '--project', project,
+    '--await', `route:${route.slice(1)}`,
+    '--timeout', '30000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  caseResult(id, true, String(r.payload.path || r.payload.message || ''))
+}
+
+{
+  const id = 'interaction.swipe-view'
+  const r = runJson([
+    'swipe', '#interaction-swipe-target', 'left', '120',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-swipe-status', `${id}.status`)
+  h.assertOk(/Swipe:\s*left/iu.test(status), `unexpected ordinary swipe status: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'interaction.swipe-view-right'
+  const r = runJson([
+    'swipe', '#interaction-swipe-target', 'right', '120',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-swipe-status', `${id}.status`)
+  h.assertOk(/Swipe:\s*right/iu.test(status), `unexpected ordinary swipe status: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'interaction.swipe-native'
+  const r = runJson([
+    'swipe', '#interaction-swiper', 'left', '180',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-swiper-status', `${id}.status`)
+  h.assertOk(/Swiper index:\s*[12]/iu.test(status), `unexpected swiper status: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'interaction.longpress'
+  const r = runJson([
+    'longpress', '#interaction-longpress',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-status', `${id}.status`)
+  h.assertOk(/Long press received/iu.test(status), `unexpected longpress status: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'interaction.transient'
+  const r = runJson([
+    'click', '#interaction-transient',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-transient-status', `${id}.status`)
+  h.assertOk(/Transient visible/iu.test(status), `transient state was not captured: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'interaction.scroll-container'
+  const r = runJson([
+    'scroll', '#interaction-scroll', 'down', '120',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-scroll-status', `${id}.status`)
+  const top = Number((status.match(/(\d+)/u) || [])[1] || 0)
+  h.assertOk(top > 0, `container did not scroll: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'interaction.scroll-page'
+  const r = runJson([
+    'scroll', 'down', '600',
+    '--session', sessionA,
+    '--project', project,
+    '--await', 'change',
+    '--timeout', '5000',
+    '--json',
+  ], id)
+  h.assertOk(r.ok, id, r.payload || r.result)
+  const status = readText('#interaction-page-scroll-status', `${id}.status`)
+  const top = Number((status.match(/(\d+)/u) || [])[1] || 0)
+  h.assertOk(top > 0, `page did not scroll: ${status}`)
+  caseResult(id, true, status)
+}
+
+{
+  const id = 'navigation.back'
+  const navigationRoute = '/pages/navigation/index'
+  const detailRoute = 'pages/detail/index'
+  const gotoNavigation = runJson([
+    'goto', navigationRoute,
+    '--session', sessionA,
+    '--project', project,
+    '--await', `route:${navigationRoute.slice(1)}`,
+    '--timeout', '30000',
+    '--json',
+  ], `${id}.goto`)
+  h.assertOk(gotoNavigation.ok, `${id}.goto`, gotoNavigation.payload || gotoNavigation.result)
+  const openDetail = runJson([
+    'click', '#navigation-detail',
+    '--session', sessionA,
+    '--project', project,
+    '--await', `route:${detailRoute}`,
+    '--timeout', '10000',
+    '--json',
+  ], `${id}.open-detail`)
+  h.assertOk(openDetail.ok, `${id}.open-detail`, openDetail.payload || openDetail.result)
+  const back = runJson([
+    'back',
+    '--session', sessionA,
+    '--project', project,
+    '--await', `route:${navigationRoute.slice(1)}`,
+    '--timeout', '10000',
+    '--json',
+  ], id)
+  h.assertOk(back.ok, id, back.payload || back.result)
+  const currentPath = runJson(['path', '--session', sessionA, '--project', project, '--json'], `${id}.path`)
+  h.assertOk(currentPath.ok, `${id}.path`, currentPath.payload || currentPath.result)
+  const path = String(currentPath.payload.path || currentPath.payload.message || '')
+  h.assertOk(path.includes('pages/navigation/index'), `back returned to unexpected route: ${path}`)
+  caseResult(id, true, path)
+}
+
+// 15) open --fresh branch (optional heavy): only if E2E_FRESH=1
 if (String(process.env.MINIPROGRAM_BROWSER_E2E_FRESH || '').trim() === '1') {
   const id = 'open.fresh'
   const freshSession = `e2e-fresh-${stamp}`
+  cleanup.add(freshSession)
   try {
     const open = h.openSession(freshSession, ['--fresh'])
     caseResult(id, true, `mode=${open.mode} autoPort=${open.autoPort}`)
-    h.runCli(['session', 'kill', freshSession, '--project', project, '--json'])
   } catch (e) {
     h.fail(id, String(e && e.message || e))
   }
@@ -241,14 +416,10 @@ if (String(process.env.MINIPROGRAM_BROWSER_E2E_FRESH || '').trim() === '1') {
   caseResult('open.fresh', true, 'skipped-set-E2E_FRESH=1-to-enable')
 }
 
-// 15) cleanup kill e2e sessions (branch: session kill)
+// 16) cleanup kill e2e sessions (branch: session kill)
 {
   const id = 'session.kill-cleanup'
-  for (const name of [sessionA, sessionB]) {
-    const r = h.runCli(['session', 'kill', name, '--project', project, '--json'])
-    // kill may fail if already gone — non-fatal
-    h.log(`kill ${name} status=${r.status}`)
-  }
+  cleanup.run()
   caseResult(id, true, 'done')
 }
 

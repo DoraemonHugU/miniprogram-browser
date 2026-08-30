@@ -37,7 +37,7 @@ test('real DevTools gates do not fall back to machine-specific paths', () => {
 
 test('real DevTools gates use only the explicitly configured synthetic project', () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-gate-project-'))
-  fs.writeFileSync(path.join(project, 'project.config.json'), '{}')
+  fs.writeFileSync(path.join(project, 'project.config.json'), '{"appid":"touristappid"}')
   try {
     withHarnessEnv({ project, cli: '/opt/wechat-devtools/cli' }, (harness) => {
       assert.equal(harness.resolveProject(), project)
@@ -48,8 +48,34 @@ test('real DevTools gates use only the explicitly configured synthetic project',
   }
 })
 
+test('real DevTools gates reject non-tourist AppIDs before opening DevTools', () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-private-gate-project-'))
+  fs.writeFileSync(path.join(project, 'project.config.json'), '{"appid":"wx-private-placeholder"}')
+  try {
+    withHarnessEnv({ project, cli: '/opt/wechat-devtools/cli' }, (harness) => {
+      assert.equal(harness.resolveProject(), '')
+    })
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})
+
 test('L0 interaction gate requires a real actionable ref and hard click success', () => {
   const source = fs.readFileSync(require.resolve('../scripts/l0-e2e.cjs'), 'utf8')
   assert.doesNotMatch(source, /skipped-no-button|click-failed-soft/u)
   assert.match(source, /navigator/u)
+  assert.match(source, /installSessionCleanup/u)
+  for (const requiredCase of [
+    'interaction.swipe-view',
+    'interaction.swipe-view-right',
+    'interaction.swipe-native',
+    'interaction.longpress',
+    'interaction.transient',
+    'interaction.scroll-container',
+    'interaction.scroll-page',
+    'navigation.back',
+  ]) {
+    assert.match(source, new RegExp(requiredCase.replace('.', '\\.'), 'u'), requiredCase)
+  }
+  assert.match(source, /'--await', 'change'/u)
 })

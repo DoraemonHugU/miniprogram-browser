@@ -204,6 +204,8 @@ miniprogram-browser wait 1200 --session feat-a
 
 普通按钮、switch、checkbox 等点击后停留当前页是正常行为，CLI 不会猜测它应该跳转。只有任务明确要求导航时才加 `--await route-change` 或 `--await route:<path>`；未满足时由 await 给出准确失败。
 
+业务页 `wx.showModal` 不在 WXML 树中。当前已验证的 DevTools `2.02.2608060` 上，官方 automator 的 `confirmModal` / `cancelModal` 返回空结果但不关闭可见弹窗。触发后先截图请用户处理，不要用 `eval/setData`、OCR 或 GUI 驱动伪造点击结果。
+
 建议：
 
 - `open` 默认等待稳定（运行时响应、路径/页面栈短暂稳定等）
