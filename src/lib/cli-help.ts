@@ -12,7 +12,7 @@ function buildHelpText() {
 核心命令（优先使用）:
   open                         确保拿到一个可用的小程序项目 session
   goto <route>                 重启到指定路由
-  snapshot [-i]                生成 @e refs
+  snapshot                     生成紧凑语义 refs 与 ASCII 空间图
   click <target>               点击 ref 或 selector
   fill <target> <text>         输入文本
   get <what> [target]          读取 text/value/count/data/path/attr/prop/rect
@@ -61,23 +61,23 @@ function buildHelpText() {
   --json                       以 JSON 输出
   --project <path>             当前 shell 可读的小程序项目根目录；可由当前 Git 工作树自动发现
   --fresh                      open 时强制请求新 runtime；失败不会静默降级为 attach
-  --mode <page|visual|annotate|layout> 截图模式，默认 layout
+  --mode <page|visual|annotate|layout> 截图模式，默认 page（真实页面 PNG）
   --no-ref                     截图时不绘制 @eN 标签
   --await <condition>          动作后显式等待条件成立
   --follow                     动作完成后生成一次新的 refs 摘要（默认关闭，避免输出膨胀）
   --no-await                   关闭命令默认隐式等待
-  --wait <ms>                  等待时间或截图超时，截图默认 30000ms
-  --timeout <ms>               await / doctor / protocol 的超时
+  --wait <ms>                  动作后固定等待；doctor 为轮询窗口，screenshot 为截图超时
+  --timeout <ms>               条件等待 / protocol 的最大时长，条件满足可提前返回
   MINIPROGRAM_BROWSER_SESSION  显式设置当前 shell/Agent 的默认 session（命令行 --session 优先）
   --limit <n>                  logs/exceptions 默认输出条数
   --sections <a,b,c>           app inspect 指定输出分区
   --all                        app inspect 输出全部分区
   --stdin                      从标准输入读取 eval 脚本
   -v, --version                输出当前 CLI 版本号
-  -c, --compact                snapshot 时折叠空容器
   -d, --depth <n>              snapshot 时限制输出深度
 
 高级诊断/环境选项:
+  -c, --compact                压缩 screenshot --mode layout；snapshot 默认已经 compact
   --devtools-project <path>    传给 DevTools CLI 的项目路径；自动路径策略不可用时使用
   --project-map <linux=windows> WSL 路径前缀到 Windows 盘符前缀的显式映射
   --cli-path <path>            DevTools CLI 路径；也可用 WECHAT_DEVTOOLS_CLI
@@ -108,7 +108,7 @@ function buildCommandHelpText(command: unknown): string {
   确保当前 session 绑定到一个可用的小程序 runtime。
 
 关键点:
-  - 可省略 --session：优先沿用项目活动 session；没有活动 session 时才按项目名生成/复用 {project}-xN（如 earlyriser-x1）
+  - 可省略 --session：优先沿用项目活动 session；没有活动 session 时才按项目名生成/复用 {project}-xN（如 sample-store-x1）
   - 也可用 MINIPROGRAM_BROWSER_SESSION 设置 Agent/工作树默认 session；命令行 --session 优先
   - 显式 --session 仍可用于并行工作台（work/debug 等），成功 open/connect 后会成为该项目活动 session
   - --project 可由当前目录/Git 工作树自动发现
@@ -160,20 +160,17 @@ function buildCommandHelpText(command: unknown): string {
       return `snapshot
 
 用法:
-  miniprogram-browser snapshot -i --session <name> [-c] [-d <n>] [--layout] [--await <condition>] [--timeout <ms>] [--json] [--all]
+  miniprogram-browser snapshot --session <name> [--await <condition>] [--timeout <ms>] [--json]
 
 作用:
-  生成当前页面的语义 refs（@eN）。
+  生成紧凑语义 refs（@eN）和 ASCII 空间图。
 
-常用选项:
-  -i               生成交互 ref
-  -c, --compact    折叠空容器，减少噪音
-  -d, --depth <n>  限制层级，先看总览时使用
-  --layout         为每个 ref 附加比例位置/尺寸信息
-  --no-map         关闭默认附带的 ASCII 空间图
-  --visual         显式触发真实像素视觉探针（默认不触发）
-  --json           输出摘要化结构
-  --all            输出完整细节
+选项:
+  --json           输出紧凑结构化记录
+  --layout         在语义树中额外显示精确比例位置/尺寸
+  --no-map         不输出 ASCII 空间图
+  -d, --depth <n>  限制语义树层级
+  --all            输出完整树和内部细节
 `
     case 'click':
     case 'tap':
@@ -190,10 +187,10 @@ function buildCommandHelpText(command: unknown): string {
       return `fill/input
 
 用法:
-  miniprogram-browser fill <target> <text> --session <name> [--follow]
+  miniprogram-browser fill <target> <text> --session <name> [--wait <ms>] [--await <condition>] [--timeout <ms>] [--follow]
 
 作用:
-  向 ref 或 selector 输入文本；传 --follow 时返回输入后的新 refs 摘要。
+  向 ref 或 selector 输入文本；可固定等待或等待可观察条件，传 --follow 时返回输入后的新 refs 摘要。
 `
     case 'get':
       return `get
@@ -231,6 +228,7 @@ function buildCommandHelpText(command: unknown): string {
   - 传 --session 时，优先诊断当前绑定的 runtime/session
   - 传 --project + --devtools-port 时，可预检一个已打开的 DevTools HTTP 服务是否能成功 bootstrap automation，而不落 session
   - 会先尝试启动/连接 DevTools 自动化
+  - 启动后轮询真实运行态，App 就绪后立即返回；--wait 只限制轮询时长，--wait 0 表示单次探测
   - Tool.getInfo 成功但 App.* 超时，表示自动化服务已开但小程序运行态未就绪
   - WSL /home 项目会沿用 WSL UNC 路径直传策略
 `
@@ -349,7 +347,8 @@ function buildCommandHelpText(command: unknown): string {
   miniprogram-browser wait <target|ms> --session <name>
 
 作用:
-  原始等待 ref、selector 或固定毫秒；业务命令优先使用 await / --await。
+  数字参数会完整等待指定毫秒，例如 wait 1500；ref / selector 参数会轮询到目标出现。
+  能描述结果时优先使用 await / --await；--timeout 是最长等待时间，不保证完整暂停。
 `
     case 'screenshot':
       return `screenshot
@@ -358,18 +357,20 @@ function buildCommandHelpText(command: unknown): string {
   miniprogram-browser screenshot [path] --session <name> [--mode <page|visual|annotate|layout>] [--focus <refs>] [--no-ref] [--capsule] [--raw] [-c|--compact] [--wait <ms>] [--await <condition>] [--timeout <ms>] [--json]
 
 模式:
-  page      官方页面截图
+  page      官方页面截图（默认）
   visual    页面截图 + 胶囊视觉合成
   annotate  页面截图 + @eNN 标注叠加
   layout    基于运行时 rect 的布局替代渲染
 
   说明:
-  - 默认模式是 layout
+  - 默认模式是 page；需要结构布局图时显式传 --mode layout
   - --focus 支持 @e1,@e2 这类多个 ref，高亮时会自动换色
   - --no-ref 会隐藏图片里的 @eN 标签，但不会影响 focus 框或 session/ref 解析
   - layout 默认用语义布局；加 --raw 可切到更底层的运行时节点布局
   - --capsule 可在 layout/visual 图上叠加右上角微信胶囊
   - 不传路径时保存到系统临时目录下的短文件名；同名冲突会自动追加 -1、-2……
+  - path 可为相对或绝对文件路径；相对路径以当前工作目录为基准，缺失的父目录会自动创建
+  - path 指向已有目录，或以目录分隔符结尾时，会在该目录内生成同样的短文件名
 `
     case 'status':
       return `status

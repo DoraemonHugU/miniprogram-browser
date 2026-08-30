@@ -68,7 +68,7 @@ class OverlayCliTests(unittest.TestCase):
             )
 
             self.assertIn(
-                f"叠加图已保存 {temp_path / 'before-overlay.png'}", result.stdout
+                f"叠加图已保存 {(temp_path / 'before-overlay.png').resolve()}", result.stdout
             )
             output_path = temp_path / "before-overlay.png"
             self.assertEqual(output_path, temp_path / "before-overlay.png")

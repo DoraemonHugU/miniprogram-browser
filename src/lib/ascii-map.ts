@@ -45,9 +45,9 @@ interface MapOptions {
   legacy?: boolean
 }
 
-const DEFAULT_MAP_WIDTH = 48
-const MIN_GRID_H = 16
-const MAX_GRID_H = 56
+const DEFAULT_MAP_WIDTH = 32
+const MIN_GRID_H = 12
+const MAX_GRID_H = 24
 
 const CONTAINER_KINDS = new Set([
   'view', 'container', 'scroll-view', 'scrollview', 'scroll',
@@ -125,6 +125,8 @@ function classifyLod(
   const cellH = cells.r1 - cells.r0 + 1
   const area = cellW * cellH
   const interactive = isInteractiveKind(kind)
+  const container = CONTAINER_KINDS.has(String(kind || '').toLowerCase())
+  if (!interactive && !container) return 'mark'
   const minW = interactive ? 1 : 2
   const minH = interactive ? 2 : 2
   const minArea = interactive ? 2 : 4
@@ -340,7 +342,7 @@ function normalizeNodes(
     const cellW = cells.c1 - cells.c0 + 1
     const cellH = cells.r1 - cells.r0 + 1
     const area = cellW * cellH
-    let lod = classifyLod(raw.rectPct as AnyRecord, gridW, gridH, kind)
+    const lod = classifyLod(raw.rectPct as AnyRecord, gridW, gridH, kind)
     const interactive = isInteractiveKind(kind)
     nodes.push({
       ref,
@@ -425,7 +427,7 @@ function composeOutput(
   gridH: number,
   legacy: boolean,
 ): string {
-  const rows: string[] = []
+  const projectedRows: Array<{ yPct: number; line: string; blank: boolean }> = []
   for (let r = 0; r < gridH; r += 1) {
     const yPct = Math.round(((r + 0.5) / gridH) * 100)
     let line = ''
@@ -434,12 +436,29 @@ function composeOutput(
       else if (masks[r][c]) line += borderChar(masks[r][c])
       else line += ' '
     }
-    rows.push(`${String(yPct).padStart(4, ' ')}%│${line}`)
+    projectedRows.push({ yPct, line, blank: line.trim().length === 0 })
   }
-  const perRowPct = Math.max(1, Math.round(100 / gridH))
+  const rows: string[] = []
+  for (let index = 0; index < projectedRows.length;) {
+    const current = projectedRows[index]
+    if (!current.blank) {
+      rows.push(`${String(current.yPct).padStart(3, ' ')}%|${current.line}`)
+      index += 1
+      continue
+    }
+
+    let end = index + 1
+    while (end < projectedRows.length && projectedRows[end].blank) end += 1
+    if (end - index === 1) {
+      rows.push(`${String(current.yPct).padStart(3, ' ')}%|${current.line}`)
+    } else {
+      rows.push(' ...|')
+    }
+    index = end
+  }
   const legend = legacy
-    ? `top-left=(0,0) x→右 y→下; 每行≈${perRowPct}%  边框=容器 @eN=元素中心 *=碰撞`
-    : `top-left=(0,0) x→右 y→下; 每行≈${perRowPct}%  框=区域 @eN=编号 *=避让失败; map=${gridW}x${gridH}`
+    ? `map ${gridW}x${gridH}; border=container; digits=@eN; *=collision`
+    : `map ${gridW}x${gridH}; digits=@eN; *=collision`
   return `${legend}\n${rows.join('\n')}`
 }
 

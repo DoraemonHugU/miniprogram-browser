@@ -71,7 +71,7 @@ class FocusCliTests(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn(f"裁剪图已保存 {output_path}", result.stdout)
+            self.assertIn(f"裁剪图已保存 {output_path.resolve()}", result.stdout)
             self.assertTrue(output_path.exists())
 
             with Image.open(output_path) as focus:

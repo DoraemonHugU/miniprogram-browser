@@ -55,7 +55,7 @@ const {
 } = require('../dist/miniprogram-browser.js')
 
 test('projectSessionSlug prefers parent when leaf is miniprogram/weapp', () => {
-  assert.equal(projectSessionSlug('/mnt/d/xuexi/projects/earlyRiser/apps/miniprogram'), 'earlyriser')
+  assert.equal(projectSessionSlug('/mnt/d/work/sample-store/apps/miniprogram'), 'sample-store')
   assert.equal(projectSessionSlug('/work/my-shop/weapp'), 'my-shop')
   assert.equal(projectSessionSlug('/work/CoolApp'), 'coolapp')
   assert.equal(projectSessionSlug('/work/My App!!'), 'my-app')
@@ -63,29 +63,29 @@ test('projectSessionSlug prefers parent when leaf is miniprogram/weapp', () => {
 })
 
 test('isAutoProjectSessionName matches slug-xN only', () => {
-  assert.equal(isAutoProjectSessionName('earlyriser-x1', 'earlyriser'), true)
-  assert.equal(isAutoProjectSessionName('earlyriser-x12', 'earlyriser'), true)
-  assert.equal(isAutoProjectSessionName('earlyriser-x0', 'earlyriser'), false)
-  assert.equal(isAutoProjectSessionName('earlyriser', 'earlyriser'), false)
-  assert.equal(isAutoProjectSessionName('work', 'earlyriser'), false)
-  assert.equal(isAutoProjectSessionName('earlyriser-x1', 'other'), false)
+  assert.equal(isAutoProjectSessionName('sample-store-x1', 'sample-store'), true)
+  assert.equal(isAutoProjectSessionName('sample-store-x12', 'sample-store'), true)
+  assert.equal(isAutoProjectSessionName('sample-store-x0', 'sample-store'), false)
+  assert.equal(isAutoProjectSessionName('sample-store', 'sample-store'), false)
+  assert.equal(isAutoProjectSessionName('work', 'sample-store'), false)
+  assert.equal(isAutoProjectSessionName('sample-store-x1', 'other'), false)
 })
 
 test('pickAutoProjectSessionName reuses highest existing auto index else x1', () => {
-  assert.equal(pickAutoProjectSessionName([], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x1')
-  assert.equal(pickAutoProjectSessionName(['work', 'debug'], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x1')
+  assert.equal(pickAutoProjectSessionName([], '/work/sample-store/apps/miniprogram'), 'sample-store-x1')
+  assert.equal(pickAutoProjectSessionName(['work', 'debug'], '/work/sample-store/apps/miniprogram'), 'sample-store-x1')
   assert.equal(
-    pickAutoProjectSessionName(['earlyriser-x1', 'work', 'earlyriser-x3'], '/work/earlyRiser/apps/miniprogram'),
-    'earlyriser-x3',
+    pickAutoProjectSessionName(['sample-store-x1', 'work', 'sample-store-x3'], '/work/sample-store/apps/miniprogram'),
+    'sample-store-x3',
   )
 })
 
 test('nextAutoProjectSessionName allocates next free index', () => {
-  assert.equal(nextAutoProjectSessionName([], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x1')
-  assert.equal(nextAutoProjectSessionName(['earlyriser-x1'], '/work/earlyRiser/apps/miniprogram'), 'earlyriser-x2')
+  assert.equal(nextAutoProjectSessionName([], '/work/sample-store/apps/miniprogram'), 'sample-store-x1')
+  assert.equal(nextAutoProjectSessionName(['sample-store-x1'], '/work/sample-store/apps/miniprogram'), 'sample-store-x2')
   assert.equal(
-    nextAutoProjectSessionName(['earlyriser-x1', 'earlyriser-x2', 'work'], '/work/earlyRiser/apps/miniprogram'),
-    'earlyriser-x3',
+    nextAutoProjectSessionName(['sample-store-x1', 'sample-store-x2', 'work'], '/work/sample-store/apps/miniprogram'),
+    'sample-store-x3',
   )
 })
 
@@ -437,11 +437,11 @@ test('createDefaultConfig reads DevTools project path override from environment'
 
 test('createDefaultConfig reads DevTools project prefix map from environment', () => {
   const previous = process.env.WECHAT_DEVTOOLS_PROJECT_MAP
-  process.env.WECHAT_DEVTOOLS_PROJECT_MAP = '/home/wang/xuexi/projects=P:\\projects'
+  process.env.WECHAT_DEVTOOLS_PROJECT_MAP = '/home/developer/work=P:\\work'
 
   try {
     const config = createDefaultConfig('/repo')
-    assert.equal(config.devtoolsProjectMap, '/home/wang/xuexi/projects=P:\\projects')
+    assert.equal(config.devtoolsProjectMap, '/home/developer/work=P:\\work')
   } finally {
     if (previous === undefined) {
       delete process.env.WECHAT_DEVTOOLS_PROJECT_MAP
@@ -579,6 +579,18 @@ test('assertBindingConsistency rejects changing a bound session', () => {
       {
         devtoolsPort: '39090',
       },
+    )
+  })
+})
+
+test('assertBindingConsistency treats equivalent relative and absolute project paths as the same binding', () => {
+  const absoluteProject = path.resolve('demo/public-demo')
+  const relativeProject = path.relative(process.cwd(), absoluteProject)
+
+  assert.doesNotThrow(() => {
+    assertBindingConsistency(
+      { projectPath: absoluteProject },
+      { projectPath: relativeProject },
     )
   })
 })
@@ -956,18 +968,18 @@ test('selectAttachableRuntimeSession requires an explicit session when live runt
 test('selectAttachableRuntimeSession treats multiple live rows on same autoPort as one runtime', () => {
   // 多 session 附着同一 automation 端口：不应 SESSION_CONFLICT
   assert.deepEqual(selectAttachableRuntimeSession([
-    { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+    { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
     { name: 'work-now', status: 'live', autoPort: '9566' },
   ]), {
     mode: 'attach',
-    session: { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+    session: { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
   })
   assert.deepEqual(selectAttachableRuntimeSession([
-    { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+    { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
     { name: 'work-now', status: 'live', autoPort: '9566' },
   ], 'agent-b'), {
     mode: 'attach',
-    session: { name: 'earlyriser-x1', status: 'live', autoPort: '9566' },
+    session: { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
   })
 })
 
@@ -976,7 +988,7 @@ test('isEphemeralNoiseSessionName matches gate/e2e/test prefixes only', () => {
   assert.equal(isEphemeralNoiseSessionName('e2e-a-abc'), true)
   assert.equal(isEphemeralNoiseSessionName('test-fresh'), true)
   assert.equal(isEphemeralNoiseSessionName('work'), false)
-  assert.equal(isEphemeralNoiseSessionName('earlyriser-x1'), false)
+  assert.equal(isEphemeralNoiseSessionName('sample-store-x1'), false)
   assert.equal(isEphemeralNoiseSessionName('feat-a'), false)
 })
 

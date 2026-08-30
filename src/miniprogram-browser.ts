@@ -74,6 +74,8 @@ const {
 
 const {
   allocateTempScreenshotPath,
+  resolveScreenshotOutputPath,
+  buildScreenshotPathNotice,
 } = require('./lib/temp-artifacts')
 
 const {
@@ -141,6 +143,7 @@ const {
   readRuntimeTree,
   getPageStack,
   callWxMethod,
+  changeMiniProgramRoute,
   callPageMethod,
   evaluateInMiniProgram,
   callNativeMethod,
@@ -841,7 +844,15 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
   if (!openError.code && openError.runtimeNotReady) {
     openError.code = 'APP_NOT_READY'
   }
-  if (failureContext && failureContext.hint && (!openError.hint || openError.hint === genericTimeoutHint)) {
+  if (
+    failureContext
+    && failureContext.hint
+    && (
+      !openError.hint
+      || openError.hint === genericTimeoutHint
+      || /ETIMEDOUT|timed out|timeout/iu.test(String(openError.hint || openError.message || ''))
+    )
+  ) {
     openError.hint = failureContext.hint
   }
   if (
@@ -1053,9 +1064,13 @@ async function handleOpen(state: SessionState, options: AnyRecord) {
 }
 
 async function handleOpenLocked(state: SessionState, options: AnyRecord) {
+  const totalTimeoutMs = resolveOpenTimeoutMs(options)
+  const openDeadlineAt = Date.now() + totalTimeoutMs
+  const remainingOpenMs = (cap: number) => Math.min(cap, Math.max(1, openDeadlineAt - Date.now()))
+
   // 显式 --auto-port：若已 live 则直接 connected（同项目 attach 语义），避免 already-bound / 再 enable
   if (options.autoPort && !options.fresh) {
-    const explicitLive = await isAutomationEndpointLive(state.config, { timeoutMs: 1500 }).catch(() => false)
+    const explicitLive = await isAutomationEndpointLive(state.config, { timeoutMs: remainingOpenMs(1500) }).catch(() => false)
     if (explicitLive) {
       await saveSessionState(state)
       const connected = await openSessionWithDiagnostics(state, options, {
@@ -1074,7 +1089,7 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
   }
 
   const currentEndpointLive = state.config.autoPort
-    ? await isAutomationEndpointLive(state.config, { timeoutMs: 1000 }).catch(() => false)
+    ? await isAutomationEndpointLive(state.config, { timeoutMs: remainingOpenMs(1000) }).catch(() => false)
     : false
   if (!currentEndpointLive && !options.fresh && !options.autoPort) {
     const attachResult = await resolveAttachableRuntime(state, options)
@@ -1092,7 +1107,7 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
       if (autoPort) {
         ;(state.config as AnyRecord).autoPort = autoPort
       }
-      const live = await isAutomationEndpointLive(state.config, { timeoutMs: 1000 }).catch(() => false)
+      const live = await isAutomationEndpointLive(state.config, { timeoutMs: remainingOpenMs(1000) }).catch(() => false)
       if (!live) {
         delete (state.config as AnyRecord).autoPort
       } else {
@@ -1114,7 +1129,7 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
     // 池无 live 记录，但本机已有 automation 在监听（上次 auto 迟到/手工启用）
     if (!String((state.config as AnyRecord).autoPort || '').trim()) {
       const orphanPort = await discoverLiveAutomationPort(state.config, {
-        timeoutMs: 500,
+        timeoutMs: remainingOpenMs(500),
         maxProbes: 30,
       }).catch(() => '')
       if (orphanPort) {
@@ -1140,16 +1155,11 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
   const attemptedAutoPorts: string[] = []
   let result
   let lastOpenError: AnyRecord | null = null
-  const totalTimeoutMs = resolveOpenTimeoutMs(options)
-  const openDeadlineAt = Date.now() + totalTimeoutMs
-  // 同一次 open 内最多 3 次 auto：预算切开，避免第 1 次吃光全部 timeout
-  const perAttemptBudget = Math.max(
-    25000,
-    Math.floor(totalTimeoutMs / DEFAULT_OPEN_AUTO_PORT_ATTEMPTS),
-  )
+  // 单次 auto 最多 25 秒；较短的用户预算不再人为切碎，避免进程刚启动就被杀掉。
+  const perAttemptBudget = Math.max(1, Math.min(25000, totalTimeoutMs))
 
   for (let attempt = 1; attempt <= DEFAULT_OPEN_AUTO_PORT_ATTEMPTS; attempt += 1) {
-    const remainingMs = Math.max(8000, openDeadlineAt - Date.now())
+    const remainingMs = Math.max(1, openDeadlineAt - Date.now())
     const attemptTimeoutMs = Math.min(remainingMs, perAttemptBudget)
     if (openDeadlineAt - Date.now() < 5000 && attempt > 1) {
       break
@@ -1177,7 +1187,7 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
           result = await openSessionWithDiagnostics(state, options, {
             mode: 'connected',
             attachedTo: '',
-          }, Math.min(attemptTimeoutMs, Math.max(8000, openDeadlineAt - Date.now())))
+          }, Math.min(attemptTimeoutMs, Math.max(1, openDeadlineAt - Date.now())))
           result.rescuedFromStartFailure = true
           result.healedDiscoveredPort = true
           result.openAttempt = attempt
@@ -1194,14 +1204,21 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
       break
     } catch (error: unknown) {
       const caughtError: AnyRecord = error as AnyRecord
+      const deadlineExpired = Date.now() >= openDeadlineAt
+      if (deadlineExpired) {
+        const timeoutError = createOpenTimeoutError(totalTimeoutMs)
+        caughtError.message = timeoutError.message
+        caughtError.code = timeoutError.code
+        caughtError.hint = caughtError.hint || timeoutError.hint
+      }
       lastOpenError = caughtError
       attemptedAutoPorts.push(String(state.config.autoPort || ''))
-      if (!shouldRetryOpenWithAnotherAutoPort(state, options, openMode, caughtError, attempt)) {
+      if (deadlineExpired || !shouldRetryOpenWithAnotherAutoPort(state, options, openMode, caughtError, attempt)) {
         caughtError.diagnostics = {
           ...((caughtError.diagnostics as AnyRecord) || {}),
           attemptedAutoPorts: attemptedAutoPorts.filter(Boolean),
         }
-        if (openMode === 'started') {
+        if (openMode === 'started' && !deadlineExpired) {
           const healed = await tryHealOpenAfterStartFailure(state, options, caughtError).catch(() => null)
           if (healed) {
             return healed
@@ -1228,14 +1245,33 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
 
   if (!result) {
     if (lastOpenError) {
+      const deadlineExpired = Date.now() >= openDeadlineAt
+      if (deadlineExpired) {
+        const timeoutError = createOpenTimeoutError(totalTimeoutMs)
+        lastOpenError.message = timeoutError.message
+        lastOpenError.code = timeoutError.code
+        lastOpenError.hint = lastOpenError.hint || timeoutError.hint
+      }
       lastOpenError.diagnostics = {
         ...((lastOpenError.diagnostics as AnyRecord) || {}),
         attemptedAutoPorts: attemptedAutoPorts.filter(Boolean),
       }
-      if (openMode === 'started') {
+      if (openMode === 'started' && !deadlineExpired) {
         const healed = await tryHealOpenAfterStartFailure(state, options, lastOpenError).catch(() => null)
         if (healed) {
           return healed
+        }
+      }
+      if (lastOpenError.needsStartedCleanup || shouldCleanupStartedOpenRuntime(state, { mode: openMode }, lastOpenError)) {
+        const cleanup = await cleanupStartedOpenRuntime(state).catch((cleanupError) => ({
+          projectClosed: false,
+          closeAttempted: false,
+          sessionCleared: false,
+          error: cleanupError && cleanupError.message ? String(cleanupError.message) : String(cleanupError),
+        }))
+        lastOpenError.diagnostics = {
+          ...((lastOpenError.diagnostics as AnyRecord) || {}),
+          cleanup,
         }
       }
       throw lastOpenError
@@ -2043,6 +2079,52 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
   }
 }
 
+/**
+ * doctor 在总 timeout 内轮询真实运行态；App 就绪后立即返回。
+ * `waitMs=0` 保留为单次探测逃逸点，不再表示先固定 sleep。
+ */
+async function waitForDoctorRuntimeProbe(config: AnyRecord, options: AnyRecord = {}) {
+  const nowFn = typeof options.nowFn === 'function' ? options.nowFn : Date.now
+  const sleepFn = typeof options.sleepFn === 'function' ? options.sleepFn : sleep
+  const probeFn = typeof options.probeFn === 'function' ? options.probeFn : probeAutomationRuntime
+  const startedAt = nowFn()
+  const timeoutMs = Math.max(1, Number(options.timeoutMs || 5000))
+  const overallDeadlineAt = Number(options.deadlineAt || (startedAt + timeoutMs))
+  const waitMs = options.waitMs === undefined
+    ? Math.max(0, overallDeadlineAt - startedAt)
+    : Math.max(0, Number(options.waitMs))
+  const pollDeadlineAt = Math.min(overallDeadlineAt, startedAt + waitMs)
+  const pollMs = Math.max(50, Number(options.pollMs || 200))
+  const probeTimeoutMs = Math.max(50, Number(options.probeTimeoutMs || 750))
+  let lastProbe: AnyRecord | null = null
+
+  while (true) {
+    const remainingMs = Math.max(1, overallDeadlineAt - nowFn())
+    lastProbe = await probeFn(config, {
+      timeoutMs: Math.min(probeTimeoutMs, remainingMs),
+      screenshot: false,
+    })
+
+    if (lastProbe && lastProbe.appReady) {
+      if (!options.captureScreenshot) {
+        return lastProbe
+      }
+      const screenshotBudgetMs = Math.max(1, overallDeadlineAt - nowFn())
+      return probeFn(config, {
+        timeoutMs: Math.min(probeTimeoutMs, screenshotBudgetMs),
+        screenshotTimeoutMs: screenshotBudgetMs,
+        screenshot: true,
+      })
+    }
+
+    const nowMs = nowFn()
+    if (waitMs === 0 || nowMs >= pollDeadlineAt || nowMs >= overallDeadlineAt) {
+      return lastProbe
+    }
+    await sleepFn(Math.min(pollMs, pollDeadlineAt - nowMs, overallDeadlineAt - nowMs))
+  }
+}
+
 async function handleDoctor(state: SessionState, options: AnyRecord) {
   // 允许省略 --session：上游 ensureImplicitSessionName 已按项目分配/复用 slug-xN
   const persistSession = !options.ephemeralSession
@@ -2055,8 +2137,10 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
   let automationMetadata: AnyRecord | null = null
   let automationError: AnyRecord | null = null
   let reusedLiveEndpoint = false
+  const timeoutMs = Number(options.timeout || 5000)
+  const deadlineAt = Date.now() + timeoutMs
   const alreadyLive = await isAutomationEndpointLive(state.config, {
-    timeoutMs: Math.min(2000, Number(options.timeout || 5000)),
+    timeoutMs: Math.min(2000, Math.max(1, Math.floor(timeoutMs / 4)), Math.max(1, deadlineAt - Date.now())),
   }).catch(() => false)
 
   if (alreadyLive) {
@@ -2067,7 +2151,9 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
     }
   } else {
     try {
-      automationMetadata = enableAutomation(state.config)
+      automationMetadata = await enableAutomation(state.config, {
+        timeoutMs: Math.max(1, deadlineAt - Date.now()),
+      })
     } catch (error: unknown) {
       const caughtError = error as AnyRecord
       automationError = {
@@ -2076,17 +2162,14 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
       }
     }
 
-    const waitMs = Number(options.wait || 5000)
-    if (!automationError && waitMs > 0) {
-      await sleep(waitMs)
-    }
   }
 
   const probe = automationError
     ? null
-    : await probeAutomationRuntime(state.config, {
-      timeoutMs: Number(options.timeout || 5000),
-      screenshot: Boolean(options.captureScreenshot),
+    : await waitForDoctorRuntimeProbe(state.config, {
+      deadlineAt,
+      waitMs: options.wait === undefined ? undefined : Number(options.wait),
+      captureScreenshot: Boolean(options.captureScreenshot),
     })
 
   // 已 live 且 probe 成功：不要再用历史 appid-missing 等日志覆盖 ok
@@ -2122,7 +2205,7 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
 
   const automationArgs = buildAutomationArgs(state.config)
   const payload: AnyRecord = {
-    ok: !automationError && Boolean(probe && probe.connected),
+    ok: isDoctorOk(automationError, probe),
     projectPath: state.config.projectPath,
     devtoolsProjectPath: automationArgs.devtoolsProjectPath || automationArgs.args[2],
     projectStrategy: automationArgs.projectStrategy,
@@ -2141,6 +2224,9 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
         log: doctorLogContext.log || undefined,
       },
     probe,
+    next: probe && probe.connected && !probe.appReady
+      ? '检查小程序编译、模拟器和 AppService 状态；修复后重新执行 doctor。'
+      : undefined,
   }
 
   if (options.json) {
@@ -2175,6 +2261,10 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
     lines.push(`diagnosis=${probe.diagnosis}`)
   }
   emit({ lines }, options)
+}
+
+function isDoctorOk(automationError: AnyRecord | null, probe: AnyRecord | null) {
+  return !automationError && Boolean(probe && probe.connected && probe.appReady)
 }
 
 function parseJsonArgument(rawValue: string, fallback: AnyRecord) {
@@ -2469,7 +2559,7 @@ async function handleSessionList(options: AnyRecord = {}) {
       message = '当前目录没有发现小程序项目；默认不显示全局 session。可传 --project <path> 或 --all 查看。'
     }
   }
-  let visibleSessions = projectFilter
+  const visibleSessions = projectFilter
     ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
     : (options.all ? sessions : [])
 
@@ -2589,9 +2679,18 @@ async function shutdownOwnedRuntime(state: SessionState) {
   })
 
   const closeResult = closeDevtoolsProject(state.config, { timeoutMs: 30000 })
+  await waitAfterDevtoolsCloseRequest(closeResult)
   result.projectClosed = Boolean(closeResult && closeResult.ok)
-  result.closeVerified = false
   result.closeAttempted = Boolean(closeResult && closeResult.attempted)
+  if (closeResult && closeResult.ok) {
+    result.closeVerified = !(await isStateAutoPortLive(state, 800))
+    if (result.closeVerified) {
+      result.automationClosed = true
+      delete result.automationError
+    }
+  } else {
+    result.closeVerified = false
+  }
   if (closeResult && closeResult.reason) {
     result.reason = closeResult.reason
   }
@@ -2773,11 +2872,19 @@ function isTabBarRoute(route: string, runtimeConfig: AnyRecord) {
   return list.some((item: AnyRecord) => normalizeRoutePath(item && (item.pagePath || item.path)) === normalizedRoute)
 }
 
+function resolveActionWaitMs(_action: string, value: unknown) {
+  if (value === undefined || value === null || value === '') {
+    return 0
+  }
+  const waitMs = Number(value)
+  return Number.isFinite(waitMs) ? Math.max(0, waitMs) : 0
+}
+
 async function handleRelaunch(state: SessionState, route: string, options: AnyRecord) {
   if (!route) {
     throw new Error('goto/relaunch requires a route, e.g. goto /pages/index/index')
   }
-  const waitMs = Number(options.wait || 1500)
+  const waitMs = resolveActionWaitMs('goto', options.wait)
   const targetPath = normalizeRoutePath(route)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'goto', options, { route: targetPath })
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
@@ -2788,16 +2895,13 @@ async function handleRelaunch(state: SessionState, route: string, options: AnyRe
       ? 'switchTab'
       : 'reLaunch'
 
-    if (method === 'switchTab') {
-      // DevTools automation 要求路由以 / 开头，否则视为相对路径拼接
-      const absoluteRoute = route.startsWith('/') ? route : `/${route}`
-      await (miniProgram.switchTab as (r: string) => Promise<unknown>)(absoluteRoute)
-    } else {
-      // DevTools automation 要求路由以 / 开头，否则视为相对路径拼接
-      const absoluteRoute = route.startsWith('/') ? route : `/${route}`
-      await (miniProgram.reLaunch as (r: string) => Promise<unknown>)(absoluteRoute)
+    // DevTools automation 要求路由以 / 开头，否则视为相对路径拼接。
+    // 直接调用 wx API，后续以路由状态轮询确认结果，避免 SDK 内置固定 3 秒 sleep。
+    const absoluteRoute = route.startsWith('/') ? route : `/${route}`
+    await changeMiniProgramRoute(miniProgram, method, absoluteRoute)
+    if (waitMs > 0) {
+      await sleep(waitMs)
     }
-    await sleep(waitMs)
     const routeResult: AnyRecord = awaitCondition
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
@@ -2813,7 +2917,7 @@ async function handleRelaunch(state: SessionState, route: string, options: AnyRe
         expectedPath: targetPath,
         expectedStableMatches: 2,
         timeoutMs: Math.max(waitMs, 3000),
-        pollMs: 200,
+        pollMs: 100,
       })
 
     if (!routeResult.expectedMatched) {
@@ -2845,23 +2949,20 @@ async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef:
       })
     }
     const page = await getCurrentPage(miniProgram)
-    const result = await snapshotInteractive(page, state, scopeRef, {
-      compact: Boolean(options.compact),
-      depth: options.depth === undefined ? undefined : Number(options.depth),
-    })
+    const result = await snapshotInteractive(page, state, scopeRef, resolveSnapshotTreeOptions(options))
     Object.assign(state, result.state)
     let records = result.records
     let lines = result.lines
 
-    const wantMap = !Boolean(options.noMap)
-    if (options.layout || wantMap) {
+    const layoutPolicy = resolveSnapshotLayoutPolicy(options)
+    if (layoutPolicy.collectRects) {
       const systemInfo = await (miniProgram.systemInfo as () => Promise<AnyRecord>)()
       const rects = await collectRecordRects(page, records, systemInfo)
       records = mergeRecordLayouts(records, rects)
-      if (options.layout) {
+      if (layoutPolicy.annotateLines) {
         lines = formatSnapshotLines(records, { layout: true })
       }
-      if (wantMap) {
+      if (layoutPolicy.renderMap) {
         const viewport = {
           w: Number(systemInfo.windowWidth) || Number(systemInfo.screenWidth) || 375,
           h: Number(systemInfo.windowHeight) || Number(systemInfo.screenHeight) || 812,
@@ -2878,7 +2979,6 @@ async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef:
       const visualProbePath = await allocateTempScreenshotPath({
         directory: state.config.tempScreenshotDir,
         projectName: projectSessionSlug(state.config.projectPath),
-        sessionName: state.name,
         route: page.path,
         mode: 'visual-probe',
       })
@@ -2898,13 +2998,27 @@ async function handleSnapshot(state: SessionState, options: AnyRecord, scopeRef:
   emit(summarizeSnapshotPayload(payload, options), options)
 }
 
+function resolveSnapshotLayoutPolicy(options: AnyRecord = {}) {
+  const annotateLines = Boolean(options.layout)
+  const renderMap = !Boolean(options.noMap)
+  return {
+    collectRects: annotateLines || renderMap,
+    renderMap,
+    annotateLines,
+  }
+}
+
+function resolveSnapshotTreeOptions(options: AnyRecord = {}) {
+  return {
+    compact: !Boolean(options.all),
+    depth: options.depth === undefined ? undefined : Number(options.depth),
+  }
+}
+
 async function collectFollowupSnapshot(state: SessionState, options: AnyRecord): Promise<AnyRecord> {
   const snapshot = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
-    const result = await snapshotInteractive(page, state, null, {
-      compact: Boolean(options.compact),
-      depth: options.depth === undefined ? undefined : Number(options.depth),
-    })
+    const result = await snapshotInteractive(page, state, null, resolveSnapshotTreeOptions(options))
     Object.assign(state, result.state)
     return {
       path: page.path,
@@ -2948,14 +3062,16 @@ async function handleQuery(state: SessionState, mode: string, value: string, opt
 }
 
 async function handleTap(state: SessionState, target: string, options: AnyRecord, scopeRef: string | null = null) {
-  const waitMs = Number(options.wait || 1200)
+  const waitMs = resolveActionWaitMs('click', options.wait)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'click', options)
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
     const element = await resolveTarget(page, state, target, scopeRef)
     await element.tap()
-    await sleep(waitMs)
+    if (waitMs > 0) {
+      await sleep(waitMs)
+    }
     const routeResult: AnyRecord = awaitCondition
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
@@ -2967,7 +3083,7 @@ async function handleTap(state: SessionState, target: string, options: AnyRecord
       }))
       : await confirmRouteAfterAction(miniProgram, state, {
         pathBefore,
-        timeoutMs: waitMs,
+        timeoutMs: waitMs > 0 ? 1 : 300,
       })
     return {
       message: `已点击 ${target}`,
@@ -2987,20 +3103,45 @@ async function handleTap(state: SessionState, target: string, options: AnyRecord
 }
 
 async function handleInput(state: SessionState, target: string, value: string, options: AnyRecord, scopeRef: string | null = null) {
-  const waitMs = Number(options.wait || 500)
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
     const element = await resolveTarget(page, state, target, scopeRef)
-    await element.input(value)
-    await sleep(waitMs)
-    return { message: `已输入 ${target}`, path: pathBefore }
+    const result = await performInputAndWait(miniProgram, state, element, value, options, pathBefore, scopeRef)
+    return { message: `已输入 ${target}`, path: result.path || pathBefore }
   })
 
   markPendingVisualAction(state, 'fill', payload.path)
   const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
   await saveSessionState(state)
   emit(attachFollowupPayload(payload, followup), options)
+}
+
+async function performInputAndWait(
+  miniProgram: AnyRecord,
+  state: SessionState,
+  element: { input(value: string): Promise<unknown> },
+  value: string,
+  options: AnyRecord,
+  pathBefore: string,
+  scopeRef: string | null = null,
+) {
+  const waitMs = resolveActionWaitMs('fill', options.wait)
+  const awaitCondition = resolveExplicitAwaitCondition(options.await, 'fill', options)
+
+  await element.input(value)
+  if (waitMs > 0) {
+    await sleep(waitMs)
+  }
+  if (!awaitCondition) {
+    return { path: pathBefore }
+  }
+
+  return await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
+    timeout: options.timeout,
+    pathBefore,
+    scopeRef,
+  })
 }
 
 async function handleAwaitCommand(state: SessionState, rawCondition: string, options: AnyRecord, scopeRef: string | null = null) {
@@ -3136,7 +3277,7 @@ async function handleEval(state: SessionState, source: string, options: AnyRecor
 }
 
 async function handleNative(state: SessionState, method: string, args: string[], options: AnyRecord) {
-  const waitMs = Number(options.wait || 800)
+  const waitMs = resolveActionWaitMs('native', options.wait)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'native', options)
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
@@ -3155,7 +3296,7 @@ async function handleNative(state: SessionState, method: string, args: string[],
       }))
       : await confirmRouteAfterAction(miniProgram, state, {
         pathBefore,
-        timeoutMs: waitMs,
+        timeoutMs: waitMs > 0 ? 1 : 300,
       })
     const diagnostic = buildNativeDiagnostic(method, result, {
       pathBefore,
@@ -3372,6 +3513,14 @@ async function handleCall(state: SessionState, target: string, method: string, a
   emit(payload, options)
 }
 
+function resolveScreenshotMode(mode: unknown): string {
+  const resolvedMode = String(mode || '').trim() || 'page'
+  if (!['page', 'visual', 'annotate', 'layout'].includes(resolvedMode)) {
+    throw new Error(`Unsupported screenshot mode: ${resolvedMode}`)
+  }
+  return resolvedMode
+}
+
 async function handleScreenshot(state: SessionState, outputPath: string, options: AnyRecord) {
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'screenshot', options)
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
@@ -3380,27 +3529,37 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
         timeout: options.timeout,
       })
     }
-    const mode = options.mode || 'layout'
+    const mode = resolveScreenshotMode(options.mode)
     const focusRefs = parseFocusRefs(options.focus)
     const timeoutMs = Number(options.wait || 30000)
-    let name: string
-    if (outputPath) {
-      name = path.isAbsolute(outputPath)
-        ? outputPath
-        : path.join(process.cwd(), outputPath)
-    } else {
+    let currentRoute = String(state.route || 'unknown')
+    if (!outputPath) {
       const currentPage = await getCurrentPage(miniProgram).catch(() => null)
-      const currentRoute = String((currentPage && currentPage.path) || state.route || 'unknown')
+      currentRoute = String((currentPage && currentPage.path) || currentRoute)
       if (currentRoute && currentRoute !== 'unknown') {
         state.route = currentRoute
       }
-      name = await allocateTempScreenshotPath({
-        directory: state.config.tempScreenshotDir,
-        projectName: projectSessionSlug(state.config.projectPath),
-        sessionName: state.name,
-        route: currentRoute,
-        mode,
-      })
+    }
+    const name = await resolveScreenshotOutputPath(outputPath, {
+      cwd: process.cwd(),
+      directory: state.config.tempScreenshotDir,
+      projectName: projectSessionSlug(state.config.projectPath),
+      route: currentRoute,
+      mode,
+    })
+    const projectPathNotice = outputPath
+      ? buildScreenshotPathNotice(name, state.config.projectPath)
+      : ''
+
+    function withScreenshotNotice(result: AnyRecord) {
+      if (!projectPathNotice) {
+        return result
+      }
+      return {
+        ...result,
+        message: `${result.message}\n${projectPathNotice}`,
+        notices: [...(Array.isArray(result.notices) ? result.notices : []), projectPathNotice],
+      }
     }
 
     async function resolveRefs() {
@@ -3435,13 +3594,13 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
         source = `${source}+focus`
       }
 
-      return {
+      return withScreenshotNotice({
         message: `截图已保存 ${result.path} mode=${result.mode} source=${source}`,
         path: result.path,
         mode: result.mode,
         source,
         focusLegend,
-      }
+      })
     }
 
     if (mode === 'annotate') {
@@ -3461,14 +3620,14 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
         pageCapture: async (targetPath: string) => targetPath,
       })
 
-      return {
+      return withScreenshotNotice({
         message: `截图已保存 ${result.path} mode=${result.mode} source=${result.source}`,
         path: result.path,
         mode: result.mode,
         source: result.source,
         legend: result.legend,
         focusLegend: result.focusLegend,
-      }
+      })
     }
 
     if (mode === 'layout') {
@@ -3499,13 +3658,13 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
         capsule: Boolean(options.capsule),
       })
 
-      return {
+      return withScreenshotNotice({
         message: `截图已保存 ${result.path} mode=${result.mode} source=${result.source}`,
         path: result.path,
         mode: result.mode,
         source: result.source,
         focusLegend: result.focusLegend,
-      }
+      })
     }
 
     const screenshotPath = await captureScreenshotToPath(miniProgram, name, timeoutMs)
@@ -3524,13 +3683,13 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
       source = 'page+focus'
     }
 
-    return {
+    return withScreenshotNotice({
       message: `截图已保存 ${screenshotPath} mode=page source=${source}`,
       path: screenshotPath,
       mode: 'page',
       source,
       focusLegend,
-    }
+    })
   })
 
   await saveSessionState(state)
@@ -3926,4 +4085,11 @@ module.exports = {
   shouldEmitPreludeNotices,
   summarizeTimelinePayload,
   summarizeSnapshotPayload,
+  isDoctorOk,
+  resolveScreenshotMode,
+  resolveSnapshotLayoutPolicy,
+  resolveSnapshotTreeOptions,
+  resolveActionWaitMs,
+  performInputAndWait,
+  waitForDoctorRuntimeProbe,
 }

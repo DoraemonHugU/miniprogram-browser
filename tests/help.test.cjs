@@ -21,13 +21,78 @@ const {
   summarizeTimelinePayload,
   summarizeSnapshotPayload,
   attachFollowupPayload,
+  isDoctorOk,
+  resolveScreenshotMode,
+  resolveSnapshotLayoutPolicy,
+  resolveSnapshotTreeOptions,
+  resolveActionWaitMs,
+  performInputAndWait,
+  waitForDoctorRuntimeProbe,
 } = require('../dist/miniprogram-browser.js')
+
+test('screenshot defaults to a real page image', () => {
+  assert.equal(resolveScreenshotMode(undefined), 'page')
+  assert.equal(resolveScreenshotMode('layout'), 'layout')
+  assert.throws(() => resolveScreenshotMode('unknown'), /Unsupported screenshot mode/u)
+})
+
+test('doctor overall status requires both Tool and App runtime readiness', () => {
+  assert.equal(isDoctorOk(null, { connected: true, appReady: true }), true)
+  assert.equal(isDoctorOk(null, { connected: true, appReady: false }), false)
+  assert.equal(isDoctorOk(null, { connected: false, appReady: false }), false)
+  assert.equal(isDoctorOk({ message: 'enable failed' }, null), false)
+})
+
+test('doctor polls runtime state and returns as soon as the app is ready', async () => {
+  let nowMs = 0
+  const sleeps = []
+  const probes = [
+    { connected: true, appReady: false },
+    { connected: true, appReady: true },
+  ]
+
+  const result = await waitForDoctorRuntimeProbe({}, {
+    timeoutMs: 5000,
+    pollMs: 200,
+    nowFn: () => nowMs,
+    sleepFn: async (ms) => {
+      sleeps.push(ms)
+      nowMs += ms
+    },
+    probeFn: async () => probes.shift(),
+  })
+
+  assert.equal(result.appReady, true)
+  assert.deepEqual(sleeps, [200])
+})
+
+test('doctor wait 0 probes once without a fixed sleep', async () => {
+  let probeCount = 0
+  let sleepCount = 0
+
+  const result = await waitForDoctorRuntimeProbe({}, {
+    timeoutMs: 5000,
+    waitMs: 0,
+    probeFn: async () => {
+      probeCount += 1
+      return { connected: false, appReady: false }
+    },
+    sleepFn: async () => {
+      sleepCount += 1
+    },
+  })
+
+  assert.equal(result.connected, false)
+  assert.equal(probeCount, 1)
+  assert.equal(sleepCount, 0)
+})
 
 test('buildHelpText groups commands by priority and purpose', () => {
   const help = buildHelpText()
 
   assert.match(help, /核心命令（优先使用）/)
   assert.match(help, /诊断与结构（推荐）/)
+  assert.match(help, /截图模式，默认 page/u)
   assert.match(help, /逃逸点（高级）/)
   assert.match(help, /会话与连接/)
   assert.match(help, /app inspect/)
@@ -79,13 +144,104 @@ test('buildCommandHelpText returns screenshot mode details', () => {
   assert.match(help, /-c\|--compact/)
   assert.match(help, /--raw/)
   assert.match(help, /layout/)
+  assert.match(help, /默认模式是 page/u)
+  assert.match(help, /相对或绝对文件路径/u)
+  assert.match(help, /已有目录|目录分隔符/u)
 })
 
-test('buildCommandHelpText returns snapshot layout option details', () => {
+test('buildCommandHelpText keeps snapshot default path parameter-free', () => {
   const help = buildCommandHelpText('snapshot')
 
   assert.match(help, /^snapshot/m)
+  assert.match(help, /miniprogram-browser snapshot --session/u)
+  assert.doesNotMatch(help, /snapshot -i/u)
+  assert.doesNotMatch(help, /--visual/u)
   assert.match(help, /--layout/)
+  assert.match(help, /ASCII/u)
+  assert.match(help, /--no-map/u)
+})
+
+test('snapshot defaults to compact semantic output plus ASCII map', () => {
+  assert.deepEqual(resolveSnapshotTreeOptions({}), {
+    compact: true,
+    depth: undefined,
+  })
+  assert.deepEqual(resolveSnapshotTreeOptions({ all: true, depth: '4' }), {
+    compact: false,
+    depth: 4,
+  })
+  assert.deepEqual(resolveSnapshotLayoutPolicy({}), {
+    collectRects: true,
+    renderMap: true,
+    annotateLines: false,
+  })
+  assert.deepEqual(resolveSnapshotLayoutPolicy({ layout: true }), {
+    collectRects: true,
+    renderMap: true,
+    annotateLines: true,
+  })
+  assert.deepEqual(resolveSnapshotLayoutPolicy({ layout: true, noMap: true }), {
+    collectRects: true,
+    renderMap: false,
+    annotateLines: true,
+  })
+  assert.deepEqual(resolveSnapshotLayoutPolicy({ noMap: true }), {
+    collectRects: false,
+    renderMap: false,
+    annotateLines: false,
+  })
+})
+
+test('routine actions have no implicit fixed sleep', () => {
+  for (const action of ['goto', 'click', 'fill', 'native']) {
+    assert.equal(resolveActionWaitMs(action, undefined), 0, action)
+  }
+  assert.equal(resolveActionWaitMs('click', '350'), 350)
+})
+
+test('fill applies the value before honoring an explicit await condition', async () => {
+  let inputValue = null
+  const page = {
+    path: 'pages/form/index',
+    async $$(selector) {
+      if (selector === '.saved' && inputValue === 'hello') {
+        return [{ async size() { return { width: 10, height: 10 } } }]
+      }
+      return []
+    },
+  }
+  const miniProgram = {
+    async currentPage() {
+      return page
+    },
+  }
+  const element = {
+    async input(value) {
+      inputValue = value
+    },
+  }
+
+  const result = await performInputAndWait(
+    miniProgram,
+    { route: page.path },
+    element,
+    'hello',
+    { await: 'visible:.saved', timeout: 50 },
+    page.path,
+  )
+
+  assert.equal(inputValue, 'hello')
+  assert.equal(result.path, page.path)
+  assert.equal(result.condition.kind, 'visible')
+})
+
+test('help distinguishes fixed waits from condition timeouts', () => {
+  const generalHelp = buildHelpText()
+  const waitHelp = buildCommandHelpText('wait')
+
+  assert.match(generalHelp, /--wait <ms>.*固定等待/u)
+  assert.match(generalHelp, /--timeout <ms>.*最大时长/u)
+  assert.match(waitHelp, /完整等待指定毫秒/u)
 })
 
 test('buildCommandHelpText returns low-level diagnostic command details', () => {
@@ -167,6 +323,16 @@ test('parseArgs keeps no-ref as boolean flag for screenshot', () => {
   assert.equal(parsed.options.session, 'demo')
   assert.equal(parsed.options.mode, 'layout')
   assert.equal(parsed.options.noRef, true)
+})
+
+test('parseArgs keeps screenshot output path positional and rejects misleading --path', () => {
+  const parsed = parseArgs(['screenshot', '../captures/', '--session', 'demo'])
+  assert.deepEqual(parsed.positional, ['screenshot', '../captures/'])
+
+  assert.throws(
+    () => parseArgs(['screenshot', '--path', '../captures/']),
+    /Unknown option --path.*screenshot \[path\]/u,
+  )
 })
 
 test('parseArgs keeps capture-screenshot as boolean flag for doctor', () => {
@@ -436,19 +602,19 @@ test('summarizeTimelinePayload keeps only high-value route fields by default', (
   })
 })
 
-test('summarizeSnapshotPayload hides internal state unless --all', () => {
+test('summarizeSnapshotPayload keeps text lines but removes JSON duplication unless --all', () => {
   const payload = {
     state: { route: 'pages/dashboard/index' },
     records: [{ ref: '@e1', kind: 'button', text: '保存', route: 'pages/dashboard/index', rectPct: { x: 10, y: 20, w: 30, h: 40 } }],
     lines: ['@e1 [button] 保存'],
   }
 
-  assert.deepEqual(summarizeSnapshotPayload(payload, {}), {
+  assert.deepEqual(summarizeSnapshotPayload(payload, { json: true }), {
     route: 'pages/dashboard/index',
     count: 1,
-    records: [{ ref: '@e1', kind: 'button', text: '保存', route: 'pages/dashboard/index', rectPct: { x: 10, y: 20, w: 30, h: 40 } }],
-    lines: ['@e1 [button] 保存'],
+    records: [{ ref: '@e1', kind: 'button', text: '保存', rectPct: { x: 10, y: 20, w: 30, h: 40 } }],
   })
+  assert.deepEqual(summarizeSnapshotPayload(payload, {}).lines, ['@e1 [button] 保存'])
   assert.equal(summarizeSnapshotPayload(payload, { all: true }).state.route, 'pages/dashboard/index')
 })
 

@@ -91,7 +91,7 @@ class MontageCliTests(unittest.TestCase):
             )
 
             self.assertIn(
-                f"拼图已保存 {temp_path / 'before-montage.png'}", result.stdout
+                f"拼图已保存 {(temp_path / 'before-montage.png').resolve()}", result.stdout
             )
             output_path = temp_path / "before-montage.png"
             self.assertEqual(output_path, temp_path / "before-montage.png")

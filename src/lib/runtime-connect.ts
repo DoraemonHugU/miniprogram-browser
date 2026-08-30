@@ -61,12 +61,11 @@ const RUNTIME_PROBE_ATTEMPTS = 8
 const RUNTIME_PROBE_TIMEOUT_MS = 15000
 const RUNTIME_PROBE_GAP_MS = 3000
 const DEFAULT_CONNECT_TIMEOUT_MS = 120000
-const ENABLE_AUTO_WAIT_MS = 3000
 const LIVE_POLL_MS = 500
 
 /**
  * enable 之后：在 deadline 内轮询 automation 端口是否 live。
- * 最小等待 minWaitMs（默认 ENABLE_AUTO_WAIT），避免 CLI 刚返回就狂连。
+ * 默认立即探测；未就绪时才按 pollMs 间隔继续，minWaitMs 仅保留为内部测试/兼容逃逸点。
  */
 async function waitUntilAutomationLive(
   config: Record<string, unknown>,
@@ -76,7 +75,7 @@ async function waitUntilAutomationLive(
     || isAutomationEndpointLive
   const sleepFn = (options.sleepFn as ((ms: number) => Promise<void>) | undefined) || sleep
   const deadlineAt = Number(options.deadlineAt || 0)
-  const minWaitMs = Math.max(0, Number(options.minWaitMs ?? ENABLE_AUTO_WAIT_MS))
+  const minWaitMs = Math.max(0, Number(options.minWaitMs || 0))
   const pollMs = Math.max(100, Number(options.pollMs || LIVE_POLL_MS))
   const startedAt = Date.now()
   let iterations = 0
@@ -98,7 +97,7 @@ async function waitUntilAutomationLive(
       return false
     }
     const live = await liveCheck(config, {
-      timeoutMs: Math.min(1500, Math.max(300, deadlineAt ? deadlineAt - Date.now() : 1500)),
+      timeoutMs: Math.min(1500, Math.max(1, deadlineAt ? deadlineAt - Date.now() : 1500)),
       automator: options.automator,
     }).catch(() => false)
     if (live) {
@@ -106,7 +105,7 @@ async function waitUntilAutomationLive(
     }
     if (deadlineAt && Date.now() + pollMs >= deadlineAt) {
       const last = await liveCheck(config, {
-        timeoutMs: Math.max(200, deadlineAt - Date.now()),
+        timeoutMs: Math.max(1, deadlineAt - Date.now()),
         automator: options.automator,
       }).catch(() => false)
       return Boolean(last)
@@ -169,7 +168,7 @@ async function captureScreenshotToPath(miniProgram: { screenshot: (opts: { path:
     )
   } catch (error: unknown) {
     if (error && /screenshot timeout/i.test(String((error as Error).message || ''))) {
-      const nextError = new Error('screenshot timeout; 当前真实截图通道暂时不可用。优先改用 `miniprogram-browser screenshot --mode layout ...` 或 `snapshot -i --layout` 查看页面结构；只有在不同 session / 项目都持续超时时，再把完全重启 DevTools 当成最后手段。')
+      const nextError = new Error('screenshot timeout; 当前真实截图通道暂时不可用。优先改用 `miniprogram-browser screenshot --mode layout ...` 或默认 `snapshot` 的 ASCII 图查看页面结构；只有在不同 session / 项目都持续超时时，再把完全重启 DevTools 当成最后手段。')
       nextError.cause = error
       throw nextError
     }
@@ -260,7 +259,7 @@ async function connectWithRetry(config: Record<string, unknown>, options: Record
     }
 
     try {
-      const remainingMs = deadlineAt ? Math.max(1000, deadlineAt - Date.now()) : attemptTimeoutMs
+      const remainingMs = deadlineAt ? Math.max(1, deadlineAt - Date.now()) : attemptTimeoutMs
       return await withProtocolTimeout(
         connectAutomationTool(automator, config),
         'connectTool',
@@ -286,10 +285,11 @@ async function connectWithRetry(config: Record<string, unknown>, options: Record
 /** 检查 automation 端点是否存活（快速探针） */
 async function isAutomationEndpointLive(config: Record<string, unknown>, options: Record<string, unknown> = {}): Promise<boolean> {
   const automator = options.automator || require('miniprogram-automator')
+  const timeoutMs = Math.max(1, Number(options.timeoutMs || 1000))
   let miniProgram: MiniProgramRef | null = null
   try {
-    miniProgram = await connectAutomationTool(automator, config)
-    await callAutomationProbe(miniProgram, 'Tool.getInfo', {}, Number(options.timeoutMs || 1000))
+    miniProgram = await withProtocolTimeout(connectAutomationTool(automator, config), 'connectTool', timeoutMs)
+    await callAutomationProbe(miniProgram, 'Tool.getInfo', {}, timeoutMs)
     return true
   } catch (_) {
     return false
@@ -359,13 +359,11 @@ async function discoverLiveAutomationPort(
       if (tried.size >= maxProbes) {
         break
       }
-      // eslint-disable-next-line no-await-in-loop
       const open = await isTcpPortOpen(port, '127.0.0.1', tcpTimeoutMs)
       if (!open) {
         continue
       }
       const key = String(port)
-      // eslint-disable-next-line no-await-in-loop
       if (await probe(key)) {
         return key
       }
@@ -378,7 +376,6 @@ async function discoverLiveAutomationPort(
       break
     }
     const key = String(port)
-    // eslint-disable-next-line no-await-in-loop
     if (await probe(key)) {
       return key
     }
@@ -491,7 +488,11 @@ async function waitForRuntimeReady(miniProgram: MiniProgramRef, config: Record<s
 
   // 超时——App runtime 未就绪，但不抛异常
   miniProgram.__mpbRuntimeReady = false
-  const probe = await probeReadyMiniProgram(miniProgram, { probeToolTimeoutMs: 1000, probeCurrentPageTimeoutMs: 1000 })
+  const remainingProbeMs = deadlineAt ? Math.max(1, deadlineAt - Date.now()) : 1000
+  const probe = await probeReadyMiniProgram(miniProgram, {
+    probeToolTimeoutMs: Math.min(1000, remainingProbeMs),
+    probeCurrentPageTimeoutMs: Math.min(1000, remainingProbeMs),
+  })
   miniProgram.__mpbRuntimeProbe = probe
 
   return { appReady: false, probe }
@@ -622,7 +623,7 @@ async function sendAutomationProtocol(config: Record<string, unknown>, method: s
  *
  * 策略：
  * 1. 若已有 autoPort 且 endpoint live → 直接 connect（后续 snapshot/click/goto 路径）
- * 2. 否则在允许时 enable（devtools auto）→ 短暂等待 → connect（首次 open/doctor）
+ * 2. 否则在允许时 enable（devtools auto）→ 轮询端口状态 → connect（首次 open/doctor）
  * 3. allowEnable=false（默认）且非 live → 明确要求先 open，避免 snapshot 等命令无脑全量 auto
  *
  * 必须优先复用 live endpoint：重复跑 auto 会重启小程序，把页面打回首页，
@@ -645,8 +646,13 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
 
   // 1. live endpoint 直接 connect，避免重复 auto 重置运行态
   if (hasAutoPort && !options.forceEnable) {
+    const liveProbeBudgetMs = Math.min(
+      1500,
+      Math.max(1, Math.floor(overallDeadlineMs / 5)),
+      Math.max(1, deadlineAt - Date.now()),
+    )
     const live = await liveCheck(config, {
-      timeoutMs: Math.min(1500, Math.max(300, deadlineAt - Date.now())),
+      timeoutMs: liveProbeBudgetMs,
       automator: options.automator,
     }).catch(() => false)
     if (live) {
@@ -674,17 +680,18 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
 
   // 2. enable: devtools auto
   onProgress && onProgress('enable')
-  metadata = (enable(config, { openFirst: false }) || {}) as Record<string, unknown>
+  const enableTimeoutMs = Math.max(1, deadlineAt - Date.now())
+  metadata = (enable(config, { openFirst: false, timeoutMs: enableTimeoutMs }) || {}) as Record<string, unknown>
   if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
     config.devtoolsPort = metadata.resolvedDevtoolsPort
   }
 
-  // 3. 等到 automation 端口 live（最小等待 ENABLE_AUTO_WAIT，受 deadline 约束）
+  // 3. 在 deadline 内立即探测并等待 automation 端口 live
   onProgress && onProgress('wait-live')
   const preferredPort = String(config.autoPort || '').trim()
   let becameLive = await waitUntilAutomationLive(config, {
     deadlineAt,
-    minWaitMs: Number.isFinite(Number(options.minWaitMs)) ? Number(options.minWaitMs) : ENABLE_AUTO_WAIT_MS,
+    minWaitMs: Number.isFinite(Number(options.minWaitMs)) ? Number(options.minWaitMs) : 0,
     sleepFn,
     isLive: liveCheck,
     automator: options.automator,
@@ -692,7 +699,7 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
   if (!becameLive && preferredPort) {
     // 边界竞态：deadline 刚过 port 才 listen——再探一次
     becameLive = await liveCheck(config, {
-      timeoutMs: 2000,
+      timeoutMs: Math.max(1, deadlineAt - Date.now()),
       automator: options.automator,
     }).catch(() => false)
   }
@@ -700,23 +707,20 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
   if (!becameLive) {
     onProgress && onProgress('discover-port')
     const remainingMs = deadlineAt ? Math.max(0, deadlineAt - Date.now()) : 8000
-    // 盲扫不依赖剩余 open deadline：auto 已返回后扫 port 是廉价自愈（TCP+短探针）
-    const discovered = await discoverLiveAutomationPort(config, {
+    const discovered = remainingMs > 0 ? await discoverLiveAutomationPort(config, {
       preferredPort,
-      timeoutMs: 400,
-      tcpTimeoutMs: 120,
+      timeoutMs: Math.min(400, remainingMs),
+      tcpTimeoutMs: Math.min(120, remainingMs),
       // 覆盖 AUTO_PORT_RANGE 常见段；preferred 失败后至少扫到 preferred+40
       maxProbes: 50,
       isLive: liveCheck,
       automator: options.automator,
-    }).catch(() => '')
+    }).catch(() => '') : ''
     if (discovered) {
       config.autoPort = discovered
       metadata.discoveredAutoPort = discovered
       metadata.preferredAutoPort = preferredPort || undefined
       becameLive = true
-    } else if (remainingMs < 0) {
-      // keep becameLive false
     }
   }
   if (!becameLive) {

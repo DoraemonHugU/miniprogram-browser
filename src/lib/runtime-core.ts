@@ -170,16 +170,11 @@ function resolveRuntimeStableText(node: Record<string, unknown> | null | undefin
 /**
  * 基于路由事件和前后路径构造点击反馈消息行。
  * - 有路由事件时直接输出事件摘要
- * - 前后路径相同 → 提示可能弹窗
- * - 无事件且路径变化 → 空数组
+ * - 没有路由事件时保持安静；普通按钮、表单控件本来就应停留在当前页
  */
-function buildClickNotices({ pathBefore, pathAfter, routeEvents = [] }: { pathBefore?: string; pathAfter?: string; routeEvents?: { message?: string }[] }): string[] {
+function buildClickNotices({ routeEvents = [] }: { pathBefore?: string; pathAfter?: string; routeEvents?: { message?: string }[] }): string[] {
   if ((routeEvents || []).length > 0) {
     return routeEvents.map(formatRouteTimelineLine)
-  }
-
-  if (pathBefore && pathAfter && pathBefore === pathAfter) {
-    return ['点击后页面未跳转；如果预期应跳页，请检查是否出现登录/授权弹窗，可尝试 native confirmModal 或查看 timeline/logs。']
   }
 
   return []

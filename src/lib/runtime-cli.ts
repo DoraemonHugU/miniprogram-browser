@@ -22,7 +22,7 @@ type ErrorWithMeta = Error & AnyRecord
 function normalizeProjectMapLinuxPrefix(prefix: string): string {
   const normalized = path.posix.normalize(String(prefix || '').trim().replace(/\\/gu, '/'))
   if (!normalized || normalized === '.' || !normalized.startsWith('/')) {
-    throw new Error('Invalid project map. Use --project-map <linux=windows> or WECHAT_DEVTOOLS_PROJECT_MAP, for example /home/wang/xuexi/projects=P:\\projects.')
+    throw new Error('Invalid project map. Use --project-map <linux=windows> or WECHAT_DEVTOOLS_PROJECT_MAP, for example /home/developer/work=P:\\work.')
   }
   return normalized === '/' ? normalized : normalized.replace(/\/+$/u, '')
 }
@@ -45,7 +45,7 @@ function parseProjectMapEntries(rawMap: string): { linuxPrefix: string; windowsP
     }
     const eqIndex = trimmed.indexOf('=')
     if (eqIndex < 1) {
-      throw new Error(`Invalid project map entry: ${trimmed}. Use --project-map <linux=windows> or WECHAT_DEVTOOLS_PROJECT_MAP, for example /home/wang/xuexi/projects=P:\\projects.`)
+      throw new Error(`Invalid project map entry: ${trimmed}. Use --project-map <linux=windows> or WECHAT_DEVTOOLS_PROJECT_MAP, for example /home/developer/work=P:\\work.`)
     }
     entries.push({
       linuxPrefix: normalizeProjectMapLinuxPrefix(trimmed.slice(0, eqIndex)),
@@ -264,10 +264,11 @@ function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = 
   const cliDirectory = path.dirname(String(config.cliPath || ''))
   const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
   const timeoutMs = Number(options.timeoutMs || 30000)
+  const converter = options.toWindowsPath || toWindowsPath
 
   // cliPath 经过 normalizeCliPath 已统一为 cli.js，但 Windows node.exe
   // 不认 /mnt/ 路径，需转成 Windows 格式。
-  const cliJsArg = hasWindowsBundle ? toWindowsPath(String(config.cliPath || '')) : String(config.cliPath || '')
+  const cliJsArg = hasWindowsBundle ? converter(String(config.cliPath || '')) : String(config.cliPath || '')
 
   const result = hasWindowsBundle
     ? spawnSync(path.join(cliDirectory, 'node.exe'), [

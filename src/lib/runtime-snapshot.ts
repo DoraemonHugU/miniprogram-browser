@@ -300,6 +300,7 @@ function toSnapshotNode(node: SnapshotNode, children: SnapshotNode[] = []): Snap
   return {
     businessKey: node.businessKey || undefined,
     selector: node.selector,
+    index: Number(node.index || 0),
     kind: toSemanticRuntimeKind(node, children.length),
     identityText: normalizeRuntimeText(node.text || ''),
     text: isInteractiveRuntimeNode(node) || isContentRuntimeNode(node)
@@ -314,6 +315,7 @@ function toRawRuntimeNode(node: SnapshotNode, children: SnapshotNode[] = []): Sn
   return {
     businessKey: node.businessKey || undefined,
     selector: node.selector,
+    index: Number(node.index || 0),
     kind: node.kind || node.tagName || 'view',
     tagName: node.tagName || 'view',
     identityText: normalizeRuntimeText(node.text || ''),
@@ -321,7 +323,7 @@ function toRawRuntimeNode(node: SnapshotNode, children: SnapshotNode[] = []): Sn
     strategy: {
       kind: 'selector',
       selector: node.selector,
-      index: 0,
+      index: Number(node.index || 0),
     },
     children,
   }
@@ -610,6 +612,7 @@ function deriveRuntimeOrder(rootWxml: string, item: SnapshotNode): number {
 async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string): Promise<SnapshotNode[]> {
   const elements = await page.$$(tagName)
   const items: SnapshotNode[] = []
+  const selectorOccurrences = new Map<string, number>()
 
   for (let index = 0; index < elements.length; index += 1) {
     const element = elements[index]
@@ -620,11 +623,14 @@ async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string):
 
     const { tagName: parsedTagName, attributes } = parseOpeningTagAttributes(outerWxml)
     const resolvedTagName = parsedTagName || element.tagName || tagName
+    const selector = deriveRuntimeSelector(resolvedTagName, attributes)
+    const selectorIndex = selectorOccurrences.get(selector) || 0
+    selectorOccurrences.set(selector, selectorIndex + 1)
     const text = await element.text().catch(() => '')
     items.push({
       tagName: resolvedTagName,
-      selector: deriveRuntimeSelector(resolvedTagName, attributes),
-      index,
+      selector,
+      index: selectorIndex,
       attributes,
       businessKey: deriveRuntimeBusinessKey(attributes),
       kind: deriveRuntimeKind(resolvedTagName, attributes),

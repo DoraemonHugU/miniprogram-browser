@@ -13,8 +13,8 @@ test('detectRuntimeOS 包 process.platform', () => {
 })
 
 test('detectWsl: 含 microsoft 的版本串 → true', () => {
-  assert.equal(detectWsl('4.19.128-microsoft-standard-WSL2'), true)
-  assert.equal(detectWsl('Linux version 5.15.0-microsoft-standard-WSL2'), true)
+  assert.equal(detectWsl('4.19.128-microsoft-standard-WSL2', { runtime: 'linux' }), true)
+  assert.equal(detectWsl('Linux version 5.15.0-microsoft-standard-WSL2', { runtime: 'linux' }), true)
 })
 
 test('detectWsl: 普通 linux 版本串 → false', () => {

@@ -189,3 +189,32 @@ test('collectRecordRects maps selectors to percentage rects', async () => {
     rectPct: { x: 25, y: 25, w: 50, h: 50 },
   }])
 })
+
+test('collectRecordRects maps duplicate selectors by record index', async () => {
+  const elements = [
+    {
+      async size() { return { width: 80, height: 20 } },
+      async offset() { return { left: 10, top: 10 } },
+    },
+    {
+      async size() { return { width: 80, height: 20 } },
+      async offset() { return { left: 10, top: 50 } },
+    },
+  ]
+  const refs = await collectRecordRects({
+    async $$(selector) {
+      return selector === 'button' ? elements : []
+    },
+  }, [
+    { ref: '@e1', kind: 'button', text: '提交', strategy: { selector: 'button', index: 0 } },
+    { ref: '@e2', kind: 'button', text: '重置', strategy: { selector: 'button', index: 1 } },
+  ], {
+    windowWidth: 100,
+    windowHeight: 100,
+  })
+
+  assert.deepEqual(refs.map((item) => item.rectPct), [
+    { x: 10, y: 10, w: 80, h: 20 },
+    { x: 10, y: 50, w: 80, h: 20 },
+  ])
+})

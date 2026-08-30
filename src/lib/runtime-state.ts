@@ -37,7 +37,7 @@ interface UpdateStateInput {
 
 /**
  * 用新记录更新 state 的 refs 映射。
- * @param reset true 时先将所有现有 ref 标记为 inactive
+ * @param reset true 时用当前 snapshot 世代完整替换旧 refs
  */
 function updateStateWithRecords(
   state: UpdateStateInput,
@@ -49,17 +49,8 @@ function updateStateWithRecords(
   nextRefIndex: number
   lastSnapshot: { ref: unknown; kind: unknown; text: unknown }[]
 } {
-  const refs = { ...(state.refs || {}) } as Record<string, RefEntry>
-  const stableKeyToRef = { ...(state.stableKeyToRef || {}) }
-
-  if (reset) {
-    for (const ref of Object.keys(refs)) {
-      refs[ref] = {
-        ...refs[ref],
-        active: false,
-      }
-    }
-  }
+  const refs = (reset ? {} : { ...(state.refs || {}) }) as Record<string, RefEntry>
+  const stableKeyToRef = reset ? {} : { ...(state.stableKeyToRef || {}) }
 
   for (const record of records) {
     const recordRef = record.ref || ''
@@ -79,7 +70,7 @@ function updateStateWithRecords(
   }
 
   const nextRefIndex = Math.max(
-    Number(state.nextRefIndex || 1),
+    reset ? 1 : Number(state.nextRefIndex || 1),
     ...records.map((record) => Number(String(record.ref || '').replace('@e', '')) + 1).filter(Number.isFinite),
   )
 

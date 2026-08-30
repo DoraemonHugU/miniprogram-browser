@@ -143,7 +143,6 @@ async function createVisualProbe({
   const targetPath = screenshotPath || await allocateTempScreenshotPath({
     directory: config.tempScreenshotDir,
     projectPath: config.projectPath,
-    sessionName: config.sessionName,
     route: page.path,
     mode: 'visual-probe',
   })

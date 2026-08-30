@@ -29,10 +29,10 @@ const pathPayload = h.parseJsonStdout(pathResult)
 h.assertOk(pathResult.status === 0, 'path failed', { status: pathResult.status, payload: pathPayload })
 h.log(`path ok path=${(pathPayload && (pathPayload.path || pathPayload.message)) || ''}`)
 
-h.log('step: snapshot -i')
-const snapResult = h.runCli(['snapshot', '-i', '--session', session, '--project', project, '--json'])
+h.log('step: snapshot')
+const snapResult = h.runCli(['snapshot', '--session', session, '--project', project, '--json'])
 const snapPayload = h.parseJsonStdout(snapResult)
-h.assertOk(snapResult.status === 0, 'snapshot -i failed', { status: snapResult.status, payload: snapPayload })
+h.assertOk(snapResult.status === 0, 'snapshot failed', { status: snapResult.status, payload: snapPayload })
 h.log('snapshot ok')
 
 h.log('step: session kill (unbind gate session)')

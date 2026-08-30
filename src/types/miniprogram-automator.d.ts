@@ -35,6 +35,7 @@ declare module 'miniprogram-automator' {
     pageStack(): Promise<PageHandle[]>
     systemInfo(): Promise<unknown>
     callWxMethod(method: string, ...args: unknown[]): Promise<unknown>
+    callPluginWxMethod?(pluginId: string, method: string, ...args: unknown[]): Promise<unknown>
     evaluate(source: string | (() => unknown)): Promise<unknown>
     native(): Record<string, unknown> | null
 

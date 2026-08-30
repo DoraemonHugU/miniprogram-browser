@@ -28,11 +28,10 @@ test('two leaf refs appear with digits and row labels', () => {
     rec('@e1', 'text', { x: 0, y: 0, w: 50, h: 10 }),
     rec('@e2', 'button', { x: 50, y: 0, w: 50, h: 10 }),
   ], { viewport: { w: 375, h: 812 } })
-  assert.match(out, /top-left=\(0,0\)/)
-  assert.match(out, /x→右 y→下/)
-  assert.match(out, /1%│/)
+  assert.match(out, /map 32x24/)
+  assert.doesNotMatch(out, /[^\x00-\x7F]/u)
   assert.match(out, /[12]/)
-  assert.ok(out.split('\n').length > 5)
+  assert.ok(out.split('\n').length >= 3)
 })
 
 test('container draws a border box, leaf draws its ref', () => {
@@ -136,10 +135,24 @@ test('isInteractiveKind recognizes controls', () => {
   assert.equal(isInteractiveKind('view'), false)
 })
 
-test('clampGridH keeps portrait (375x812) within 16-56 and taller than landscape', () => {
+test('clampGridH keeps the compact map within 12-24 rows', () => {
   const portrait = clampGridH(375, 812)
   const landscape = clampGridH(812, 375)
-  assert.ok(portrait >= 16 && portrait <= 56)
-  assert.ok(landscape >= 16 && landscape <= 56)
+  assert.ok(portrait >= 12 && portrait <= 24)
+  assert.ok(landscape >= 12 && landscape <= 24)
   assert.ok(portrait > landscape)
+})
+
+test('default map stays compact for agent output and folds empty row runs', () => {
+  const out = renderAsciiMap([
+    rec('@e1', 'button', { x: 10, y: 10, w: 30, h: 10 }),
+  ], { viewport: { w: 375, h: 812 } })
+
+  assert.match(out, /map 32x24/)
+  assert.ok(out.split('\n').length < 15, out)
+  assert.match(out, /\.\.\.\|/u)
+})
+
+test('large text remains a mark instead of drawing a noisy box', () => {
+  assert.equal(classifyLod({ x: 5, y: 5, w: 90, h: 30 }, 32, 24, 'text'), 'mark')
 })

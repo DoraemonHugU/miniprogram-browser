@@ -23,6 +23,8 @@ const {
   findNodeByStableKey,
   selectorIndexInSubtree,
   buildRuntimeRecordSignature,
+  parseOpeningTagAttributes,
+  deriveRuntimeSelector,
 } = require('./runtime-snapshot')
 const {
   updateStateWithRecords,
@@ -43,6 +45,20 @@ interface PageHandle {
   [key: string]: unknown
 }
 
+async function filterElementsByDerivedSelector(elements: AnyRecord[], selector: string): Promise<AnyRecord[]> {
+  const derivedSelectors = await Promise.all(elements.map(async (element) => {
+    const readOuterWxml = (element as { outerWxml?: () => Promise<string> }).outerWxml
+    if (typeof readOuterWxml !== 'function') {
+      return ''
+    }
+    const outerWxml = await readOuterWxml.call(element).catch(() => '')
+    const parsed = parseOpeningTagAttributes(outerWxml)
+    return parsed.tagName ? deriveRuntimeSelector(parsed.tagName, parsed.attributes) : ''
+  }))
+  const matchingElements = elements.filter((_element, index) => derivedSelectors[index] === selector)
+  return matchingElements.length > 0 ? matchingElements : elements
+}
+
 /**
  * 根据 ref record 在页面中解析 DOM 元素。
  *
@@ -50,7 +66,7 @@ interface PageHandle {
  * 1. 如果 record 有 stableKey，先通过稳定键匹配
  * 2. 否则通过 strategy 类型匹配（selector/registry/testid/business/scope）
  * 3. 如果匹配到节点但签名变化，报告 stale
- * 4. 最终通过 scope.$$(selector)[index] 获取元素
+ * 4. 用派生 selector 过滤同标签候选，再按 occurrence index 获取元素
  */
 async function resolveRecord(page: AnyRecord, state: AnyRecord, record: AnyRecord, seen: Set<string> = new Set()): Promise<AnyRecord> {
   if (!record || !record.strategy) {
@@ -101,38 +117,47 @@ async function resolveRecord(page: AnyRecord, state: AnyRecord, record: AnyRecor
     }
 
     if (!matchedNode) {
-      throw new Error(`Ref is stale or no longer resolvable: ${recordRef}; page likely changed, run snapshot -i again.`)
+      throw new Error(`Ref is stale or no longer resolvable: ${recordRef}; page likely changed, run snapshot again.`)
     }
 
     const currentSignature = buildRuntimeRecordSignature(matchedNode)
     if (!matchedByStableKey && record.signature && currentSignature && record.signature !== currentSignature) {
-      throw new Error(`Ref is stale: ${recordRef} no longer points to the same UI element; run snapshot -i again.`)
+      throw new Error(`Ref is stale: ${recordRef} no longer points to the same UI element; run snapshot again.`)
     }
 
     selector = String((matchedNode as AnyRecord).selector || selector)
-    index = selectorIndexInSubtree(scopeTree, matchedNode)
+    const matchedSelectorIndex = Number((matchedNode as AnyRecord).index)
+    index = recordScopeRef
+      ? selectorIndexInSubtree(scopeTree, matchedNode)
+      : (Number.isInteger(matchedSelectorIndex) && matchedSelectorIndex >= 0 ? matchedSelectorIndex : index)
   }
 
   if (!selector) {
-    throw new Error(`Ref is not resolvable without selector: ${recordRef}; run snapshot -i again.`)
+    throw new Error(`Ref is not resolvable without selector: ${recordRef}; run snapshot again.`)
   }
 
-  const elements = await (scope as unknown as PageHandle).$$(selector) as AnyRecord[]
+  const selectedElements = await (scope as unknown as PageHandle).$$(selector) as AnyRecord[]
+  const elements = matchedNode && selectedElements.length > 1
+    ? await filterElementsByDerivedSelector(selectedElements, selector)
+    : selectedElements
   if (matchedNode && elements.length > 1) {
     const stableText = resolveRuntimeStableText(matchedNode)
     if (stableText) {
+      const matchingTextIndexes: number[] = []
       for (let candidateIndex = 0; candidateIndex < elements.length; candidateIndex += 1) {
         const elementText = await (elements[candidateIndex] as unknown as { text(): Promise<string> }).text().catch(() => '')
         const candidateText = resolveRuntimeStableText({ text: elementText } as AnyRecord)
         if (candidateText === stableText) {
-          index = candidateIndex
-          break
+          matchingTextIndexes.push(candidateIndex)
         }
+      }
+      if (matchingTextIndexes.length === 1) {
+        index = matchingTextIndexes[0]
       }
     }
   }
   if (elements.length <= index) {
-    throw new Error(`Resolved selector not found: ${selector} at index ${index}; page likely changed, run snapshot -i again.`)
+    throw new Error(`Resolved selector not found: ${selector} at index ${index}; page likely changed, run snapshot again.`)
   }
 
   return elements[index]
@@ -181,23 +206,20 @@ async function resolveTarget(page: AnyRecord, state: AnyRecord, token: string, s
 async function snapshotInteractive(page: AnyRecord, state: AnyRecord, scopeRef: string | null = null, snapshotOptions: AnyRecord = {}): Promise<AnyRecord> {
   const treeData = await readRuntimeTree(page)
   if (!treeData) {
-    throw new Error('No snapshot tree available for snapshot -i')
+    throw new Error('No snapshot tree available for snapshot')
   }
   const scopeRecord = scopeRef ? (state.refs as Record<string, AnyRecord>)[scopeRef] : null
   const epoch = nextEpoch(state)
-  const subtree = assignCanonicalPaths(subtreeForScope(treeData.nodes, scopeRecord))
+  const canonicalTree = assignCanonicalPaths(treeData.nodes)
 
   const canonicalResult = buildTreeSnapshotRecords({
-    nodes: subtree,
+    nodes: canonicalTree,
     epoch,
     route: page.path,
     pageKey: treeData.pageKey,
-    scopeRef,
+    scopeRef: null,
     startIndex: 1,
-    previousState: {
-      nextRefIndex: state.nextRefIndex,
-      stableKeyToRef: state.stableKeyToRef,
-    },
+    previousState: null,
   })
 
   const nextState = updateStateWithRecords({
@@ -205,6 +227,7 @@ async function snapshotInteractive(page: AnyRecord, state: AnyRecord, scopeRef: 
     epoch,
     route: page.path,
   }, canonicalResult.records, true)
+  const subtree = subtreeForScope(canonicalTree, scopeRecord, treeData.pageKey)
   const visibleNodes = applySnapshotOptions(subtree, snapshotOptions)
   const visibleResult = buildTreeSnapshotRecords({
     nodes: visibleNodes,

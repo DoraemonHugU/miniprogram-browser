@@ -28,7 +28,7 @@ function summarizeTimelinePayload(payload: Record<string, unknown>, options: { a
  * @param {{ all?: boolean }} options
  * @returns {Record<string, unknown>}
  */
-function summarizeSnapshotPayload(payload: Record<string, unknown>, options: { all?: boolean }): Record<string, unknown> {
+function summarizeSnapshotPayload(payload: Record<string, unknown>, options: { all?: boolean; json?: boolean }): Record<string, unknown> {
   if (options.all) {
     return payload
   }
@@ -37,7 +37,6 @@ function summarizeSnapshotPayload(payload: Record<string, unknown>, options: { a
     ref: record.ref,
     kind: record.kind,
     text: record.text,
-    route: record.route,
     ...(record.rectPct ? { rectPct: record.rectPct } : {}),
   })) : []
 
@@ -45,7 +44,10 @@ function summarizeSnapshotPayload(payload: Record<string, unknown>, options: { a
     route: payload.state && (payload.state as Record<string, unknown>).route ? (payload.state as Record<string, unknown>).route : null,
     count: records.length,
     records,
-    lines: Array.isArray(payload.lines) ? payload.lines : [],
+  }
+
+  if (!options.json) {
+    summary.lines = Array.isArray(payload.lines) ? payload.lines : []
   }
 
   if (payload.visual) {

@@ -11,7 +11,7 @@
  * 环境：
  *   MINIPROGRAM_BROWSER_GATE_SKIP=1     强制 skip
  *   MINIPROGRAM_BROWSER_GATE_TIMEOUT    open 超时 ms
- *   MINIPROGRAM_BROWSER_E2E_GOTO_ROUTE  默认 /pages/tools/index
+ *   MINIPROGRAM_BROWSER_E2E_GOTO_ROUTE  默认 /pages/controls/index
  */
 
 const { createHarness } = require('./lib/e2e-harness.cjs')
@@ -23,8 +23,8 @@ const project = h.project
 const stamp = Date.now().toString(36)
 const sessionA = `e2e-a-${stamp}`
 const sessionB = `e2e-b-${stamp}`
-const gotoRoute = String(process.env.MINIPROGRAM_BROWSER_E2E_GOTO_ROUTE || '/pages/tools/index').trim()
-const homeRoute = '/pages/dashboard/index'
+const gotoRoute = String(process.env.MINIPROGRAM_BROWSER_E2E_GOTO_ROUTE || '/pages/controls/index').trim()
+const homeRoute = '/pages/index/index'
 
 const results = []
 let ctx = {
@@ -86,10 +86,10 @@ function runJson(args, label) {
   caseResult(id, true, JSON.stringify(r.payload).slice(0, 120))
 }
 
-// 4) snapshot -i
+// 4) snapshot
 {
   const id = 'snapshot.interactive'
-  const r = runJson(['snapshot', '-i', '--session', sessionA, '--project', project, '--json'], id)
+  const r = runJson(['snapshot', '--session', sessionA, '--project', project, '--json'], id)
   h.assertOk(r.ok, id, r.payload || r.result)
   const count = Number(r.payload && (r.payload.count ?? (r.payload.records || []).length) || 0)
   h.assertOk(count > 0, 'snapshot has no records', r.payload)
@@ -123,7 +123,7 @@ function runJson(args, label) {
   caseResult(id, true, `n=${names.length}`)
 }
 
-// 7) goto tools (branch: navigation)
+// 7) goto target page (branch: navigation)
 {
   const id = 'goto.tools'
   const r = runJson([
@@ -156,14 +156,14 @@ function runJson(args, label) {
   h.assertOk(r.ok, id, r.payload)
   const p = String((r.payload && (r.payload.path || r.payload.message)) || '')
   const expect = gotoRoute.replace(/^\//, '')
-  h.assertOk(p.includes(expect) || p.includes('tools'), `expected tools-ish route, got ${p}`, r.payload)
+  h.assertOk(p.includes(expect), `expected ${expect}, got ${p}`, r.payload)
   caseResult(id, true, p)
 }
 
-// 9) snapshot on tools page
+// 9) snapshot on target page
 {
   const id = 'snapshot.after-goto'
-  const r = runJson(['snapshot', '-i', '--session', sessionA, '--project', project, '--no-map', '--json'], id)
+  const r = runJson(['snapshot', '--session', sessionA, '--project', project, '--no-map', '--json'], id)
   h.assertOk(r.ok, id, r.payload)
   const count = Number(r.payload && (r.payload.count ?? (r.payload.records || []).length) || 0)
   h.assertOk(count > 0, 'empty snapshot after goto', r.payload)
@@ -172,7 +172,7 @@ function runJson(args, label) {
 
 // 10) goto home again (branch: second navigation)
 {
-  const id = 'goto.dashboard'
+  const id = 'goto.home'
   const r = runJson([
     'goto', homeRoute,
     '--session', sessionA,
@@ -183,34 +183,31 @@ function runJson(args, label) {
   const pathResult = runJson(['path', '--session', sessionA, '--project', project, '--json'], 'path.home')
   h.assertOk(pathResult.ok, 'path after home goto', pathResult.payload)
   const p = String(pathResult.payload.path || pathResult.payload.message || '')
-  h.assertOk(p.includes('dashboard') || p.includes('pages/'), `unexpected home path ${p}`, pathResult.payload)
+  h.assertOk(p.includes('pages/index/index'), `unexpected home path ${p}`, pathResult.payload)
   caseResult(id, true, p)
 }
 
-// 11) click by ref: snapshot then click first button if any (branch: interaction)
+// 11) click by ref: require a real actionable node and hard click success
 {
-  const id = 'click.first-button-if-any'
-  const snap = runJson(['snapshot', '-i', '--session', sessionA, '--project', project, '--json'], id)
+  const id = 'click.first-actionable'
+  const snap = runJson(['snapshot', '--session', sessionA, '--project', project, '--json'], id)
   h.assertOk(snap.ok, 'snapshot before click', snap.payload)
   const records = (snap.payload && snap.payload.records) || []
-  const btn = records.find((x) => x && (x.kind === 'button' || /button/i.test(String(x.kind || ''))))
-  if (!btn || !btn.ref) {
-    caseResult(id, true, 'skipped-no-button')
-  } else {
-    const r = runJson([
-      'click', btn.ref,
-      '--session', sessionA,
-      '--project', project,
-      '--json',
-    ], id)
-    // click may navigate; accept ok or soft fail with message
-    if (!r.ok) {
-      h.log(`WARN click ${btn.ref} failed (non-fatal for suite): ${JSON.stringify(r.payload).slice(0, 200)}`)
-      caseResult(id, true, `click-failed-soft ref=${btn.ref}`)
-    } else {
-      caseResult(id, true, `clicked ${btn.ref}`)
-    }
+  const target = records.find((x) => x && /^(navigator|link)$/iu.test(String(x.kind || '')))
+    || records.find((x) => x && /button/iu.test(String(x.kind || '')))
+  h.assertOk(target && target.ref, 'snapshot has no actionable navigator/button ref', snap.payload)
+  const clickArgs = [
+    'click', target.ref,
+    '--session', sessionA,
+    '--project', project,
+    '--json',
+  ]
+  if (/^(navigator|link)$/iu.test(String(target.kind || ''))) {
+    clickArgs.push('--await', 'route-change', '--timeout', '30000')
   }
+  const r = runJson(clickArgs, id)
+  h.assertOk(r.ok, `click ${target.ref} failed`, r.payload || r.result)
+  caseResult(id, true, `clicked ${target.ref} kind=${target.kind}`)
 }
 
 // 12) logs command does not crash (branch: L1 soft)

@@ -38,7 +38,7 @@ function preferredProjectRoot() {
   return os.tmpdir()
 }
 
-const PROJECT_ROOT = preferredProjectRoot()
+const PROJECT_ROOT = fs.realpathSync(preferredProjectRoot())
 
 function runCli(args, env = {}, options = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -131,8 +131,8 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
   return {
     dir,
     callsPath,
-    /** 给 --cli-path：生产校验在 WSL 上认 cli.js + node.exe */
-    cliPath: cliJsPath,
+    /** macOS 直接执行 wrapper；Windows/WSL 使用 cli.js + node.exe bundle。 */
+    cliPath: process.platform === 'darwin' ? shellCliPath : cliJsPath,
     readCalls() {
       if (!fs.existsSync(callsPath)) {
         return []
@@ -440,7 +440,7 @@ test('open discovers the mini program project from the current Git worktree', ()
   assert.notEqual(result.status, 0)
   assert.equal(payload.ok, false)
   assert.match(payload.error.message, /WECHAT_DEVTOOLS_CLI|DevTools CLI/i)
-  assert.equal(payload.error.diagnostics.projectPath, projectDir)
+  assert.equal(payload.error.diagnostics.projectPath, fs.realpathSync(projectDir))
   assert.doesNotMatch(payload.error.message, /Missing project path|--project <miniprogram-root>/i)
 })
 
@@ -615,7 +615,7 @@ test('open closes a newly-started DevTools project when startup times out', () =
     '--cli-path',
     fake.cliPath,
     '--timeout',
-    '200',
+    '1500',
     '--json',
   ])
   const payload = parseJsonOutput(result)
@@ -623,8 +623,9 @@ test('open closes a newly-started DevTools project when startup times out', () =
 
   assert.notEqual(result.status, 0)
   assert.equal(payload.error.code, 'OPEN_TIMEOUT')
-  assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
-  assert.ok(calls.some((line) => /^close --project /u.test(line)), calls.join('\n'))
+  const failureContext = `${calls.join('\n')}\n${JSON.stringify(payload, null, 2)}`
+  assert.ok(calls.some((line) => /^auto --project /u.test(line)), failureContext)
+  assert.ok(calls.some((line) => /^close --project /u.test(line)), failureContext)
   assert.equal(payload.error.diagnostics.cleanup.projectClosed, true)
 })
 
@@ -646,15 +647,17 @@ test('doctor can probe a DevTools HTTP port without a prebound session and does 
     '--wait',
     '0',
     '--timeout',
-    '50',
+    '2000',
     '--json',
   ], { HOME: homeDir })
   const payload = parseJsonOutput(result)
   const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
+  assert.equal(payload.ok, false)
   assert.equal(payload.projectPath, projectDir)
   assert.equal(payload.devtoolsPort, '23986')
+  assert.ok(payload.probe, JSON.stringify(payload, null, 2))
   assert.equal(payload.probe.connected, false)
   // endpoint 未 live 时 doctor 仍会 enableAutomation(openFirst=false)，只跑 auto，不强制 open
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
@@ -691,16 +694,48 @@ test('doctor still enables automation when bound autoPort is not live', async ()
     '--wait',
     '0',
     '--timeout',
-    '50',
+    '1500',
     '--json',
   ], { HOME: homeDir })
   const payload = parseJsonOutput(result)
   const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
+  assert.equal(payload.ok, false)
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
   assert.equal(payload.projectPath, projectDir)
   assert.notEqual(payload.automation && payload.automation.reusedLive, true)
+})
+
+test('doctor bounds a hanging DevTools CLI with its timeout budget', () => {
+  const projectDir = createMiniProgramProject()
+  const fake = createFakeDevtoolsCli({
+    extraJs: "if (cmd === 'auto') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);",
+  })
+  const startedAt = Date.now()
+
+  const result = runCli([
+    'doctor',
+    '--project',
+    projectDir,
+    '--devtools-port',
+    '23988',
+    '--cli-path',
+    fake.cliPath,
+    '--wait',
+    '0',
+    '--timeout',
+    '200',
+    '--json',
+  ])
+  const elapsedMs = Date.now() - startedAt
+  const payload = parseJsonOutput(result)
+
+  assert.equal(result.status, 0)
+  assert.equal(payload.ok, false)
+  assert.equal(payload.probe, null)
+  assert.match(payload.automation.error.message, /timed out|ETIMEDOUT|timeout/i)
+  assert.ok(elapsedMs < 2000, `doctor timeout should bound the synchronous DevTools CLI, elapsed=${elapsedMs}`)
 })
 
 test('session prune closes and removes stale sessions only for the current project', async () => {

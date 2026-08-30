@@ -11,18 +11,13 @@ const path = require('node:path')
 const repoRoot = path.resolve(__dirname, '..', '..')
 const cliJs = path.join(repoRoot, 'dist', 'miniprogram-browser.js')
 
-const DEFAULT_PROJECTS = [
-  process.env.MINIPROGRAM_BROWSER_GATE_PROJECT,
-  '/mnt/d/xuexi/projects/earlyRiser/apps/miniprogram',
-  '/mnt/d/xuexi/projects/dali/xcx',
-].filter(Boolean)
-
 function log(tag, msg) {
   process.stderr.write(`[${tag}] ${msg}\n`)
 }
 
 function resolveProject() {
-  for (const candidate of DEFAULT_PROJECTS) {
+  const candidate = String(process.env.MINIPROGRAM_BROWSER_GATE_PROJECT || '').trim()
+  if (candidate) {
     const resolved = path.resolve(candidate)
     if (fs.existsSync(path.join(resolved, 'project.config.json'))) {
       return resolved
@@ -39,10 +34,6 @@ function resolveCliPath() {
   const fromEnv = String(process.env.WECHAT_DEVTOOLS_CLI || '').trim()
   if (fromEnv) {
     return fromEnv
-  }
-  const fallback = '/mnt/f/Tools/wxwebtool/cli.js'
-  if (fs.existsSync(fallback)) {
-    return fallback
   }
   return ''
 }
@@ -118,7 +109,7 @@ function createHarness(options = {}) {
       skip(`missing built CLI at ${cliJs}; run npm run build first`)
     }
     if (!devtoolsCli) {
-      skip('WECHAT_DEVTOOLS_CLI not set and no default cli.js found')
+      skip('WECHAT_DEVTOOLS_CLI not set')
     }
     if (!fs.existsSync(devtoolsCli)) {
       skip(`DevTools CLI not found: ${devtoolsCli}`)

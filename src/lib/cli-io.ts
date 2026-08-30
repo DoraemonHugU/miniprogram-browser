@@ -46,7 +46,6 @@ function parseArgs(argv: string[]): ParsedCliArgs {
     'runtime',
     'no-await',
     'no-map',
-    'map',
     'visual',
     'noise',
     'follow',
@@ -94,6 +93,11 @@ function parseArgs(argv: string[]): ParsedCliArgs {
     }
 
     const key = token.slice(2)
+    if (key === 'path') {
+      const error = new Error('Unknown option --path. Pass the output path as a positional argument: screenshot [path].') as Error & { code?: string }
+      error.code = 'CLI_USAGE_ERROR'
+      throw error
+    }
     if (key === 'no-trust-project') {
       options.trustProject = false
       continue

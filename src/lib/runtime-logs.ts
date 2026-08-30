@@ -38,7 +38,7 @@ function resolveDevtoolsLogRoot(config: Record<string, unknown>, options: Record
   }
 
   const cliDirectory = path.dirname(cliPath)
-  const hasWindowsBundle = resolveEnvironment(config).devtoolsHost === 'win32'
+  const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
   if (hasWindowsBundle) {
     const installPath = (options.toWindowsPath as (s: string) => string || toWindowsPath)(cliDirectory)
     const productHash = createHash('md5').update(installPath).digest('hex')
@@ -61,18 +61,26 @@ function resolveDevtoolsLogRoot(config: Record<string, unknown>, options: Record
     }
   }
 
-  if (process.platform === 'darwin') {
+  const env = resolveEnvironment(config, options)
+  if (env.runtime === 'darwin') {
     const installPath = path.dirname(cliPath)
     const productHash = createHash('md5').update(installPath).digest('hex')
+    const userDataRoot = path.join(
+      String(options.homeDir || process.env.HOME || ''),
+      'Library',
+      'Application Support',
+      '微信开发者工具',
+    )
     return {
       installPath,
       productHash,
-      logRoot: path.join(process.env.HOME || '', 'Library', 'Application Support', '微信开发者工具', productHash, 'WeappLog'),
+      logRoot: path.join(userDataRoot, productHash, 'WeappLog'),
       logRootNative: '',
+      userDataRoot,
+      discoveryStrategy: 'latest-log',
     }
   }
 
-  const env = resolveEnvironment(config, options)
   throw new Error(
     `DevTools log discovery is only supported for Windows DevTools (from Windows or WSL) and macOS; ` +
     `current environment runtime=${env.runtime} devtoolsHost=${env.devtoolsHost}.`
@@ -94,6 +102,23 @@ async function discoverActiveDevtoolsLogRoot(rootInfo: Record<string, unknown>):
         continue
       }
       const logRoot = path.join(userDataRoot, entry.name, 'WeappLog')
+      if (rootInfo.discoveryStrategy === 'latest-log') {
+        const logFiles = await listDevtoolsLogFiles(logRoot)
+        let latestMtimeMs = 0
+        for (const filePath of logFiles) {
+          const info = await stat(filePath).catch(() => null)
+          latestMtimeMs = Math.max(latestMtimeMs, Number(info && info.mtimeMs) || 0)
+        }
+        if (latestMtimeMs && (!best || latestMtimeMs > best.mtimeMs)) {
+          best = {
+            productHash: entry.name,
+            logRoot,
+            mtimeMs: latestMtimeMs,
+          }
+        }
+        continue
+      }
+
       const launchLog = path.join(logRoot, 'launch.log')
       let info
       let content
@@ -127,7 +152,8 @@ async function discoverActiveDevtoolsLogRoot(rootInfo: Record<string, unknown>):
     logRootNative: rootInfo.logRootNative
       ? path.win32.join(path.win32.dirname(path.win32.dirname(rootInfo.logRootNative)), best.productHash, 'WeappLog')
       : '',
-    discoveredFromLaunchLog: true,
+    discoveredFromLaunchLog: rootInfo.discoveryStrategy !== 'latest-log' || undefined,
+    discoveredFromRecentLog: rootInfo.discoveryStrategy === 'latest-log' || undefined,
   }
 }
 
@@ -197,6 +223,11 @@ async function collectDevtoolsLogs(config: Record<string, unknown>, options: Rec
     logRoot: root.logRoot,
     logRootNative: root.logRootNative,
     productHash: root.productHash,
+    discovery: root.discoveredFromRecentLog
+      ? 'latest-log'
+      : root.discoveredFromLaunchLog
+        ? 'launch-log'
+        : 'default',
     files: entries,
   }
 }

@@ -70,6 +70,22 @@ async function callWxMethod(miniProgram: MiniProgram, method: string, rawArgs: s
   return miniProgram.callWxMethod(method, ...parseCallArguments(rawArgs))
 }
 
+/**
+ * 直接调用路由 wx API，避开 miniprogram-automator changeRoute 内置的固定 3 秒 sleep。
+ * 插件页面沿用 SDK 原有的 pluginId 分发规则。
+ */
+async function changeMiniProgramRoute(miniProgram: MiniProgram, method: 'reLaunch' | 'switchTab', url: string): Promise<unknown> {
+  const currentPage = await miniProgram.currentPage().catch(() => null)
+  const pluginMatch = currentPage && currentPage.path
+    ? String(currentPage.path).match(/^plugin-private:\/\/([^/]+)\//u)
+    : null
+
+  if (pluginMatch && typeof miniProgram.callPluginWxMethod === 'function') {
+    return miniProgram.callPluginWxMethod(pluginMatch[1], method, { url })
+  }
+  return miniProgram.callWxMethod(method, { url })
+}
+
 /** 调用页面方法 */
 async function callPageMethod(page: PageHandle, method: string, rawArgs: string[] = []): Promise<unknown> {
   return page.callMethod(method, ...parseCallArguments(rawArgs))
@@ -166,6 +182,7 @@ module.exports = {
   getSystemInfo,
   getPageStack,
   callWxMethod,
+  changeMiniProgramRoute,
   callPageMethod,
   evaluateInMiniProgram,
   callNativeMethod,

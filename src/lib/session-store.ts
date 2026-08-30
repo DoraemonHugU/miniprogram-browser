@@ -735,8 +735,8 @@ function assertBindingConsistency(existingConfig: AnyRecord = {}, overrides: Any
   const keys = ['projectPath']
 
   for (const key of keys) {
-    const existingValue = String((existingConfig && existingConfig[key]) || '').trim()
-    const overrideValue = String((overrides && overrides[key]) || '').trim()
+    const existingValue = normalizeProjectPath(existingConfig && existingConfig[key])
+    const overrideValue = normalizeProjectPath(overrides && overrides[key])
 
     if (!existingValue || !overrideValue) {
       continue
