@@ -12,7 +12,7 @@ description: 为 miniprogram-browser 规划或执行版本更新、npm CLI 发�
 ## 发布模型
 
 - `package.json` 是 CLI 版本来源，根 `package-lock.json` 必须保持同一版本；不要改 Demo 子项目版本。
-- npm 只分发 `dist/`、`README.md`、`LICENSE` 和 package metadata。`skills/` 通过 GitHub 仓库分发，不进入 npm 包。
+- npm 分发 `dist/`、`README.md`、`LICENSE`、package metadata，以及 manifest 明确声明的 bundled dependencies；当前 beta 线内置 `miniprogram-automator` 的确定依赖树。`skills/`、`demo/` 和测试不进入 npm 包，通过 GitHub 仓库分发。
 - Git tag 使用 `v<version>`；beta GitHub Release 必须标为 prerelease。
 - 不要只根据最新 Git tag 推断当前版本。先对照根 manifest 与 npm registry；历史 tag / GitHub Release 可能不完整。
 - 本技能不调用 `miniprogram-ci`，不上传、预览或发布任何微信小程序。
@@ -90,7 +90,7 @@ npm run pack:check
 再完成这些检查：
 
 - 用当前 Agent 可用的 skill validator 校验所有新增或修改的 `skills/*/SKILL.md`。
-- 检查 `npm pack --dry-run` 清单；不得包含 `demo/`、本机路径、真实截图、DevTools 日志、token、AppID 或生产数据。
+- 检查 `npm pack --dry-run` 清单；除 manifest 明确声明的 bundled dependencies 外，不得意外包含 `node_modules/`，也不得包含 `skills/`、`demo/`、测试、本机路径、真实截图、DevTools 日志、token、AppID 或生产数据。
 - 对涉及 open/connect、runtime、goto/click/fill、await、screenshot 或 session 的变化，在 macOS DevTools 可用时运行 `npm run test:real-open-gate` 和 `npm run test:l0-e2e`，目标必须是 `demo/` 下的公开合成项目。
 - 缺少真实 DevTools 环境时明确记录为 skipped；不要把 mock 测试写成真实门禁已通过。
 

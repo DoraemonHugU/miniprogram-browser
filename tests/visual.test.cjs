@@ -119,7 +119,6 @@ test('captureVisualScreenshot reuses provided page capture function', async () =
       },
     },
     targetPath: '/tmp/fake-shot.png',
-    config: { repoRoot: '/repo' },
     pageCapture: async (targetPath) => {
       calls.push(targetPath)
       return targetPath
@@ -153,7 +152,6 @@ test('captureAnnotatedScreenshot overlays legend and returns annotate mode', asy
   const result = await captureAnnotatedScreenshot({
     miniProgram: {},
     targetPath: '/tmp/annotate.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'button', text: '开始', rectPct: { x: 10, y: 20, w: 20, h: 10 } },
     ],
@@ -191,7 +189,6 @@ test('captureAnnotatedScreenshot hides ref labels when noRef is enabled', async 
   const result = await captureAnnotatedScreenshot({
     miniProgram: {},
     targetPath: '/tmp/annotate-no-ref.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'button', text: '开始', rectPct: { x: 10, y: 20, w: 20, h: 10 } },
     ],
@@ -215,6 +212,39 @@ test('captureAnnotatedScreenshot hides ref labels when noRef is enabled', async 
   assert.equal(result.mode, 'annotate')
   assert.deepEqual(result.legend, [])
   assert.equal(printed.length, 0)
+})
+
+test('captureAnnotatedScreenshot offsets content refs below native screenshot chrome', async () => {
+  const printed = []
+  await captureAnnotatedScreenshot({
+    miniProgram: {},
+    targetPath: '/tmp/annotate-native-chrome.png',
+    refs: [
+      { ref: '@e1', kind: 'button', text: '开始', rectPct: { x: 10, y: 0, w: 20, h: 10 } },
+    ],
+    systemInfo: {
+      screenWidth: 390,
+      screenHeight: 844,
+      windowWidth: 390,
+      windowHeight: 753,
+    },
+    pageCapture: async (targetPath) => targetPath,
+    createImageAdapter: async () => ({
+      bitmap: { width: 390, height: 844 },
+      scan: () => {},
+      composite: () => {},
+      print: (...args) => { printed.push(args) },
+      writeAsync: async () => {},
+    }),
+    colorAdapter: {
+      rgbaToInt: () => 0,
+      create: async () => ({ bitmap: { width: 1, height: 1 }, scan: () => {} }),
+      loadFont: async () => ({}),
+      FONT_SANS_16_WHITE: 'font',
+    },
+  })
+
+  assert.equal(printed[0][2], 71)
 })
 
 test('overlayFocusScreenshot highlights multiple refs with color legend', async () => {
@@ -241,7 +271,6 @@ test('overlayFocusScreenshot highlights multiple refs with color legend', async 
   }
   const result = await overlayFocusScreenshot({
     targetPath: '/tmp/focus.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 20, h: 12 } },
       { ref: '@e2', kind: 'button', text: '我的', rectPct: { x: 40, y: 20, w: 20, h: 12 } },
@@ -298,7 +327,6 @@ test('overlayFocusScreenshot hides focus labels when noRef is enabled', async ()
   }
   const result = await overlayFocusScreenshot({
     targetPath: '/tmp/focus-no-ref.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 20, h: 12 } },
     ],
@@ -314,6 +342,48 @@ test('overlayFocusScreenshot hides focus labels when noRef is enabled', async ()
 
   assert.deepEqual(result.focusLegend, ['@e1 [button] 工具箱 color=blue'])
   assert.equal(printed.length, 0)
+})
+
+test('overlayFocusScreenshot maps content refs into full-screen page screenshots', async () => {
+  const bitmap = {
+    width: 390,
+    height: 844,
+    data: Buffer.alloc(390 * 844 * 4, 255),
+  }
+  await overlayFocusScreenshot({
+    targetPath: '/tmp/focus-native-chrome.png',
+    refs: [
+      { ref: '@e1', kind: 'button', text: '开始', rectPct: { x: 10, y: 0, w: 20, h: 10 } },
+    ],
+    focusRefs: ['@e1'],
+    noRef: true,
+    systemInfo: {
+      screenWidth: 390,
+      screenHeight: 844,
+      windowWidth: 390,
+      windowHeight: 753,
+    },
+    createImageAdapter: async () => ({
+      bitmap,
+      scan(x, y, width, height, iterator) {
+        for (let pixelY = y; pixelY < y + height; pixelY += 1) {
+          for (let pixelX = x; pixelX < x + width; pixelX += 1) {
+            const idx = (bitmap.width * pixelY + pixelX) << 2
+            iterator.call(this, pixelX, pixelY, idx)
+          }
+        }
+      },
+      writeAsync: async () => {},
+    }),
+    colorAdapter: {
+      rgbaToInt: (r, g, b, a) => (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | (a & 255)) >>> 0,
+    },
+  })
+
+  const contentTopBorder = (bitmap.width * 91 + 39) << 2
+  const screenTop = 39 << 2
+  assert.deepEqual(Array.from(bitmap.data.slice(contentTopBorder, contentTopBorder + 4)), [15, 23, 42, 255])
+  assert.deepEqual(Array.from(bitmap.data.slice(screenTop, screenTop + 4)), [255, 255, 255, 255])
 })
 
 test('captureLayoutScreenshot renders layout fallback and supports focus overlay', async () => {
@@ -341,7 +411,6 @@ test('captureLayoutScreenshot renders layout fallback and supports focus overlay
 
   const result = await captureLayoutScreenshot({
     targetPath: '/tmp/layout.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'view', text: '', rectPct: { x: 0, y: 0, w: 100, h: 100 } },
       { ref: '@e2', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
@@ -389,7 +458,6 @@ test('captureLayoutScreenshot hides semantic ref badges when noRef is enabled', 
 
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-no-ref.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'view', text: '', rectPct: { x: 0, y: 0, w: 100, h: 100 } },
       { ref: '@e2', kind: 'button', text: '工具箱', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
@@ -436,7 +504,6 @@ test('captureLayoutScreenshot uses deterministic different fills for top-level g
 
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-groups.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'view', text: '', rectPct: { x: 5, y: 5, w: 40, h: 20 } },
       { ref: '@e2', kind: 'view', text: '', rectPct: { x: 55, y: 5, w: 40, h: 20 } },
@@ -480,7 +547,6 @@ test('captureLayoutScreenshot invokes text renderer when provided', async () => 
   let renderedTexts = []
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-text.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'view', text: '学习打卡 <常用工具>', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
       { ref: '@e2', kind: 'text', text: '学习打卡', parentRef: '@e1', rectPct: { x: 12, y: 22, w: 25, h: 4 } },
@@ -519,7 +585,6 @@ test('captureLayoutScreenshot deduplicates parent and child text content', async
   let renderedTexts = []
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-text-dedupe.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { businessKey: 'root', kind: 'view', text: '', rectPct: { x: 0, y: 0, w: 100, h: 100 } },
       { businessKey: 'button', parentRef: 'root', kind: 'button', text: '学习打卡', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
@@ -558,7 +623,6 @@ test('captureLayoutScreenshot deduplicates parent text against deep descendant t
   let renderedTexts = []
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-text-deep-dedupe.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { businessKey: 'root', kind: 'view', text: '', rectPct: { x: 0, y: 0, w: 100, h: 100 } },
       { businessKey: 'button', parentRef: 'root', kind: 'button', text: '学习打卡', rectPct: { x: 10, y: 20, w: 30, h: 8 } },
@@ -598,7 +662,6 @@ test('captureLayoutScreenshot offsets nearby ref badges to avoid overlap', async
   const printed = []
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-badges.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'view', text: '', rectPct: { x: 5, y: 5, w: 90, h: 10 } },
       { ref: '@e2', kind: 'text', text: '标题', parentRef: '@e1', rectPct: { x: 6, y: 6, w: 20, h: 3 } },
@@ -637,7 +700,6 @@ test('captureLayoutScreenshot provides text safe boxes away from badge overlap',
   let safeBoxes = []
   await captureLayoutScreenshot({
     targetPath: '/tmp/layout-safe-box.png',
-    config: { repoRoot: '/repo' },
     refs: [
       { ref: '@e1', kind: 'view', text: '', rectPct: { x: 5, y: 5, w: 90, h: 12 } },
       { ref: '@e2', kind: 'text', text: '标题', parentRef: '@e1', rectPct: { x: 6, y: 6, w: 30, h: 4 } },

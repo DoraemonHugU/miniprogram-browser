@@ -43,7 +43,7 @@ interface JimpLike {
   rgbaToInt(r: number, g: number, b: number, a: number): number
   loadFont?(file: string): Promise<unknown>
   FONT_SANS_16_WHITE?: string
-  create?(w: number, h: number, color: number): Promise<VisualImage>
+  create(w: number, h: number, color: number): Promise<VisualImage>
 }
 
 interface FontKitGlyphPath {
@@ -171,7 +171,6 @@ interface BadgeState {
 
 interface CaptureLayoutInput {
   targetPath: string
-  config: Record<string, unknown>
   refs: VisualRecord[]
   focusRefs?: string[]
   focusRecords?: VisualRecord[]
@@ -187,10 +186,10 @@ interface CaptureLayoutInput {
 
 interface OverlayFocusInput {
   targetPath: string
-  config: Record<string, unknown>
   refs: VisualRecord[]
   focusRefs?: string[]
   noRef?: boolean
+  systemInfo?: SystemInfoLike
   createImageAdapter?: (targetPath: string) => Promise<VisualImage>
   colorAdapter?: JimpLike
 }
@@ -198,7 +197,6 @@ interface OverlayFocusInput {
 interface CaptureVisualInput {
   miniProgram: MiniProgram
   targetPath: string
-  config: Record<string, unknown>
   timeoutMs?: number
   pageCapture?: (destinationPath: string, timeoutMs?: number) => Promise<string>
   createImageAdapter?: (targetPath: string) => Promise<VisualImage>
@@ -208,10 +206,10 @@ interface CaptureVisualInput {
 interface CaptureAnnotatedInput {
   miniProgram: MiniProgram
   targetPath: string
-  config: Record<string, unknown>
   refs: VisualRecord[]
   focusRefs?: string[]
   noRef?: boolean
+  systemInfo?: SystemInfoLike
   timeoutMs?: number
   pageCapture?: (destinationPath: string, timeoutMs?: number) => Promise<string>
   createImageAdapter?: (targetPath: string) => Promise<VisualImage>
@@ -283,25 +281,12 @@ function resolveCapsulePaintSpec(box: CapsuleBox) {
   }
 }
 
-function requireJimp(config: Record<string, unknown> = {}): JimpLike {
-  const jimp = require('jimp')
-  if (jimp && typeof jimp.read === 'function') {
-    return jimp as unknown as JimpLike
-  }
-  if (jimp && jimp.Jimp && typeof jimp.Jimp.read === 'function') {
-    return {
-      ...jimp,
-      read: jimp.Jimp.read.bind(jimp.Jimp),
-    } as unknown as JimpLike
-  }
-  return jimp as unknown as JimpLike
+function requireJimp(): JimpLike {
+  return require('jimp') as JimpLike
 }
 
 async function createBlankImage(Jimp: JimpLike, width: number, height: number, color: number): Promise<VisualImage> {
-  if (typeof Jimp.create === 'function') {
-    return Jimp.create(width, height, color)
-  }
-  throw new Error('Jimp blank image creation is not available')
+  return Jimp.create(width, height, color)
 }
 
 const FOCUS_PALETTE: Array<{ name: string; rgb: RgbTuple }> = [
@@ -362,9 +347,7 @@ function layoutIdentity(record: VisualRecord | null | undefined): string {
 }
 
 function rgba(Jimp: JimpLike, r: number, g: number, b: number, a: number): number {
-  return typeof Jimp.rgbaToInt === 'function'
-    ? Jimp.rgbaToInt(r, g, b, a)
-    : 0
+  return Jimp.rgbaToInt(r, g, b, a)
 }
 
 function unpackRgba(color: number) {
@@ -772,7 +755,7 @@ async function renderLayoutTextOverlay({ image, refs, textItems, systemInfo }: {
 
   const overlayPath = path.join(os.tmpdir(), `mpb-layout-text-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
   await PImage.encodePNGToStream(canvas, fs.createWriteStream(overlayPath))
-  const Jimp = requireJimp({})
+  const Jimp = requireJimp()
   const overlay = await Jimp.read(overlayPath)
   if (typeof image.composite === 'function') {
     image.composite(overlay, 0, 0)
@@ -893,7 +876,6 @@ function drawSemanticBadge(image: VisualImage, Jimp: JimpLike, record: VisualRec
 
 async function captureLayoutScreenshot({
   targetPath,
-  config,
   refs,
   focusRefs,
   focusRecords,
@@ -906,7 +888,7 @@ async function captureLayoutScreenshot({
   colorAdapter,
   textRenderer,
 }: CaptureLayoutInput) {
-  const Jimp = colorAdapter || requireJimp(config)
+  const Jimp = colorAdapter || requireJimp()
   const windowWidth = Number(systemInfo && (systemInfo.windowWidth || systemInfo.screenWidth)) || 375
   const windowHeight = Number(systemInfo && (systemInfo.windowHeight || systemInfo.screenHeight)) || 812
   const imageWidth = Math.max(1080, Math.round(windowWidth * 2.5))
@@ -980,6 +962,40 @@ function resolveFocusTargets(refs: VisualRecord[], focusRefs: string[] | undefin
   })) as FocusTarget[]
 }
 
+function resolvePageScreenshotBox(rectPct: RectPct, bitmap: VisualBitmap, systemInfo: SystemInfoLike | undefined): Box {
+  const directBox = {
+    x: bitmap.width * (rectPct.x / 100),
+    y: bitmap.height * (rectPct.y / 100),
+    width: bitmap.width * (rectPct.w / 100),
+    height: bitmap.height * (rectPct.h / 100),
+  }
+  const screenWidth = Number(systemInfo?.screenWidth) || Number(systemInfo?.windowWidth)
+  const screenHeight = Number(systemInfo?.screenHeight)
+  const windowWidth = Number(systemInfo?.windowWidth) || screenWidth
+  const windowHeight = Number(systemInfo?.windowHeight)
+  if (!screenWidth || !screenHeight || !windowWidth || !windowHeight || screenHeight <= windowHeight) {
+    return directBox
+  }
+
+  const screenScale = bitmap.width / screenWidth
+  const windowScale = bitmap.width / windowWidth
+  const expectedScreenHeight = screenHeight * screenScale
+  const expectedWindowHeight = windowHeight * windowScale
+  if (Math.abs(bitmap.height - expectedScreenHeight) >= Math.abs(bitmap.height - expectedWindowHeight)) {
+    return directBox
+  }
+
+  // Runtime element offsets start at the page content viewport, while DevTools page screenshots
+  // include the native status/navigation area above it.
+  const contentTop = Math.max(0, (screenHeight - windowHeight) * screenScale)
+  return {
+    x: bitmap.width * (rectPct.x / 100),
+    y: contentTop + expectedWindowHeight * (rectPct.y / 100),
+    width: bitmap.width * (rectPct.w / 100),
+    height: expectedWindowHeight * (rectPct.h / 100),
+  }
+}
+
 function renderFocusOverlay(image: VisualImage, Jimp: JimpLike, refs: FocusTarget[], font: FontKitFont | null, options: Record<string, unknown> = {}): string[] {
   const legend: string[] = []
   const showLabel = options.showLabel !== false
@@ -989,12 +1005,11 @@ function renderFocusOverlay(image: VisualImage, Jimp: JimpLike, refs: FocusTarge
       continue
     }
 
-    const box = clampBox({
-      x: image.bitmap.width * (item.rectPct.x / 100),
-      y: image.bitmap.height * (item.rectPct.y / 100),
-      width: image.bitmap.width * (item.rectPct.w / 100),
-      height: image.bitmap.height * (item.rectPct.h / 100),
-    }, image.bitmap)
+    const box = clampBox(resolvePageScreenshotBox(
+      item.rectPct,
+      image.bitmap,
+      options.systemInfo as SystemInfoLike | undefined,
+    ), image.bitmap)
     const minDimension = Math.max(1, Math.min(box.width, box.height))
     const borderThickness = clampNumber(Math.round(minDimension * 0.08), 2, 8)
     const outerThickness = clampNumber(borderThickness + 2, 3, 10)
@@ -1030,20 +1045,20 @@ function renderFocusOverlay(image: VisualImage, Jimp: JimpLike, refs: FocusTarge
 
 async function overlayFocusScreenshot({
   targetPath,
-  config,
   refs,
   focusRefs,
   noRef,
+  systemInfo,
   createImageAdapter,
   colorAdapter,
 }: OverlayFocusInput) {
   const targets = resolveFocusTargets(refs, focusRefs)
-  const Jimp = colorAdapter || requireJimp(config)
+  const Jimp = colorAdapter || requireJimp()
   const image = createImageAdapter ? await createImageAdapter(targetPath) : await Jimp.read(targetPath)
   const font: FontKitFont | null = (typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE)
     ? (await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)) as FontKitFont
     : null
-  const focusLegend = renderFocusOverlay(image, Jimp, targets, font, { showLabel: !noRef })
+  const focusLegend = renderFocusOverlay(image, Jimp, targets, font, { showLabel: !noRef, systemInfo })
 
   await image.writeAsync(targetPath)
 
@@ -1153,13 +1168,12 @@ function drawRing(image: VisualImage, centerX: number, centerY: number, radius: 
 async function captureVisualScreenshot({
   miniProgram,
   targetPath,
-  config,
   timeoutMs = 15000,
   pageCapture,
   createImageAdapter,
   colorAdapter,
 }: CaptureVisualInput) {
-  const Jimp = colorAdapter || requireJimp(config)
+  const Jimp = colorAdapter || requireJimp()
   const capturePage = pageCapture || (async (destinationPath: string) => {
     await miniProgram.screenshot({ path: destinationPath })
     return destinationPath
@@ -1213,16 +1227,16 @@ async function captureVisualScreenshot({
 async function captureAnnotatedScreenshot({
   miniProgram,
   targetPath,
-  config,
   refs,
   focusRefs,
   noRef,
+  systemInfo,
   timeoutMs = 15000,
   pageCapture,
   createImageAdapter,
   colorAdapter,
 }: CaptureAnnotatedInput) {
-  const Jimp = colorAdapter || requireJimp(config)
+  const Jimp = colorAdapter || requireJimp()
   const capturePage = pageCapture || (async (destinationPath: string) => {
     await miniProgram.screenshot({ path: destinationPath })
     return destinationPath
@@ -1234,14 +1248,10 @@ async function captureAnnotatedScreenshot({
   const font: FontKitFont | null = (typeof Jimp.loadFont === 'function' && Jimp.FONT_SANS_16_WHITE)
     ? (await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE)) as FontKitFont
     : null
-  const fillColor = typeof Jimp.rgbaToInt === 'function'
-    ? Jimp.rgbaToInt(15, 23, 42, 232)
-    : 0
-  const borderColor = typeof Jimp.rgbaToInt === 'function'
-    ? Jimp.rgbaToInt(148, 163, 184, 180)
-    : 0
+  const fillColor = Jimp.rgbaToInt(15, 23, 42, 232)
+  const borderColor = Jimp.rgbaToInt(148, 163, 184, 180)
   const legend: string[] = []
-  const focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(refs, focusRefs), font, { showLabel: !noRef })
+  const focusLegend = renderFocusOverlay(image, Jimp, resolveFocusTargets(refs, focusRefs), font, { showLabel: !noRef, systemInfo })
 
   if (!noRef) {
     for (const item of refs || []) {
@@ -1250,8 +1260,9 @@ async function captureAnnotatedScreenshot({
       }
 
       const label = item.ref || ''
-      const x = Math.max(0, Math.round(image.bitmap.width * (item.rectPct.x / 100)))
-      const y = Math.max(0, Math.round(image.bitmap.height * (item.rectPct.y / 100)) - 24)
+      const targetBox = resolvePageScreenshotBox(item.rectPct, image.bitmap, systemInfo)
+      const x = Math.max(0, Math.round(targetBox.x))
+      const y = Math.max(0, Math.round(targetBox.y) - 24)
       const width = Math.max(42, label.length * 10 + 12)
       const box = {
         x,

@@ -21,8 +21,8 @@ async function captureScreenshotToPath(miniProgram, targetPath, timeoutMs = 1500
   // 内部: await miniProgram.screenshot({ path: targetPath })
 
 // src/lib/visual.ts —— 稳定通道（纯 JS，不调官方截图）
-async function captureLayoutScreenshot({ targetPath, config, refs, ... })
-async function captureVisualScreenshot({ miniProgram, targetPath, config, timeoutMs, pageCapture })
+async function captureLayoutScreenshot({ targetPath, refs, ... })
+async function captureVisualScreenshot({ miniProgram, targetPath, timeoutMs, pageCapture })
 
 // src/lib/temp-artifacts.ts —— 未指定输出路径时的产物分配
 async function allocateTempScreenshotPath({ directory, projectName, route, mode, ... })
@@ -41,6 +41,7 @@ async function allocateTempScreenshotPath({ directory, projectName, route, mode,
 
 - **默认模式**：`resolveScreenshotMode(undefined) === 'page'`；`screenshot` 的直接语义是产出真实页面 PNG。结构图必须显式传 `--mode layout`，未知 mode 直接报错。
 - `layout` 用 `collectRecordRects`（基于 `page.$$` 选择器 + 元素尺寸，**非像素**）重建结构，再纯 JS 绘制（`src/lib/visual-change.ts:111`、`src/lib/visual.ts:677`）。
+- `collectRecordRects` 的纵坐标相对小程序内容窗口；DevTools 的 page PNG 可能还包含原生状态栏/导航栏。`annotate` 与 page/visual 的 `--focus` 必须用 `screenHeight - windowHeight` 映射到完整截图坐标，不得把内容坐标直接乘整张 PNG 高度。
 
 ### 3.2 文本结构输出（非视觉，供非识图模型）
 
@@ -95,6 +96,7 @@ async function allocateTempScreenshotPath({ directory, projectName, route, mode,
 - `tests/temp-artifacts.test.cjs` 覆盖默认临时目录、短文件名、已有文件递增和并发分配唯一性。
 - `tests/temp-artifacts.test.cjs` 覆盖项目内路径识别、warning 文案与项目外无 warning。
 - `tests/temp-artifacts.test.cjs` 通过注入 `path.posix` / `path.win32` 覆盖相对与绝对路径，并覆盖已有目录、尾分隔符新目录和父目录创建。
+- `tests/visual.test.cjs` 覆盖完整 page PNG 中原生状态栏/导航栏的纵向偏移，保证 `annotate` 标签和 page/visual focus 框仍落在内容元素上。
 - 已实现的守卫（由相关测试覆盖）：
   - `resolveScreenshotMode` 默认返回 `page`，未知 mode 报错；`tests/help.test.cjs` 覆盖。
   - `resolveSnapshotLayoutPolicy`：默认查 rect 并输出 ASCII，但文本行不重复坐标；`--layout` 追加坐标；`--no-map` 关闭默认图；`tests/help.test.cjs` 覆盖。

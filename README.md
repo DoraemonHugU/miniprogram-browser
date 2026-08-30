@@ -70,17 +70,20 @@ node dist/miniprogram-browser.js help
 
 CLI 源码位于 `src/**/*.ts`，发布和本地执行入口由 TypeScript 编译到 `dist/**/*.js`。本地跑完整测试前，还需要系统里有可用的 `python` 命令（用于图片处理 skill 的隔离虚拟环境和测试）。
 
+仓库的 GitHub Actions 在 macOS、Windows 和 Ubuntu 托管 runner 上运行 Node CLI 构建、严格类型检查、Node 测试和 tarball 全新安装门禁；框架 Demo 与图像处理在独立 Linux job 验证。托管 CI 不包含微信登录态，因此真实 DevTools gate 仍需在已登录的 macOS/Windows 机器上单独执行；Ubuntu runner 也不等于 WSL 联动验证。
+
 ## 前置条件
 
 使用前请确保：
 
-1. 已安装并登录微信开发者工具
-2. 已在开发者工具中开启 **服务端口**
-3. 首次使用需要能确定小程序项目根目录；可以显式传 `--project`，也可以从当前目录 / Git 工作树唯一发现
-4. CLI 路径配置正确：
+1. 已安装 Node.js 22 或 24 LTS
+2. 已安装并登录微信开发者工具
+3. 已在开发者工具中开启 **服务端口**
+4. 首次使用需要能确定小程序项目根目录；可以显式传 `--project`，也可以从当前目录 / Git 工作树唯一发现
+5. CLI 路径配置正确：
    - 标准安装路径下，工具会优先尝试自动探测
    - 非标准安装路径 / WSL 场景下，建议设置环境变量 `WECHAT_DEVTOOLS_CLI`
-5. WSL 场景下，`--project` 仍然填写 Linux 侧可读的小程序根目录；CLI 会按平台自动把可识别路径传给 DevTools
+6. WSL 场景下，`--project` 仍然填写 Linux 侧可读的小程序根目录；CLI 会按平台自动把可识别路径传给 DevTools
 
 例如：
 

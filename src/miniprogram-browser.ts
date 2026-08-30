@@ -3747,14 +3747,17 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
       const page = await getCurrentPage(miniProgram)
       const snapshot = await snapshotInteractive(page, state, null, { compact: true })
       Object.assign(state, snapshot.state)
-      return collectRecordRects(page, snapshot.records, await (miniProgram.systemInfo as () => Promise<AnyRecord>)())
+      const systemInfo = await (miniProgram.systemInfo as () => Promise<AnyRecord>)()
+      return {
+        refs: await collectRecordRects(page, snapshot.records, systemInfo),
+        systemInfo,
+      }
     }
 
     if (mode === 'visual') {
       const result = await captureVisualScreenshot({
         miniProgram,
         targetPath: name,
-        config: state.config,
         timeoutMs,
         pageCapture: async (targetPath: string, timeoutMs: number) => {
           return captureScreenshotToPath(miniProgram, targetPath, timeoutMs)
@@ -3764,12 +3767,13 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
       let focusLegend
       let source = result.source
       if (focusRefs.length) {
+        const resolved = await resolveRefs()
         const focus = await overlayFocusScreenshot({
           targetPath: name,
-          config: state.config,
-          refs: await resolveRefs(),
+          refs: resolved.refs,
           focusRefs,
           noRef: Boolean(options.noRef),
+          systemInfo: resolved.systemInfo,
         })
         focusLegend = focus.focusLegend
         source = `${source}+focus`
@@ -3789,14 +3793,15 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
       await captureScreenshotToPath(miniProgram, name, timeoutMs)
       const snapshot = await snapshotInteractive(page, state, null, { compact: true })
       Object.assign(state, snapshot.state)
-      const refs = await collectRecordRects(page, snapshot.records, await (miniProgram.systemInfo as () => Promise<AnyRecord>)())
+      const systemInfo = await (miniProgram.systemInfo as () => Promise<AnyRecord>)()
+      const refs = await collectRecordRects(page, snapshot.records, systemInfo)
       const result = await captureAnnotatedScreenshot({
         miniProgram,
         targetPath: name,
-        config: state.config,
         refs,
         focusRefs,
         noRef: Boolean(options.noRef),
+        systemInfo,
         timeoutMs,
         pageCapture: async (targetPath: string) => targetPath,
       })
@@ -3828,7 +3833,6 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
         : undefined
       const result = await captureLayoutScreenshot({
         targetPath: name,
-        config: state.config,
         refs,
         badgeRecords: semanticRecords,
         focusRecords: semanticRecords,
@@ -3853,12 +3857,13 @@ async function handleScreenshot(state: SessionState, outputPath: string, options
     let focusLegend
 
     if (focusRefs.length) {
+      const resolved = await resolveRefs()
       const focus = await overlayFocusScreenshot({
         targetPath: screenshotPath,
-        config: state.config,
-        refs: await resolveRefs(),
+        refs: resolved.refs,
         focusRefs,
         noRef: Boolean(options.noRef),
+        systemInfo: resolved.systemInfo,
       })
       focusLegend = focus.focusLegend
       source = 'page+focus'

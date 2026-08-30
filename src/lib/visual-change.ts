@@ -20,18 +20,8 @@ interface RegionEntry {
   afterRefs: { ref: unknown; kind: unknown; text: unknown }[]
 }
 
-function requireJimp(config: AnyRecord): AnyRecord {
-  const jimp = require('jimp')
-  if (jimp && typeof jimp.read === 'function') {
-    return jimp
-  }
-  if (jimp && jimp.Jimp && typeof jimp.Jimp.read === 'function') {
-    return {
-      ...jimp,
-      read: jimp.Jimp.read.bind(jimp.Jimp),
-    }
-  }
-  return jimp
+function requireJimp(): AnyRecord {
+  return require('jimp') as AnyRecord
 }
 
 function buildSemanticSignature(records: { kind?: string; text?: string }[] = []): string {
@@ -159,7 +149,7 @@ async function createVisualProbe({
   if (createImageAdapter) {
     rawImage = await createImageAdapter(targetPath)
   } else {
-    const Jimp = requireJimp(config)
+    const Jimp = requireJimp()
     rawImage = await (Jimp as { read: (p: string) => Promise<unknown> }).read(targetPath)
   }
   const image = rawImage as { bitmap: BitmapLike }

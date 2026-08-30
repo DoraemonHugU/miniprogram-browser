@@ -1,6 +1,6 @@
 {
   "name": "miniprogram-browser",
-  "version": "0.1.0-beta.8",
+  "version": "0.1.0-beta.9",
   "description": "面向微信小程序的 agent-browser 风格自动化 CLI；配套 skill 通过 skills/miniprogram-browser 分发。",
   "keywords": [
     "wechat",
@@ -30,6 +30,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test:node": "node --test tests/*.test.cjs",
+    "test:package-install": "node scripts/package-install-gate.cjs",
     "test:image-processing": "python scripts/run-image-processing-tests.py",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:strict": "tsc -p tsconfig.json --noEmit --strict",
@@ -43,21 +44,29 @@
     "test:e2e": "npm run test:real-open-gate && npm run test:l0-e2e"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
     "fontkit": "^2.0.4",
-    "jimp": "0.6.4",
+    "jimp": "0.22.12",
     "miniprogram-automator": "0.12.1",
     "pureimage": "^0.4.18"
   },
+  "bundleDependencies": [
+    "miniprogram-automator"
+  ],
   "devDependencies": {
-    "@types/node": "^18.19.130",
+    "@types/node": "^22.20.1",
     "eslint": "^10.7.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.64.0"
+  },
+  "overrides": {
+    "miniprogram-automator": {
+      "jimp": "0.22.12"
+    }
   }
 }
