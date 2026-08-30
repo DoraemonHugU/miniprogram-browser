@@ -138,7 +138,7 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 ### 3.1.4 open 冷启动时序与 cleanup
 
 - enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
-- Windows/WSL 盘符路径冷启动使用官方 CLI `open → auto`；`open` 返回的 IDE service port 可记录，但 `auto` 不继续强塞 `--port`。WSL 分配 automation port 时不得先从 Linux 侧 bind，避免 mirrored networking 把短暂占用映射给随后启动的 Windows DevTools。
+- Windows/WSL 盘符路径冷启动使用官方 CLI `open → auto`；`open` 返回的 IDE service port 可记录，但 `auto` 不继续强塞 `--port`。`cli.bat` 必须通过单个、逐项引用 argv 的 `cmd.exe /S /C` 命令串执行，避免空格/中文项目路径在 Windows 二次解析时被截断。WSL 分配 automation port 时不得先从 Linux 侧 bind，避免 mirrored networking 把短暂占用映射给随后启动的 Windows DevTools。
 - open/doctor 的 `--timeout` 是完整操作总预算；live probe、`enableAutomation`、late probe、discover 与 connect 必须接收当时的剩余预算，禁止内部固定最小 timeout 反向突破 deadline。
 - started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
 - session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间。

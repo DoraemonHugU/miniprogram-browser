@@ -60,6 +60,7 @@ const {
   waitForMiniProgramStable,
   extractLogSummary,
 } = require('../dist/lib/runtime.js')
+const { buildWindowsBatchCommand } = require('../dist/lib/runtime-cli.js')
 const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
 
 function createState() {
@@ -1685,13 +1686,32 @@ test('enableAutomation invokes the current Windows cli.bat entry without requiri
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0].command, 'cmd.exe')
-  assert.deepEqual(calls[0].args.slice(0, 4), [
+  assert.deepEqual(calls[0].args.slice(0, 3), [
     '/d',
+    '/s',
     '/c',
-    'F:\\tools\\wechat-devtools\\cli.bat',
-    'auto',
   ])
+  assert.equal(calls[0].args[3], buildWindowsBatchCommand('F:\\tools\\wechat-devtools\\cli.bat', [
+    'auto',
+    '--project',
+    'F:\\demo\\apps\\miniprogram',
+    '--auto-port',
+    '9421',
+    '--debug',
+  ]))
   assert.equal(calls[0].options.cwd, tempDir)
+  assert.equal(calls[0].options.windowsVerbatimArguments, true)
+})
+
+test('buildWindowsBatchCommand quotes spaces and Chinese as complete cmd.exe argv', () => {
+  assert.equal(
+    buildWindowsBatchCommand('F:\\tools\\wechat devtools\\cli.bat', [
+      'auto',
+      '--project',
+      'F:\\demo\\public demo 中文',
+    ]),
+    '""F:\\tools\\wechat devtools\\cli.bat" "auto" "--project" "F:\\demo\\public demo 中文""',
+  )
 })
 
 test('validateAutomationCliConfig prefers cli.bat and falls back to the legacy cli.js bundle', () => {

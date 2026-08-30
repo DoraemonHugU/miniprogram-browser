@@ -56,7 +56,7 @@ open [ --project ] [ --session ]
 
 当前已验证的 DevTools `2.02.2608060` 中，`miniprogram-automator` 的 `confirmModal` / `cancelModal` 返回空结果但不关闭可见弹窗。在该能力能用真实官方自动化路径验收前，不将弹窗确认/取消暴露为 L0 命令，也不用 `eval/setData`、OCR 或 GUI 驱动伪造通过。
 
-Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
+Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；调用时必须把完整命令作为一个 `cmd.exe /S /C` 参数并逐项引用 argv，保证空格/中文项目路径不被二次解析截断。旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
 
 macOS 和 WSL UNC 路径直接执行平台适用的 `auto`，Windows/WSL 盘符路径的 `open → auto` 是冷启动时序差异，不是登录或权限差异。公开 Demo 的 `touristappid` 只用于隔离生产身份与数据；GUI 游客模式、Tool endpoint 可连、App runtime ready 必须分层判断。只有 App runtime ready 才能宣称 `open` 成功并执行 `path` / `snapshot`，不得仅凭 `✔ auto` 伪报成功。
 
