@@ -1,0 +1,5 @@
+{"file":".trellis/spec/cli/product-contracts.md","reason":"检查新增命令、等待语义和 skill 是否同步"}
+{"file":".trellis/spec/cli/ascii-map-contracts.md","reason":"检查 snapshot 降噪未破坏默认 wireframe 与 @e"}
+{"file":".trellis/spec/cli/session-contracts.md","reason":"检查 action 的 runtime 锁和 session 作用域"}
+{"file":".trellis/spec/cli/screenshot-contracts.md","reason":"检查动作验证不引入机器路径或产物目录回归"}
+{"file":".trellis/tasks/08-30-agent-interaction-wait-ux/research/user-experience.md","reason":"按真实用户旅程复核已发现问题均有结论"}
