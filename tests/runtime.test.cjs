@@ -1508,7 +1508,10 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
     runtime: 'linux',
     readProcVersion: '5.15.0-microsoft-standard-WSL2',
     toWindowsPath(inputPath) {
-      return inputPath.endsWith('/cli.js') ? 'F:\\tools\\wechat-devtools\\cli.js' : 'F:\\demo\\apps\\miniprogram'
+      if (/[\\/]cli\.js$/u.test(inputPath)) {
+        return process.platform === 'win32' ? cliJsPath : 'F:\\tools\\wechat-devtools\\cli.js'
+      }
+      return 'F:\\demo\\apps\\miniprogram'
     },
   })
 
