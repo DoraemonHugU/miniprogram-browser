@@ -17,6 +17,7 @@ const {
   saveSessionState,
   setActiveSession,
 } = require('../dist/lib/session-store.js')
+const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
 
 const repoRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(repoRoot, 'dist/miniprogram-browser.js')
@@ -105,6 +106,7 @@ function createFakeDevtoolsCli(options = {}) {
   // 包含空格，确保 Windows cmd.exe 真实执行也覆盖常见安装路径。
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb fake devtools-'))
   const callsPath = path.join(dir, 'calls.log')
+  const callArgsPath = path.join(dir, 'calls.jsonl')
   const cliJsPath = path.join(dir, 'cli.js')
   const onAuto = options.onAuto || '✔ IDE server has started, listening on http://127.0.0.1:38596'
   const onOpen = options.onOpen || onAuto
@@ -116,8 +118,10 @@ function createFakeDevtoolsCli(options = {}) {
 const fs = require('fs');
 const path = require('path');
 const callsPath = ${JSON.stringify(callsPath)};
+const callArgsPath = ${JSON.stringify(callArgsPath)};
 const args = process.argv.slice(2);
 fs.appendFileSync(callsPath, args.join(' ') + '\\n');
+fs.appendFileSync(callArgsPath, JSON.stringify(args) + '\\n');
 const cmd = args[0] || '';
 ${extraJs}
 if (cmd === 'auto') {
@@ -171,6 +175,12 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
         return []
       }
       return fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean)
+    },
+    readCallArgs() {
+      if (!fs.existsSync(callArgsPath)) {
+        return []
+      }
+      return fs.readFileSync(callArgsPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line))
     },
   }
 }
@@ -639,8 +649,9 @@ test('open reports adopt/bootstrap resolution when reusing an explicit DevTools 
   assert.equal(payload.error.diagnostics.cleanup.sessionCleared, true)
 })
 
-test('open closes a newly-started DevTools project when startup times out', () => {
-  const projectDir = createMiniProgramProject()
+test('open preserves complete --project argv with spaces and Chinese during startup cleanup', () => {
+  const projectParent = fs.mkdtempSync(path.join(PROJECT_ROOT, 'mpb project 中文-'))
+  const projectDir = createMiniProgramProject(projectParent)
   const fake = createFakeDevtoolsCli({
     onAuto: '✔ IDE server has started, listening on http://127.0.0.1:38596',
     onClose: '✔ close',
@@ -660,12 +671,19 @@ test('open closes a newly-started DevTools project when startup times out', () =
   ])
   const payload = parseJsonOutput(result)
   const calls = fake.readCalls()
+  const callArgs = fake.readCallArgs()
 
   assert.notEqual(result.status, 0)
   assert.equal(payload.error.code, 'OPEN_TIMEOUT')
   const failureContext = `${calls.join('\n')}\n${JSON.stringify(payload, null, 2)}`
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), failureContext)
   assert.ok(calls.some((line) => /^close --project /u.test(line)), failureContext)
+  const autoArgs = callArgs.find((args) => args[0] === 'auto')
+  assert.ok(autoArgs, JSON.stringify(callArgs))
+  const projectArgIndex = autoArgs.indexOf('--project')
+  assert.ok(projectArgIndex >= 0, JSON.stringify(autoArgs))
+  assert.equal(autoArgs[projectArgIndex + 1], isWslRuntime() ? toWindowsPath(projectDir) : projectDir)
+  assert.match(projectDir, /mpb project 中文-/u)
   assert.equal(payload.error.diagnostics.cleanup.projectClosed, true)
 })
 
