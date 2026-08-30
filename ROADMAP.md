@@ -36,7 +36,7 @@
 候选工作：
 
 - 在现有组件库式 Catalog 上继续补充尚未覆盖的加载态、原生 Toast 和复杂嵌套滚动。
-- 验证系统 modal 的可靠控制；当前 Mac DevTools 2.02.2608040 中 `native confirmModal/cancelModal` 会返回空成功但不触发按钮，修复前不冻结专用 L0 命令。
+- 验证系统 modal 的可靠控制；当前 Mac DevTools 2.02.2608060 中 `native confirmModal/cancelModal` 会返回空成功但不触发按钮，修复前不冻结专用 L0 命令。
 - 三套 Demo 保持相同的路由、测试标识和预期结果，不复制真实业务 UI 或数据。
 - 把新暴露的跨平台、重复元素和瞬时交互问题先写成失败测试，再修 CLI。
 
