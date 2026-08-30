@@ -25,7 +25,7 @@ async function captureLayoutScreenshot({ targetPath, config, refs, ... })
 async function captureVisualScreenshot({ miniProgram, targetPath, config, timeoutMs, pageCapture })
 
 // src/lib/temp-artifacts.ts —— 未指定输出路径时的产物分配
-async function allocateTempScreenshotPath({ directory, projectName, sessionName, route, mode, ... })
+async function allocateTempScreenshotPath({ directory, projectName, route, mode, ... })
 ```
 
 ## 3. Contracts
@@ -34,78 +34,89 @@ async function allocateTempScreenshotPath({ directory, projectName, sessionName,
 
 | `--mode` | 产物 | 底层通道 | 稳定性 |
 |----------|------|----------|--------|
-| `page`   | 官方页面截图 PNG | `captureScreenshotToPath` → `miniProgram.screenshot` | **不稳定** |
-| `visual` | 页面截图 + 胶囊视觉合成 | `captureVisualScreenshot` → `pageCapture` → `captureScreenshotToPath` | **不稳定** |
-| `annotate` | 页面截图 + `@eNN` 标注叠加 | `captureScreenshotToPath` + 叠加 | **不稳定** |
+| `page`   | 官方页面截图 PNG | `captureScreenshotToPath` → `miniProgram.screenshot` | 依赖 DevTools 模拟器 |
+| `visual` | 页面截图 + 胶囊视觉合成 | `captureVisualScreenshot` → `pageCapture` → `captureScreenshotToPath` | 依赖 DevTools 模拟器 |
+| `annotate` | 页面截图 + `@eNN` 标注叠加 | `captureScreenshotToPath` + 叠加 | 依赖 DevTools 模拟器 |
 | `layout` | 语义布局图 PNG | `captureLayoutScreenshot`（Jimp + canvas 字体） | **稳定，不调官方截图** |
 
-- **默认模式**：`options.mode || 'layout'`（`src/miniprogram-browser.ts` 的 `handleScreenshot`）→ **默认即稳定通道**。未知 `--mode` 不再静默降级到 `page`，而是走到默认 `layout`。
+- **默认模式**：`resolveScreenshotMode(undefined) === 'page'`；`screenshot` 的直接语义是产出真实页面 PNG。结构图必须显式传 `--mode layout`，未知 mode 直接报错。
 - `layout` 用 `collectRecordRects`（基于 `page.$$` 选择器 + 元素尺寸，**非像素**）重建结构，再纯 JS 绘制（`src/lib/visual-change.ts:111`、`src/lib/visual.ts:677`）。
 
 ### 3.2 文本结构输出（非视觉，供非识图模型）
 
-- `snapshot -i` → `formatSnapshotLines`（`src/lib/core.ts:268`）：按 DOM 嵌套深度缩进的树（结构化 ref 文本树）。
-- `snapshot -i --layout` → 每个 ref 追加比例 rect：`@e20 [button] 工具箱 {x:10.4,y:82.1,w:24.5,h:6.8}`。
-- **默认 ASCII 空间图**：`snapshot`（`-i` 或普通）默认附带紧凑 ASCII mini-map（`renderAsciiMap`，`src/lib/ascii-map.ts`），由同一套 `rectPct` 比例坐标（`collectRecordRects`，**非像素**）渲染，用 `@eN` 与文本树交叉引用，表达左右并排 / 上下堆叠等空间方位。
-  - 参数（`src/lib/ascii-map.ts`，已定稿，勿随意改动）：
-    - `GRID_W = 48`（固定列宽）
-    - 行高 `GRID_H = clamp(round(GRID_W × (viewportH / viewportW) × 0.5), 16, 56)`（竖屏更高，范围 16–56）
-    - 每行左侧标该 y% 区段；`@eN` 数字标记元素中心；容器画边框盒（`+ - |`）；`*` 标记碰撞
-    - ref 数字折叠：`>99` → `aN`/`bN` 段
-  - `--no-map` 关闭该默认 ASCII 图；`--layout` 仅影响文本树里的精确比例 rect，不影响 ASCII 图。
+- `snapshot` → compact 语义树 + 紧凑 ASCII mini-map；语义树按 DOM 嵌套深度缩进，图中数字映射同一批 `@eN`。
+- 默认会查询 ref 的比例 rect 来生成 ASCII，但不会把坐标重复写进文本行；`--no-map` 关闭图并跳过这批 rect 查询。
+- `snapshot --layout` → 在默认输出基础上为每个 ref 追加比例 rect（如 `@e20 [button] 工具箱 {x:10.4,y:82.1,w:24.5,h:6.8}`）。
+  - `GRID_W = 32`；行高 `clamp(round(GRID_W × viewportH / viewportW × 0.5), 12, 24)`，连续空行折叠为一行 `...|`。
+  - 输出只使用 ASCII 字符；数字对应 `@eN`，`*` 表示标签碰撞，`>99` 折叠为 `aN`/`bN`。
+  - `--layout --no-map` 保留比例 rect，但关闭 ASCII 图；单独 `--no-map` 返回无坐标语义树。
 
 ### 3.3 snapshot 的真实像素副作用（已收敛为显式 opt-in）
 
 - `handleSnapshot` 仅在 `options.visual === true` 且 `scopeRef` 为空且（无 `lastVisualProbe` 或 route 变化或存在 `pendingVisualAction`）时，才触发 `captureVisualProbeForSnapshot`。
 - 该 probe 走 `captureScreenshotToPath(..., 2500)`（真实像素，2500ms，`src/miniprogram-browser.ts`）。
-- **含义**：`snapshot` 默认（不带 `--visual`）是**零真实像素**的纯文本 + ASCII 输出；真实像素探针升级为显式 `--visual` 触发，不再是隐蔽默认行为。
+- **含义**：默认 `snapshot` 只增加结构几何查询，不触发真实像素通道；`--layout` 仅控制坐标是否写入文本。历史 `--visual` 兼容入口才会触发真实像素探针，且不属于主路径。
 
 ### 3.4 默认截图产物路径与文件名
 
 - `screenshot` 未指定输出路径时，使用 `os.tmpdir()/miniprogram-browser`（Linux 默认即 `/tmp/miniprogram-browser`）；已配置的 `tempScreenshotDir` 仍可作为内部目录覆盖。
-- 默认文件名采用短、可读的组合：`mpb-<project>-<session>-<route-tail>-<route-hash>-<mode>.png`。项目、session、路由会压缩为安全 slug，路由保留尾部片段并附短 hash，避免路径过长和同路由碰撞。
-- 分配基础名时使用原子 `open(path, 'wx')`；若文件已存在，依次尝试 `-1`、`-2`……，并发进程不会互相覆盖。显式输出路径不改名、不参与该避让策略。
+- 默认文件名采用短、可读的组合：`mpb-<project>-<page>-<mode>.png`。标准路由尾部为 `index` 时使用上一级页面名；session、时间戳和 route hash 不进入文件名。
+- 分配基础名时使用原子 `open(path, 'wx')`；若文件已存在，依次尝试 `-1`、`-2`……，并发进程不会互相覆盖。显式文件路径不改名、不参与该避让策略。
+- 显式文件路径通过宿主平台的 `path.resolve(cwd, input)` 解析：相对路径基于当前工作目录，绝对路径保持绝对语义；父目录由 CLI 递归创建。
+- 输出路径是位置参数 `screenshot [path]`；`--path` 不是别名，误用时返回 `CLI_USAGE_ERROR`，不得静默回落到默认临时目录。
+- 显式路径若指向已有目录，或原始输入以当前平台目录分隔符结尾，则复用默认短文件名和原子避让规则在该目录内分配 PNG。Windows 同时接受 `/` 和 `\\` 作为尾分隔符。
+- 不存在且没有尾分隔符的路径仍按文件路径处理，兼容原有无扩展名输出文件。
 - `snapshot --visual` 的内部视觉探针也使用同一分配器，避免用时间戳和随机长文件名制造不可读产物。
+- 显式输出路径若位于当前小程序项目目录内，截图结果须返回 notice：写入文件可能触发微信开发者工具重新编译并重置页面状态；工具不阻止写入，但应建议省略路径或改到项目目录外。
 
 ## 4. Validation & Error Matrix
 
 | 条件 | 结果 |
 |------|------|
-| `--mode` 为未知值 | `handleScreenshot` 落到默认 `layout`（稳定通道，不静默降级到不稳定 `page`） |
+| `--mode` 为未知值 | 直接报 `Unsupported screenshot mode`，不猜测、不降级 |
 | `--focus` 引用不存在的 ref | `resolveFocusTargets` 抛 `Unknown focus refs: ...`（`src/lib/visual.ts:757`） |
 | 官方截图超时 | `captureScreenshotToPath` 抛超时错误（page/visual/annotate 失败；layout 不受影响） |
 | `--trust-project` 传入 | `parseArgs` 正向分支置 `options.trustProject = true`（`src/lib/cli-io.ts`）；反向 `--no-trust-project` 置 `false`。二者均为可选 escape hatch，默认信任。 |
 | 未指定截图路径 | 写入系统临时目录，使用短组合名；已有同名文件则自动递增后缀，不覆盖旧文件 |
+| 误写 `--path <value>` | 立即返回 `CLI_USAGE_ERROR`，提示改用 `screenshot [path]` |
+| 相对/绝对文件路径 | 按当前宿主平台解析为绝对路径，递归创建父目录并保留用户文件名 |
+| 已有目录或尾分隔符新目录 | 在目标目录生成短组合名；目录不存在时递归创建，同名文件自动避让 |
+| 显式截图路径在项目目录内 | 截图照常完成，并在文本/JSON 结果中提示可能重新编译与状态重置 |
 
 ## 5. Good / Base / Bad Cases
 
-- **Good**：需要稳定结构理解 → `screenshot`（默认 `layout`，无需写 `--mode`）；非识图模型 → `snapshot -i`（默认 ASCII 空间图）。
-- **Base**：未指定模式 → 默认 `layout`，走稳定通道（当前默认行为）。
-- **Bad**：在非视觉、非识图场景下依赖 `page`/`visual`/`annotate` 不稳定截图；或在 `snapshot` 后假设会附带真实像素成本（默认 `--no-map` 关闭、真实像素需 `--visual`）。
+- **Good**：需要真实页面图片 → `screenshot`；需要结构理解 → `snapshot` 或显式 `screenshot --mode layout`。
+- **Base**：未指定模式 → 默认 `page`，产出官方页面 PNG。
+- **Bad**：把默认 `screenshot` 当结构图；或真实截图失败后静默拿 layout 冒充真实页面证据。
 
 ## 6. Tests Required
 
 - `tests/skill-docs.test.cjs` 已守卫「SKILL.md 引用的命令 / flag / await 条件必须被 CLI 实现」——新增模式或 flag 必须同步文档，否则 `npm test` 失败。
 - `tests/temp-artifacts.test.cjs` 覆盖默认临时目录、短文件名、已有文件递增和并发分配唯一性。
+- `tests/temp-artifacts.test.cjs` 覆盖项目内路径识别、warning 文案与项目外无 warning。
+- `tests/temp-artifacts.test.cjs` 通过注入 `path.posix` / `path.win32` 覆盖相对与绝对路径，并覆盖已有目录、尾分隔符新目录和父目录创建。
 - 已实现的守卫（由相关测试覆盖）：
-  - `handleScreenshot` 默认 `mode = 'layout'`（cli-help.ts 文本 + 源码 `options.mode || 'layout'`）。
-  - `snapshot` 默认 ASCII 图：`--no-map` 关闭、`--visual` 显式触发真实像素探针（`tests/skill-docs.test.cjs` 的 `KNOWN_HIDDEN_FLAGS` 已不含 `--trust-project`，改为真正验证该 flag 由 CLI 实现）。
+  - `resolveScreenshotMode` 默认返回 `page`，未知 mode 报错；`tests/help.test.cjs` 覆盖。
+  - `resolveSnapshotLayoutPolicy`：默认查 rect 并输出 ASCII，但文本行不重复坐标；`--layout` 追加坐标；`--no-map` 关闭默认图；`tests/help.test.cjs` 覆盖。
+  - `--visual` 显式触发真实像素探针。
   - `--trust-project` 正向解析（`tests/help.test.cjs` 断言 `options.trustProject === true`）。
 
 ## 7. Wrong vs Correct
 
 #### Wrong
 ```bash
-# 想稳定理解页面，却漏写 --mode（旧默认会掉进官方不稳定通道 page）
-miniprogram-browser screenshot out.png --session demo
-# snapshot 后假设零真实像素（旧实现会在路由变化后偷偷走一次 2500ms 不稳定通道）
+# 只需要结构，却把默认真实截图当作结构接口
+miniprogram-browser screenshot --session demo
+# 真实截图失败后拿 layout 冒充真实页面证据
+miniprogram-browser screenshot --mode layout --session demo
 ```
 #### Correct
 ```bash
-# 默认即稳定通道，无需写 --mode；需要真实像素证据时再显式选 page/visual/annotate
-miniprogram-browser screenshot out.png --session demo
-# 非识图模型：默认 ASCII 空间图 + 文本树
-miniprogram-browser snapshot -i --layout --session demo
+# 默认产出真实页面 PNG
+miniprogram-browser screenshot --session demo
+# 结构理解使用 snapshot；确实需要结构图再显式 layout
+miniprogram-browser snapshot --session demo
+miniprogram-browser screenshot --mode layout --session demo
 ```
 
 ---
@@ -115,7 +126,7 @@ miniprogram-browser snapshot -i --layout --session demo
 > 以下原属「待研究」，现已落地为本文档 §3 的已确立契约。
 
 ### R1（已定稿 → §3.2 默认 ASCII 空间图）
-- 选定 **C. 混合**：文本树（结构）+ 紧凑 ASCII mini-map（空间方位），用同一 `@eN` 与文本树交叉引用，对非识图模型最完整。参数见 §3.2。
+- 默认语义树同时带紧凑 ASCII mini-map；精确比例 rect 只在 `--layout` 时写入文本。参数见 §3.2。
 
 ### R2（已定稿 → §3.1 / §3.3）
-- 落地：**默认模式对齐稳定优先（layout）**；`snapshot` 默认不触发真实像素 probe（升级为 `--visual` opt-in）；让调用方专注任务而非截图通道细节。
+- 最终落地：`screenshot` 默认对齐真实截图语义（`page`）；结构图显式使用 `layout`。`snapshot` 默认不触发真实像素 probe（仅 `--visual` opt-in）。

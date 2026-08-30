@@ -68,9 +68,9 @@ const ASSERTION_KEYS = ['projectPath']
 ```ts
 // 不使用 default / agent 名
 // 基于项目路径 slug + 序号：
-//   earlyRiser/apps/miniprogram → earlyriser-x1
-// 复用：已有最大 earlyriser-xN；这只是隐式 session 名，不是多 runtime 时的选择信号
-// 新开：open --fresh 且未显式 session → earlyriser-x{N+1}
+//   sample-store/apps/miniprogram → sample-store-x1
+// 复用：已有最大 sample-store-xN；这只是隐式 session 名，不是多 runtime 时的选择信号
+// 新开：open --fresh 且未显式 session → sample-store-x{N+1}
 projectSessionSlug(projectPath)
 pickAutoProjectSessionName(existingNames, projectPath)
 nextAutoProjectSessionName(existingNames, projectPath)
@@ -138,6 +138,7 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 ### 3.1.4 open 冷启动时序与 cleanup
 
 - enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
+- open/doctor 的 `--timeout` 是完整操作总预算；live probe、`enableAutomation`、late probe、discover 与 connect 必须接收当时的剩余预算，禁止内部固定最小 timeout 反向突破 deadline。
 - started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
 - session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间。
 - `session list` / `session prune` 解析 autoPort 优先级：session 字段 → 同 sessionName launch → `runtimeOwnerSession` 的 launch → **同项目唯一 live launch**；附着 session 无自身 launch 行时也应回填 live 端口与 `attachedTo`。
@@ -204,7 +205,8 @@ const absoluteRoute = route.startsWith('/') ? route : `/${route}`
 1. **先** `isAutomationEndpointLive`；已 live → **跳过** `enableAutomation`，只 probe（`automation.reusedLive=true`）。
 2. 未 live 才 `enableAutomation` + wait + probe。
 3. probe 已 connected 时 **不要** 用历史 WeappLog（appid-missing 等）覆盖 `ok`。
-4. session 保存仅在 `probe.connected` 之后：
+4. `doctor.ok` 仅在 Tool endpoint 与 App runtime 都就绪时为 true，即 `probe.connected === true && probe.appReady === true`；仅 Tool 可连时保留诊断字段并给出 App 未就绪的下一步。
+5. session 保存仅在 `probe.connected` 之后：
 
 ```ts
 if (alreadyLive) {
@@ -217,6 +219,12 @@ if (persistSession && probe && probe.connected) {
 }
 ```
 
+### 3.6 owner runtime 关闭结果必须经过验证
+
+- attached session 默认只解绑自身，不关闭 owner runtime。
+- owner session 关闭 runtime 时，先调用官方 DevTools close，再探测该 `autoPort` 是否已经不可达。
+- 只有端口关闭验证通过后，才可回报 `automationClosed: true`、`projectClosed: true`、`closeVerified: true`；调用 close 成功但端口仍 live 时不得伪报已关闭。
+
 ### 3.5 Session 锁定
 
 session 的 `assertBindingConsistency` 只检查 `projectPath`：
@@ -225,8 +233,8 @@ session 的 `assertBindingConsistency` 只检查 `projectPath`：
 function assertBindingConsistency(existingConfig, overrides) {
   const keys = ['projectPath']  // 不含 autoPort
   for (const key of keys) {
-    const existingValue = String(existingConfig[key] || '').trim()
-    const overrideValue = String(overrides[key] || '').trim()
+    const existingValue = normalizeProjectPath(existingConfig[key])
+    const overrideValue = normalizeProjectPath(overrides[key])
     if (existingValue && overrideValue && existingValue !== overrideValue) {
       throw new Error(`Session is already bound to ${key}=${existingValue}`)
     }
@@ -241,8 +249,10 @@ autoPort 冲突检查在运行时分配时由 `validateSessionPortConflicts` 处
 | 条件 | 结果 |
 |------|------|
 | `projectPath` 与已绑定 session 冲突 | `assertBindingConsistency` 抛出，阻断 |
+| 同一路径分别以相对/绝对形式传入 | 规范化后视为同一绑定，不抛出 |
 | `autoPort` 与已绑定 session 冲突 | 不抛出（autoPort 不参与身份绑定），运行时端口分配器处理 |
 | doctor 时 automation 失败 | session 不保存，下次重试自动分配新端口 |
+| doctor Tool endpoint live、App runtime 未就绪 | `ok=false`，但保留 `probe.connected=true` / `probe.appReady=false` |
 | 旧 session 文件含 autoPort | `loadSessionState` 通过 `stripRuntimeFields` 忽略 |
 | goto 输入无前导 `/` | 自动补 `/`，发给 DevTools 前已标准化为绝对路径 |
 
@@ -257,12 +267,15 @@ autoPort 冲突检查在运行时分配时由 `validateSessionPortConflicts` 处
 ## 6. Tests Required
 
 - `tests/core.test.cjs`:
-  - `assertBindingConsistency`：不同 `projectPath` → throws；不同 `autoPort` 但相同 `projectPath` → `doesNotThrow`
+  - `assertBindingConsistency`：不同 `projectPath` → throws；等价相对/绝对路径 → `doesNotThrow`；不同 `autoPort` 但相同 `projectPath` → `doesNotThrow`
   - `prepareSessionStateForSave`：保存后的 `config` 中不含 `autoPort`/`devtoolsPort`
   - `loadSessionState`：从含 autoPort 的旧 JSON 加载后，内存中 `config.autoPort` 为空
   - `stripRuntimeFields`：输入含运行时字段的输出不含这些字段
   - `selectAttachableRuntimeSession`：同 port 去重后始终 attach；多 port 且未命中 preferred sessionName 返回 `ambiguous`；有 preferred sessionName → 同名优先
   - `selectRuntimeLaunchForSession`：同 sessionName 优先；无同名时同项目唯一 live port 可回绑
+- `tests/runtime.test.cjs`：connect/enable 获得剩余 timeout 预算，hanging connect 能在预算内退出
+- `tests/cli-behavior.test.cjs`：hanging doctor 不突破 CLI timeout；`doctor.ok` 同时依赖 connected 与 appReady
+- `tests/core.test.cjs`：attached session 默认不关闭 owner runtime
 
 ## 7. Wrong vs Correct
 

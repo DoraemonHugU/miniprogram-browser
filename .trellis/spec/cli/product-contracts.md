@@ -42,10 +42,13 @@ dist/lib/**、src/lib/** 的 require API
 ```text
 open [ --project ] [ --session ]
   → 脏活内收：trust / 路径 / 端口 / runtime 复用
+  → `--timeout` 是本次 open 的总预算；live probe、DevTools CLI、等待与连接共享剩余时间
   → 成功须可观测（文本或 JSON）：
       session, path（或 appReady/warming 语义）, mode, autoPort, project
   → 其余（strategy、devtoolsProject…）可出现，非硬依赖字段
 ```
+
+日常 `goto/click/fill/native` 不默认插入固定 sleep；需要明确结果时使用 `--await`，只有无法描述可观察状态时才显式 `--wait`。`goto` 必须直接发起底层路由动作，再按目标路由轮询确认，不得退回 `miniprogram-automator` 内置的固定 3 秒 route sleep。automation 启用后默认立即探测 live 端口，未就绪才在总 deadline 内轮询；`doctor --wait` 只限制状态轮询窗口，`--wait 0` 表示单次探测。这一取舍参考 agent-browser 的 [核心 snapshot/action 循环](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/SKILL.md) 与 [条件等待命令](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/references/commands.md)，但保留微信开发者工具冷启动所需的独立长预算。
 
 ### 3.2 失败路径（产品）
 
@@ -73,30 +76,52 @@ open [ --project ] [ --session ]
 ### 3.3 `@e` 生命周期（硬契约）
 
 ```text
-@eN = 当前 session 内、以 snapshot 为界的可解析句柄
-    尽力通过 stableKey 跨 snapshot 复用同号
+@eN = 当前 session 最新一次完整 snapshot 世代内的可解析句柄
+    每次完整 snapshot 从 @e1 按规范语义树顺序重建，并替换上一世代
     ≠ 全局永久 ID / 跨 session ID / 跨路由永久指针
 ```
 
+- 页面语义树和顺序不变时，确定性遍历会自然得到相同编号；这不是跨结构变化的持久 ID 承诺。
+- `stableKey` 只用于本轮 snapshot 到动作执行之间重新读取当前树并确认目标身份，不用于跨 snapshot 累积编号。
+
 **使用协议（agent 必须遵守）：**
 
-1. **先 `snapshot -i`（或等价产生 refs 的查询）再使用本轮输出中的 `@eN`。**
-2. **页面结构可能变化后（点击后导航、列表刷新、弹层开关等）必须重新 `snapshot -i`，不得沿用旧号碰运气。**
+1. **先 `snapshot`（或等价产生 refs 的查询）再使用本轮输出中的 `@eN`。**
+2. **页面结构可能变化后（点击后导航、列表刷新、弹层开关等）必须重新 `snapshot`，不得沿用旧号碰运气。**
 3. **路由变化后，旧页 `@e` 全部作废**（实现会 `Ref route mismatch`）。
 4. **收到 stale / unknown ref / selector 失效时：禁止重试同一旧 `@e`；重新 snapshot 再操作。**
 5. `--follow` 仅在显式请求时于 `goto/click/fill` 后生成一次新的 refs 摘要；默认操作输出保持低噪声。
-5. **`@e` 仅在产生它的 session 内有效**；换 session 必须重新 snapshot。
-6. **ASCII 图中的数字 = `@eN` 的编号 N**；命令里仍写完整 `@eN`。文案以语义树为准，不以图内文字为准（图默认不渲染文案）。
+6. 普通按钮、表单控件点击后停留当前路由是正常成功；CLI 不得猜测“本应跳转”并输出登录/授权弹窗提示。确需验证导航时显式使用 `--await route-change` / `route:<path>`。
+7. **`@e` 仅在产生它的 session 内有效**；换 session 必须重新 snapshot。
+8. 默认 ASCII 图中的数字 = `@eN` 的编号 N；命令里仍写完整 `@eN`。文案以语义树为准，不以图内文字为准（图不渲染文案）。
+9. 同页存在多个 selector、文案都相同的控件时，每个 ref 必须解析到 snapshot 对应的 occurrence；带 id/data-sid 的同标签兄弟不得挤占通用 selector 的索引。
 
 ### 3.4 Snapshot 双通道
 
 ```text
-语义树 = 主（类型、文案、@eN、层级）
-ASCII  = 辅（区域框 + 编号锚点；LOD + 避让）
---no-map 可关图
+snapshot = 紧凑语义树（类型、文案、@eN、层级）+ 紧凑 ASCII 空间图
+--layout = 在语义树中额外追加精确比例 rect
+--no-map = 关闭默认 ASCII 图；不带 --layout 时也避免 rect 查询
+--json = route + count + records（不重复 lines / record.route）
+--all = 完整树与内部细节
 ```
 
-### 3.5 Session
+`-i` 与 `-c` 只作为旧调用兼容入口保留；默认调用不需要参数，且默认已经 compact。
+
+### 3.5 框架中立的公开 Demo
+
+```text
+微信原生 / Taro / uni-app
+  → 上游各自生成标准微信小程序文件
+  → 工程根 project.config.json 的 miniprogramRoot 指向原生产物
+  → open / inspect / snapshot / click / fill / goto / screenshot / close 使用同一契约
+```
+
+- CLI 不检测 Taro/uni-app，也不增加框架专用参数或行为分支。
+- 公开测试与真实 DevTools gate 只允许仓库内 `touristappid`、合成数据的 Demo；生产项目、真实截图、账号和业务数据不得进入开源产物。
+- 框架源码变化后必须先重新构建，再对工程根执行 `open`；构建属于框架职责，不由 CLI 隐式执行。
+
+### 3.6 Session
 
 ```text
 显式 --session <name> 一等公民（并行工作台）
@@ -113,19 +138,22 @@ autoPort 不落 session 文件；成功可回显
 | 使用未知 `@e` | 错误；应重新 snapshot |
 | `@e` 路由与当前页不符 | `Ref route mismatch`；重新 snapshot |
 | stableKey/signature 对不上 | stale；重新 snapshot |
+| 多个同文案、同 selector 控件 | 按当前结构 occurrence 精确解析；不得退回第一个同文案元素 |
 | 依赖 `dist/lib` 私有导出 | 不在兼容承诺内 |
 | 登录失效等 | 人话 + raw；工具不伪造成功 |
 | 成功 auto 日志含 `Fetching AppID () permissions` | **不得**判 AppID 失败；`parseAutomationCliFailure` → null |
 | 真 41002 / appid missing（无 Using AppID 成功） | 人话 AppID 问题 + 保留 raw 真因 |
 | 非 open 命令且 automation 非 live | 明确要求先 `open`；**禁止**默认再跑全量 `devtools auto --debug` |
 | 无法发现 project / session | 人话 + 可执行下一步（进入小程序目录或 `--project` / `--session`） |
+| `doctor` 仅连上 Tool endpoint、但 App runtime 未就绪 | `ok: false`，保留 `probe.connected: true` / `probe.appReady: false` 并给出下一步 |
+| 显式截图路径位于小程序项目内 | 截图仍执行，但返回可能触发重新编译/状态重置的 notice；默认路径仍放系统临时目录 |
 
 ## 5. Good / Base / Bad
 
-- **Good**：`open` → `snapshot -i` → `click @e3`（`@e3` 来自本轮输出）
-- **Good**：click 导致跳转后先 `snapshot -i` 再点新 `@e`
+- **Good**：`open` → `snapshot` → `click @e3`（`@e3` 来自本轮输出）
+- **Good**：click 导致跳转后先 `snapshot` 再点新 `@e`
 - **Good**：open 失败文本首屏可读（人话 + 短 raw 摘录）；JSON 仍有完整 `error.raw`
-- **Base**：同页二次 snapshot，带 stableKey 的节点尽量仍是原 `@eN`
+- **Base**：同一语义树与顺序重复 snapshot，确定性生成相同 `@eN`
 - **Bad**：隔天仍用昨天的 `@e7`；跨 session 复用 `@e`；把图上的 `3` 当成「第三项」而非 `@e3`
 - **Bad**：把 `require('…/dist/lib/session-store')` 当公共 API
 - **Bad**：把成功 auto 的 `Fetching AppID () permissions` 解释成 AppID 缺失
@@ -134,13 +162,15 @@ autoPort 不落 session 文件；成功可回显
 ## 6. Tests Required
 
 - 文档任务：无强制新单测
-- 回归依赖已有：`tests/core.test.cjs` ref 复用；resolve stale 文案在 runtime 路径
+- `tests/runtime.test.cjs`：完整 snapshot 跨页后重新从 `@e1` 编号；回到未变页面时编号一致；compact/full 复用同一规范编号。
+- `tests/help.test.cjs`：默认 ASCII policy 与紧凑 JSON 字段。
 - 冷启动/失败分类：`tests/runtime.test.cjs`
   - 成功 raw（Fetching + Using AppID + ✔ auto）→ `parseAutomationCliFailure` null
   - 真 41002 → 仍人话 AppID + raw
   - `summarizeDevtoolsCliRaw` 保留 error 行且有行数上界
   - `connectOrEnable({ allowEnable: false })` 非 live → 提示先 open
 - 若未来对输出字段做代码 enforcement，另开任务
+- 三框架公开 Demo：`tests/public-demo.test.cjs` 与 `tests/framework-demos.test.cjs` 固化共同路由、控件、重复列表、导航及合成数据边界；Taro/uni-app 另做显式构建和真实 DevTools gate
 
 ## 7. Wrong vs Correct
 
@@ -152,10 +182,10 @@ click @e1   # 未 snapshot，或沿用上一页/上一 session 的号
 
 #### Correct
 ```text
-snapshot -i
+snapshot
 click @e12  # 号来自本轮树
 # 导航后
-snapshot -i
+snapshot
 click @e4
 ```
 
@@ -166,11 +196,11 @@ const { allocateRef } = require('miniprogram-browser/dist/lib/core.js') // 当 S
 
 #### Correct
 ```bash
-npx miniprogram-browser snapshot -i --json
+npx miniprogram-browser snapshot --json
 npx miniprogram-browser click @e3
 ```
 
 ## 交付缺口（非本契约执行项）
 
 - 将 main / `feat/ascii-map-wireframe-v1` 推送到有权限的 remote 并开 PR
-- 真机门禁：`open` → `snapshot -i` → `click` → `goto` 可重复
+- 真机门禁：`open` → `snapshot` → `click` → `goto` 可重复

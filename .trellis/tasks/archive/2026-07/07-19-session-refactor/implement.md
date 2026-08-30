@@ -125,7 +125,7 @@ if (persistSession && /* automation ok */) {
 npm run build
 npm test
 # 真实环境（确认不影响现有功能）：
-WECHAT_DEVTOOLS_CLI="/mnt/f/Tools/wxwebtool/cli.js" node dist/miniprogram-browser.js doctor --session test-rebuild --project /mnt/d/xuexi/projects/earlyRiser/apps/miniprogram --trust-project --json
+WECHAT_DEVTOOLS_CLI="<devtools-cli>" node dist/miniprogram-browser.js doctor --session test-rebuild --project <synthetic-demo> --trust-project --json
 # goto 测试：
 node dist/miniprogram-browser.js goto pages/dashboard/index --session test-rebuild
 node dist/miniprogram-browser.js goto /pages/dashboard/index --session test-rebuild
@@ -149,7 +149,7 @@ npm run build   # pass
 npm test        # 224 pass / 10 fail（与基线一致的 10 个真实环境/会话集成测试）
 ```
 
-真实 DevTools E2E（earlyRiser，session=work）：
+真实 DevTools E2E（公开合成 Demo，session=work）：
 - open --auto-port 9530 → mode=started path=pages/dashboard/index
 - session JSON：autoPort=None（strip 生效）
 - runtime-launches.json：live autoPort=9530 sessionName=work
@@ -178,9 +178,9 @@ npm test        # 224 pass / 10 fail（与基线一致的 10 个真实环境/会
 
 语义：
 - 省略 `--session` 时不使用 `default` / agent 名
-- 从项目路径推导 slug（leaf 为 miniprogram/weapp 时向上取 earlyRiser 等）
-- 复用：`earlyriser-x1` 已有则继续用最大序号
-- `open --fresh` 且未显式 session：分配 `earlyriser-x2`...
+- 从项目路径推导 slug（leaf 为 miniprogram/weapp 时向上取父级目录名）
+- 复用：`sample-store-x1` 已有则继续用最大序号
+- `open --fresh` 且未显式 session：分配 `sample-store-x2`...
 - 显式 `--session work` 仍最高优先
 
 实现：

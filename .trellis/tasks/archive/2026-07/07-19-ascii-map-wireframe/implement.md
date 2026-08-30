@@ -7,7 +7,7 @@
 3. [ ] `npm run build` + ascii-map 测试
 4. [ ] 写 `.trellis/spec/cli/ascii-map-contracts.md`
 5. [ ] skill 图例/读法一句
-6. [ ] earlyRiser 真机 snapshot 目视（可选，环境允许时）
+6. [ ] 公开合成 Demo 真机 snapshot 目视（可选，环境允许时）
 
 ## Validate
 

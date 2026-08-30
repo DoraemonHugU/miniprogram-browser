@@ -1,6 +1,6 @@
 ---
 name: miniprogram-browser
-description: 当想要在微信开发者工具里用接近 agent-browser或者playwright 的方式操作小程序时加载。
+description: 在微信开发者工具中以 agent-browser / Playwright 风格调试小程序时使用；不用于上传、预览、发布或 CI 打包。
 ---
 
 # 微信小程序自动化：miniprogram-browser
@@ -30,15 +30,15 @@ npx miniprogram-browser ...
 
 ## 何时使用
 
-- 想用 `snapshot -i`、`@e1`、`click`、`fill`、`get text` 这类 agent-friendly 命令
+- 想用 `snapshot`、`@e1`、`click`、`fill`、`get text` 这类 agent-friendly 命令
 - 想优先走 ref，而不是手写脆弱的 class 链或 nth 选择器
 - 想查看当前页面状态、路由变化、日志、异常、应用结构摘要
 
 ## 模型分派：非识图 vs 识图
 
-- **非识图模型（纯文本/结构化推理）**：默认用 `snapshot -i`。输出结构化 ref 文本树 + 紧凑 ASCII 空间图，不依赖真实截图通道。
-- **识图模型（能直接看图片）**：确实需要真实像素证据时，用 `screenshot --mode page|visual|annotate`。`screenshot` 默认 `mode` 为 `layout`（结构布局图，同样不依赖不稳定的官方页面截图）；要真实像素请显式 `--mode page|visual|annotate`。
-- 不要把 `snapshot` 当真实截图工具：它默认只给结构化树 + ASCII 空间图；要真实像素走 `screenshot --mode page|visual|annotate`，或 `snapshot -i --visual`。
+- **非识图模型（纯文本/结构化推理）**：默认用无参数 `snapshot` 获取紧凑 ref 语义树和 ASCII 空间图；需要精确比例坐标时再加 `--layout`。
+- **识图模型（能直接看图片）**：需要真实像素证据时直接用 `screenshot`，默认 `mode` 为 `page`；需要结构布局图时才显式使用 `screenshot --mode layout`。
+- 不要把 `snapshot` 当真实截图工具：它给结构化树和 ASCII 空间图，`--layout` 只追加比例 rect；要真实像素直接用 `screenshot`，需要标注或合成时再显式选择 `annotate` / `visual`。
 
 ## 核心心智
 
@@ -49,30 +49,30 @@ npx miniprogram-browser ...
 5. 绑定后先 `path` 或 `app inspect` 确认当前状态
 6. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
 7. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
-8. 非识图模型优先 `snapshot -i`：结构化 ref 树 + ASCII 空间图
-9. 需要纯文字比例位置时，用 `snapshot -i --layout`（为每个 ref 附带 x/y/w/h 百分比）
-10. 识图模型、且确实需要真实像素时，用 `screenshot --mode page|visual|annotate`
-11. **页面明显变化后，重新 `snapshot -i` 再使用新的 `@eN`**
+8. 非识图模型优先无参数 `snapshot`：默认输出 compact 语义树和压缩 ASCII 图
+9. 需要精确空间数据时，用 `snapshot --layout` 为每个 ref 附带 x/y/w/h 百分比；只要语义树时用 `--no-map`
+10. 识图模型需要真实像素时直接用 `screenshot`；需要标注或合成时再显式选择 `annotate` / `visual`
+11. **页面明显变化后，重新 `snapshot` 再使用新的 `@eN`**
 
 理解页面结构时优先：
 
 ```bash
-miniprogram-browser snapshot -i
-miniprogram-browser snapshot -i --no-map
+miniprogram-browser snapshot
+miniprogram-browser snapshot --layout
+miniprogram-browser snapshot --no-map
 miniprogram-browser screenshot out.png --mode layout --focus @e20,@e21
 miniprogram-browser screenshot out.png --mode layout --no-ref
 miniprogram-browser screenshot out.png --mode layout -c --capsule
 ```
 
-`snapshot -i` 默认两部分，用同一套 `@eN` 交叉引用：
+`snapshot` 默认输出语义树（层级 + `@eN` + 控件类型 + 文案）和紧凑 ASCII 图。操作与读字以语义树为准；图中的数字映射同一批 refs。
 
-- **语义树**：层级 + `@eN` + 控件类型 + 文案（操作与读字以这里为准）
-- **ASCII 空间图**：帮助判断大致布局；图中数字对应 `@eN` 的编号（如 `23` → `@e23`）；较大区域/控件会有边框，过小的只标数字；`*` 表示多个编号挤在同一位置。不需要图时用 `--no-map`
+`--layout` 会在语义树中追加比例 rect；默认 ASCII 图里数字对应 `@eN` 的编号（如 `23` → `@e23`），container/较大控件画框，普通文字只标数字，`*` 表示标签碰撞。只需要 rect、不需要图时使用 `--layout --no-map`。
 
 需要纯文字比例 rect 时：
 
 ```bash
-miniprogram-browser snapshot -i --layout
+miniprogram-browser snapshot --layout --no-map
 ```
 
 `layout` 截图模式会：
@@ -91,13 +91,46 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 # 最短路径：可省略 --session（优先沿用活动 session；首次使用时按项目自动生成/复用类似 myapp-x1 的名字；多 live runtime 且无活动目标时请显式指定 session）
 miniprogram-browser open --project /path/to/miniprogram-root
-miniprogram-browser snapshot -i
+miniprogram-browser snapshot
 miniprogram-browser click @e1 --await route-change
 
 # 需要并行工作台时再显式命名
 miniprogram-browser open --session work --project /path/to/miniprogram-root
 miniprogram-browser open --session debug --project /path/to/miniprogram-root --fresh
 ```
+
+macOS 默认安装位置通常可直接设置为：
+
+```bash
+export WECHAT_DEVTOOLS_CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
+```
+
+仓库维护者需要做公开演示或真实 DevTools gate 时，只使用无业务数据、`touristappid` 的合成项目。可选项目为：
+
+- `demo/public-demo`：微信原生，可直接使用。
+- `demo/taro-demo`：进入目录后依次执行 `npm ci`、`npm run build:weapp`。
+- `demo/uni-app-demo`：进入目录后依次执行 `npm ci`、`npm run build:mp-weixin`。
+
+三套项目编译后都提供同一组五条路由，CLI 旅程完全相同；不要增加框架识别或框架专用命令。下面的 `<demo-project>` 和 `<demo-session>` 必须替换为本次公开 Demo 的路径与独立 session：
+
+```bash
+miniprogram-browser open --project <demo-project> --session <demo-session>
+miniprogram-browser app inspect --project <demo-project> --session <demo-session>
+miniprogram-browser snapshot --session <demo-session>
+# 使用本轮 snapshot 中 Controls 卡片的 ref，导航后立即刷新 refs
+miniprogram-browser click <controls-ref> --session <demo-session> --await route:pages/controls/index --follow
+miniprogram-browser fill <input-ref> Codex --session <demo-session> --follow
+miniprogram-browser click <button-ref> --session <demo-session> --follow
+# 重复控件旅程：每次列表变化后都使用 --follow 返回的新 refs
+miniprogram-browser goto pages/lists/index --session <demo-session> --follow
+miniprogram-browser click <add-item-ref> --session <demo-session> --follow
+miniprogram-browser screenshot --session <demo-session>
+miniprogram-browser close --session <demo-session>
+```
+
+尖括号里的 ref 只展示语义角色；实际执行时必须替换为本轮 `snapshot` / `--follow` 输出的真实 `@eN`。
+
+真实业务项目即使已经在微信开发者工具登录并打开，也不得作为开源文档、测试、截图或复现素材；需要新场景时只扩充上述合成 Demo。
 
 先 `open` 再操作：`snapshot` / `click` / `goto` 等会复用已建立的自动化连接；**不会**在未 open 时默默再跑一轮完整 `auto`。若提示「自动化未连接」，请先 `open`。
 
@@ -109,13 +142,11 @@ miniprogram-browser await stable --session <name>
 
 如果 `--fresh` 启动时人已经**看到小程序页面出来了**，但 `open` 仍失败，不要立刻再次 `--fresh`。优先：
 
-1. 短等几秒，让开发者工具收尾编译
-2. 再跑同一个 `open`（**不带** `--fresh`）
-3. session 仍在时，可补 `await app-ready` / `await stable`
+1. 再跑同一个 `open`（**不带** `--fresh`），复用已经启动的 runtime
+2. session 仍在时，用 `await app-ready` / `await stable` 等待可观察状态
 
 ```bash
 miniprogram-browser open --session feat-a --project /path/to/miniprogram-root --fresh
-sleep 8
 miniprogram-browser open --session feat-a --project /path/to/miniprogram-root
 miniprogram-browser await app-ready --session feat-a
 miniprogram-browser await stable --session feat-a
@@ -142,6 +173,8 @@ npx miniprogram-browser help
 2. 需要分步探测时用显式 `await <condition>`
 3. `wait <ms>` 只做最后兜底
 
+`wait 1500` 会完整暂停 1500ms；动作后的 `--wait 500` 是固定缓冲。`--timeout` 只限制条件等待的最长时间，条件满足会提前返回。
+
 ```bash
 miniprogram-browser await app-ready --session feat-a
 miniprogram-browser await stable --session feat-a
@@ -153,11 +186,15 @@ miniprogram-browser wait 1200 --session feat-a
 
 如果 Agent 需要在一次操作后立即拿到新页面状态，可给 `goto`、`click` 或 `fill` 加 `--follow`。它会在动作完成后重新生成一次 refs 摘要；默认不自动跟随，避免每次操作都把完整页面树塞回上下文。
 
+普通按钮、switch、checkbox 等点击后停留当前页是正常行为，CLI 不会猜测它应该跳转。只有任务明确要求导航时才加 `--await route-change` 或 `--await route:<path>`；未满足时由 await 给出准确失败。
+
 建议：
 
 - `open` 默认等待稳定（运行时响应、路径/页面栈短暂稳定等）
+- automation 启用后立即探测 live 状态，未就绪才轮询；`doctor --wait` 限制的是状态轮询时长，`--wait 0` 表示单次探测
+- `goto` 直接发起路由动作并等待目标路由稳定，不依赖 SDK 内置固定 sleep
 - `RUNTIME_UNSTABLE` 时不要先重启；优先 `await stable`，再用 `doctor` / `devtools logs`
-- fresh 失败但人已看到页面：先短等，再**无** `--fresh` 重开
+- fresh 失败但人已看到页面：直接**无** `--fresh` 重开，再按状态 `await`
 - 信任确认框：人确认后再 `open` / `await app-ready`
 - 若日志里已出现 AppID 相关成功线索，但 automation 仍连不上，更可能是开发者工具自身服务/编译未就绪，而不是路径写错
 - 不确定页面是否真显示时，可问人「已显示 / 仍白屏」，比盲目重复启动更稳
@@ -189,14 +226,14 @@ miniprogram-browser open \
 ```bash
 miniprogram-browser open \
   --session feat-a \
-  --project /home/wang/work/demo/apps/miniprogram \
+  --project /home/developer/work/demo/apps/miniprogram \
   --devtools-project 'P:\work\demo\apps\miniprogram'
 ```
 
 多个项目共享前缀时，可配置映射（分号分隔，最长前缀优先）：
 
 ```bash
-export WECHAT_DEVTOOLS_PROJECT_MAP='/home/wang/work=P:\work;/home/wang/tmp=T:\tmp'
+export WECHAT_DEVTOOLS_PROJECT_MAP='/home/developer/work=P:\work;/home/developer/tmp=T:\tmp'
 ```
 
 说明：
@@ -303,7 +340,9 @@ miniprogram-browser devtools logs --session feat-a --limit 40 --grep "appservice
 建议：
 
 - 「页面没反应」不要只盯截图；先看 `logs` / `exceptions`
+- `doctor --json` 只有 Tool endpoint 与 App runtime 都就绪时才返回 `ok: true`；`probe.connected: true`、`probe.appReady: false` 表示开发者工具可连，但小程序仍未编译或 AppService 未就绪
 - Tool 层通但 App 不通时，优先 `devtools logs`，不要 GUI/OCR
+- macOS 的 `devtools logs` 会从开发者工具用户目录里选择最近有日志活动的 `WeappLog` profile，不依赖安装路径 hash
 - 判断某次 `open --fresh` 为何失败，以**同一次** open 返回的说明和日志为准
 - 数据页/表单页 console 往往比截图更早暴露问题
 
@@ -341,7 +380,7 @@ miniprogram-browser system-info --session feat-a
 关注 `windowWidth` / `windowHeight` / `pixelRatio`（设备像素比，用于对齐浏览器 DPR，不是让你改 snapshot 坐标）。
 
 2. 浏览器 viewport 固定为相近尺寸，例如 `375×812` 或 `414×896`，DPR 2 或 3  
-3. 浏览器只负责视觉图；结构/行为仍用 `logs`、`snapshot -i`、`screenshot --mode layout`  
+3. 浏览器只负责视觉图；结构/行为仍用 `logs`、`snapshot`、`screenshot --mode layout`
 4. 冲突时优先信小程序运行时证据  
 
 结构分析优先 `screenshot --mode layout`，不要因为有浏览器就跳过小程序取证。
@@ -359,26 +398,23 @@ miniprogram-browser app inspect --all
 
 ## screenshot
 
-推荐顺序：
+按任务选择：
 
-1. `snapshot -i`（非识图默认）
-2. `screenshot --mode layout`
-3. `snapshot -i --layout`
-4. `--mode annotate`
-5. `--mode page` / `--mode visual`
-
-`layout` 更稳、更适合结构分析；真实像素适合留证或对视觉细节。
+- 非识图或需要操作 ref：`snapshot`
+- 识图或需要真实页面证据：`screenshot`（默认 `page`）
+- 需要结构布局图：`screenshot --mode layout`
+- 需要 ref 标注或胶囊合成：显式使用 `annotate` / `visual`
 
 边界：
 
 - `page/visual/annotate` 依赖开发者工具模拟器截图通道，≠ 真机画面
-- 通道不稳时不要反复硬试；改 `layout` 或 `snapshot -i --layout`
+- 通道不稳时不要反复硬试；改 `layout` 或使用默认 `snapshot` 的 ASCII 图
 - 不要默认用 `close/open` 或重启开发者工具修截图超时；多项目持续失败再考虑重启
 
 模式：
 
-- `--mode layout`：默认，结构布局图
-- `--mode page`：官方页面截图
+- `--mode page`：默认，官方页面截图
+- `--mode layout`：结构布局图
 - `--mode visual`：页面截图 + 胶囊视觉合成
 - `--mode annotate`：页面截图 + `@eN` 标注
 - `--focus @e1,@e2`：高亮指定 ref
@@ -386,16 +422,19 @@ miniprogram-browser app inspect --all
 
 路径：
 
-- 不传路径：系统临时目录下的短组合名（默认 Linux 路径为 `/tmp/miniprogram-browser`）；同名时自动追加 `-1`、`-2`……
-- 传路径：保存到指定位置（建议可追溯目录，便于对照日志）
+- 不传路径：当前系统临时目录下的短组合名；同名时自动追加 `-1`、`-2`……。这是日常推荐方式
+- 自动文件名：`mpb-<project>-<page>-<mode>.png`；重复或并发截图自动追加 `-1`、`-2`……
+- 传相对/绝对文件路径：保存到指定文件；相对路径从 Agent 执行命令时的工作目录解析，缺失父目录会自动创建
+- 传已有目录，或以目录分隔符结尾的新目录：在该目录内生成短组合文件名并避免覆盖；Windows 同时接受 `/` 和 `\\`
+- 显式路径位于小程序项目目录内时，CLI 会返回 warning。开发者工具可能把新增 PNG 当作项目文件变更，触发重新编译并重置页面 data；CLI 不会猜测并恢复业务状态
 
 截图前：
 
 1. `goto/click/fill/...` 后优先 `--await`
-2. 先 `path` / `app inspect` / `snapshot -i` 确认页面稳定
+2. 先 `path` / `app inspect` / `snapshot` 确认页面稳定
 3. 只看结构时直接 `layout`，不要死磕真实截图
 
-`--focus`：先 `snapshot -i` 再 `screenshot --focus @e1,@e2`。`snapshot -i -c` 更紧凑，**不会**因 compact 单独重编号。
+`--focus`：先 `snapshot` 再 `screenshot --focus @e1,@e2`。默认 snapshot 已经 compact。
 
 ## 命令优先级（给 agent）
 
@@ -411,7 +450,9 @@ miniprogram-browser app inspect --all
 ## `@e` 使用规则（必须遵守）
 
 `@eN` 表示**当前 session 里、某次 snapshot 给出的可点击/可读取目标**。  
-同页、结构变化不大时，再次 snapshot **有时**会沿用原来的编号，但：
+每次完整 snapshot 都从 `@e1` 按规范语义树顺序重新生成，并替换上一轮 refs。页面语义树和顺序不变时会自然得到相同编号；结构一变就可能重排。内部 `stableKey` 只负责从本轮 snapshot 安全重解析到紧接着的动作，不提供跨 snapshot 持久编号。
+
+因此：
 
 - **不是**永远不变的全局 ID  
 - **不是**跨 session 通用  
@@ -419,17 +460,18 @@ miniprogram-browser app inspect --all
 
 必须遵守：
 
-1. **先 `snapshot -i`（或本轮已产出 refs 的查询），只用本轮输出里的 `@eN`。**
-2. **导航、列表刷新、弹层开关、明显重渲染后，必须重新 `snapshot -i`，不要拿旧号碰运气。**
+1. **先 `snapshot`（或本轮已产出 refs 的查询），只用本轮输出里的 `@eN`。**
+2. **导航、列表刷新、弹层开关、明显重渲染后，必须重新 `snapshot`，不要拿旧号碰运气。**
 3. **换页后旧 `@e` 全部作废**；提示 route 不一致时重新 snapshot。
 4. **提示 stale / unknown ref / 找不到节点时，禁止重试同一个旧 `@e`**；重新 snapshot 再操作。
 5. **换 session 必须重新 snapshot**；`@e` 不随 session 共享。
-6. **ASCII 图上的数字 = `@eN` 的编号**（`23` → 命令写 `click @e23`）。读文案看语义树，不要从图里猜字。
+6. **默认 ASCII 图中，数字 = `@eN` 的编号**（`23` → 命令写 `click @e23`）。读文案看语义树，不要从图里猜字。
+7. 重复列表里即使多个按钮文案相同，也分别使用本轮 snapshot 给出的 ref；列表增删后结构已变化，必须重新 snapshot，再使用新的 occurrence/ref。
 
 补充：
 
 - 需要跨会话稳定定位时，应在小程序侧使用 testid / 业务 key，再配合 `query`，而不是死记 `@e` 数字
-- `snapshot -i -c` / `--layout` 不改变「先 snap 再用」的规则
+- `--layout` / `--no-map` 不改变「先 snap 再用」的规则
 
 ## 常见误区
 
@@ -440,8 +482,8 @@ miniprogram-browser app inspect --all
 - 误以为登录过期仍能自动化；需在开发者工具重新登录
 - 误以为必须每次手写端口；日常不用管，成功输出里的端口仅供确认与排障
 - 误以为 `@eN` 永久有效或跨页/跨 session 仍可用
-- 误以为 ASCII 图上的 `3` 表示「第三项」而不是 `@e3`
-- 误以为 `snapshot -i` 需要业务自备 tree
+- 误以为默认 ASCII 图上的 `3` 表示「第三项」而不是 `@e3`
+- 误以为 `snapshot` 需要业务自备 tree
 - 误以为 `timeline` 是截图历史；它是路由事件
 - 误以为 `eval` 是浏览器 DOM 脚本
 - 误以为 `native` 等于普通 `click`
