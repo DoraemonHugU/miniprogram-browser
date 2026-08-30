@@ -1,0 +1,10 @@
+{
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "dist/build/mp-weixin/",
+  "projectname": "miniprogram-browser-uni-app-demo",
+  "setting": {
+    "urlCheck": false
+  },
+  "simulatorType": "wechat"
+}

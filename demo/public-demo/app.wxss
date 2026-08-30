@@ -1,0 +1,36 @@
+page {
+  background: #f5f7fa;
+  color: #1f2937;
+  font-family: sans-serif;
+}
+
+.container {
+  padding: 48rpx;
+}
+
+.title {
+  display: block;
+  font-size: 44rpx;
+  font-weight: 600;
+  margin-bottom: 16rpx;
+}
+
+.hint {
+  display: block;
+  color: #6b7280;
+  margin-bottom: 32rpx;
+}
+
+.input {
+  background: #ffffff;
+  border: 1rpx solid #d1d5db;
+  border-radius: 12rpx;
+  margin-bottom: 24rpx;
+  padding: 20rpx;
+}
+
+.status {
+  display: block;
+  color: #2563eb;
+  margin: 28rpx 0;
+}

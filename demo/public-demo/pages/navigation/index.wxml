@@ -1,0 +1,7 @@
+<view class="container">
+  <text class="title">Navigation</text>
+  <text class="hint">Use the button to open a detail page, then return with the page navigation controls.</text>
+  <button id="navigation-detail" type="primary" bindtap="onOpenDetail">Open detail page</button>
+  <text class="status">Status: {{status}}</text>
+  <text class="status">Navigation page shows: {{visits}}</text>
+</view>

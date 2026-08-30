@@ -30,7 +30,7 @@ test('parseRouteConstantsFromSource extracts route constants object literals', (
   })
 })
 
-test('parseStaticEdgesFromSource captures literal and constant-based navigation calls', () => {
+test('parseStaticEdgesFromSource captures API calls and standard navigator controls', () => {
   const routeConstants = {
     'SUB_ROUTES.todoSheet': 'pages/todo-sheet/index',
   }
@@ -39,6 +39,7 @@ test('parseStaticEdgesFromSource captures literal and constant-based navigation 
       await Taro.navigateTo({ url: SUB_ROUTES.todoSheet })
       await Taro.reLaunch({ url: '/pages/dashboard/index?tab=home' })
       await Taro.navigateBack()
+      <Navigator url='/pages/controls/index'>Controls</Navigator>
     `,
     filePath: '/repo/src/pages/dashboard/index.tsx',
     srcRoot: '/repo/src',
@@ -65,6 +66,13 @@ test('parseStaticEdgesFromSource captures literal and constant-based navigation 
       to: null,
       method: 'navigateBack',
       source: null,
+      file: 'pages/dashboard/index.tsx',
+    },
+    {
+      from: 'pages/dashboard/index',
+      to: 'pages/controls/index',
+      method: 'navigateTo',
+      source: '/pages/controls/index',
       file: 'pages/dashboard/index.tsx',
     },
   ])

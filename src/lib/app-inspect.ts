@@ -153,6 +153,18 @@ function parseStaticEdgesFromSource({
     })
   }
 
+  const navigatorRegex = /<navigator\b[^>]*\burl\s*=\s*['"]([^'"]+)['"][^>]*>/giu
+  let navigatorMatch: RegExpExecArray | null
+  while ((navigatorMatch = navigatorRegex.exec(input)) !== null) {
+    edges.push({
+      from,
+      to: normalizeRoutePath(navigatorMatch[1]),
+      method: 'navigateTo',
+      source: navigatorMatch[1],
+      file,
+    })
+  }
+
   return edges
 }
 
@@ -318,7 +330,7 @@ async function inspectStaticProject(projectPath: string): Promise<Record<string,
   const codeFiles: { filePath: string; rootDir: string }[] = []
   const seenFiles = new Set<string>()
   for (const rootDir of scanRoots) {
-    const files = await collectFiles(rootDir, new Set(['.ts', '.tsx', '.js', '.jsx', '.json']))
+    const files = await collectFiles(rootDir, new Set(['.ts', '.tsx', '.js', '.jsx', '.json', '.wxml', '.vue']))
     for (const filePath of files) {
       if (seenFiles.has(filePath)) {
         continue

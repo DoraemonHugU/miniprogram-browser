@@ -1,0 +1,18 @@
+<view class="container">
+  <text class="title">Lists</text>
+  <text class="hint">Repeated buttons use stable indexes and synthetic ids for selector testing.</text>
+  <button id="list-add" type="primary" bindtap="onAdd">Add item</button>
+
+  <view class="list" id="synthetic-list">
+    <view wx:for="{{items}}" wx:key="id" class="list-item" id="list-item-{{item.id}}">
+      <text class="item-label">{{item.label}}</text>
+      <view class="item-actions">
+        <button class="item-button" size="mini" data-index="{{index}}" bindtap="onSelect">Select</button>
+        <button class="item-button" size="mini" data-index="{{index}}" bindtap="onRemove">Remove</button>
+      </view>
+    </view>
+  </view>
+
+  <text class="status">Status: {{status}}</text>
+  <text class="status">Selected id: {{selectedId || 'none'}}</text>
+</view>

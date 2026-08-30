@@ -1,0 +1,40 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "Public Demo Catalog"
+      }
+    },
+    {
+      "path": "pages/controls/index",
+      "style": {
+        "navigationBarTitleText": "Controls"
+      }
+    },
+    {
+      "path": "pages/lists/index",
+      "style": {
+        "navigationBarTitleText": "Lists"
+      }
+    },
+    {
+      "path": "pages/navigation/index",
+      "style": {
+        "navigationBarTitleText": "Navigation"
+      }
+    },
+    {
+      "path": "pages/detail/index",
+      "style": {
+        "navigationBarTitleText": "Detail"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "Public Demo",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#f5f7fa"
+  }
+}

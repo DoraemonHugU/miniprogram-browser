@@ -1,0 +1,35 @@
+<view class="container">
+  <text class="title">Controls</text>
+  <text class="hint">Synthetic public demo state is shown after each interaction.</text>
+
+  <text class="label">Input</text>
+  <input class="input" id="controls-input" placeholder="Type synthetic text" value="{{text}}" bindinput="onInput" />
+
+  <text class="label">Button</text>
+  <button id="controls-button" type="primary" bindtap="onButtonTap">Tap button</button>
+
+  <view class="row">
+    <text class="label">Switch</text>
+    <switch id="controls-switch" checked="{{enabled}}" bindchange="onSwitchChange" />
+  </view>
+
+  <text class="label">Checkbox group</text>
+  <checkbox-group id="controls-checkbox-group" bindchange="onCheckboxChange">
+    <label class="option"><checkbox value="alpha" checked="{{alphaChecked}}" />Alpha</label>
+    <label class="option"><checkbox value="beta" checked="{{betaChecked}}" />Beta</label>
+  </checkbox-group>
+
+  <text class="label">Radio group</text>
+  <radio-group id="controls-radio-group" bindchange="onRadioChange">
+    <label class="option"><radio value="first" checked="{{radioFirstChecked}}" />First</label>
+    <label class="option"><radio value="second" checked="{{radioSecondChecked}}" />Second</label>
+  </radio-group>
+
+  <text class="status">Status: {{status}}</text>
+  <text class="status">Input: {{text}}</text>
+  <text class="status">Button taps: {{tapCount}}</text>
+  <text class="status">Switch: {{enabledText}}</text>
+  <text class="status">Checkboxes: {{checkboxSummary}}</text>
+  <text class="status">Radio: {{radioValue}}</text>
+  <button bindtap="onReset">Reset controls</button>
+</view>
