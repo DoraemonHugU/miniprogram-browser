@@ -355,13 +355,16 @@ test('confirmRouteAfterAction requires stable expected route matches when reques
     'pages/settings/index',
     'pages/preferences/index',
     'pages/settings/index',
-    'pages/settings/index',
+    'pages/preferences/index',
+    'pages/preferences/index',
   ]
+  let currentPageCalls = 0
   const miniProgram = {
     async evaluate() {
       return []
     },
     async currentPage() {
+      currentPageCalls += 1
       return { path: pages.shift() || 'pages/settings/index' }
     },
   }
@@ -371,12 +374,13 @@ test('confirmRouteAfterAction requires stable expected route matches when reques
     pathBefore: 'pages/settings/index',
     expectedPath: 'pages/preferences/index',
     expectedStableMatches: 2,
-    timeoutMs: 20,
+    timeoutMs: 500,
     pollMs: 1,
   })
 
-  assert.equal(result.path, 'pages/settings/index')
-  assert.equal(result.expectedMatched, false)
+  assert.equal(result.path, 'pages/preferences/index')
+  assert.equal(result.expectedMatched, true)
+  assert.equal(currentPageCalls, 5)
 })
 
 test('readRuntimeTree rebuilds nested structure from runtime outerWxml', async () => {
