@@ -105,6 +105,14 @@ macOS 默认安装位置通常可直接设置为：
 export WECHAT_DEVTOOLS_CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
 ```
 
+Windows / WSL 优先指向官方 `cli.bat`；WSL 中使用 Linux 可读的挂载路径：
+
+```bash
+export WECHAT_DEVTOOLS_CLI=/mnt/c/path/to/wechat-devtools/cli.bat
+```
+
+旧布局的 `cli.js` 仅在同目录存在 `node.exe` 时兼容。如果传入安装目录，工具会优先选择 `cli.bat`，不解析 DevTools 版本号。升级开发者工具后，先重新确认 **服务端口** 已开启。
+
 仓库维护者需要做公开演示或真实 DevTools gate 时，只使用无业务数据、`touristappid` 的合成项目。可选项目为：
 
 - `demo/public-demo`：微信原生，可直接使用。

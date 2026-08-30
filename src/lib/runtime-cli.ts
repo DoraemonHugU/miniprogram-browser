@@ -188,29 +188,25 @@ function shouldOpenProjectBeforeAutomation(config: AnyRecord, options: AnyRecord
 
 // ---- CLI 验证与运行 ----
 
-function normalizeCliPath(rawPath: string): string {
+function normalizeCliPath(rawPath: string, options: AnyRecord = {}): string {
   const trimmed = String(rawPath || '').trim()
   if (!trimmed) {
     return ''
   }
 
   const statInfo = existsSync(trimmed) ? statSync(trimmed) : null
-  // 如果指向目录，补全 cli.js
+  // 当前 Windows 安装包以 cli.bat 为公开入口；旧安装包才需要
+  // cli.js + node.exe。两者并存时优先走官方批处理入口。
   if (statInfo && statInfo.isDirectory()) {
-    const cliJs = path.join(trimmed, 'cli.js')
-    if (existsSync(cliJs)) {
-      return cliJs
+    const candidates = options.hasWindowsBundle
+      ? [path.join(trimmed, 'cli.bat'), path.join(trimmed, 'cli.js')]
+      : [path.join(trimmed, 'cli.js')]
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate
+      }
     }
     return trimmed
-  }
-
-  // 如果指向 .bat，归一化为同目录 cli.js
-  if (/\.bat$/iu.test(trimmed)) {
-    const dirName = path.dirname(trimmed)
-    const cliJs = path.join(dirName, 'cli.js')
-    if (existsSync(cliJs)) {
-      return cliJs
-    }
   }
 
   return trimmed
@@ -224,8 +220,8 @@ function validateAutomationCliConfig(config: AnyRecord, options: AnyRecord = {})
     throw error
   }
 
-  // 归一化：.bat→.js、目录→cli.js
-  const normalizedPath = normalizeCliPath(rawPath)
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
+  const normalizedPath = normalizeCliPath(rawPath, { hasWindowsBundle })
   if (normalizedPath !== rawPath) {
     config.cliPath = normalizedPath
   }
@@ -249,12 +245,19 @@ function validateAutomationCliConfig(config: AnyRecord, options: AnyRecord = {})
     throw error
   }
 
-  const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
   if (hasWindowsBundle) {
+    if (/\.bat$/iu.test(cliPath)) {
+      return
+    }
+
+    if (!/\.js$/iu.test(cliPath)) {
+      throw new Error(`Unsupported Windows DevTools CLI entry: ${cliPath}. Expected cli.bat, or legacy cli.js with node.exe next to it.`)
+    }
+
     const cliDirectory = path.dirname(cliPath)
     const nodeExePath = path.join(cliDirectory, 'node.exe')
     if (!existsSync(nodeExePath)) {
-      throw new Error(`WeChat DevTools CLI bundle is incomplete near ${cliPath}; expected node.exe next to cli.js.`)
+      throw new Error(`Legacy WeChat DevTools CLI bundle is incomplete near ${cliPath}; expected node.exe next to cli.js.`)
     }
     return
   }
@@ -274,24 +277,33 @@ function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = 
   const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
   const timeoutMs = Number(options.timeoutMs || 30000)
   const converter = options.toWindowsPath || toWindowsPath
+  const runner = (options.spawnSync || spawnSync) as typeof spawnSync
+  const cliPath = String(config.cliPath || '')
+  const windowsCliArg = hasWindowsBundle ? converter(cliPath) : cliPath
 
-  // cliPath 经过 normalizeCliPath 已统一为 cli.js，但 Windows node.exe
-  // 不认 /mnt/ 路径，需转成 Windows 格式。
-  const cliJsArg = hasWindowsBundle ? converter(String(config.cliPath || '')) : String(config.cliPath || '')
-
-  const result = hasWindowsBundle
-    ? spawnSync(path.join(cliDirectory, 'node.exe'), [
-      cliJsArg,
-      ...args,
-    ], {
+  let result
+  if (hasWindowsBundle && /\.bat$/iu.test(cliPath)) {
+    // Node 官方约束：Windows 不能把 .bat 当作独立可执行文件，需由 cmd.exe 启动。
+    // https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows
+    result = runner('cmd.exe', ['/d', '/c', windowsCliArg, ...args], {
       cwd: cliDirectory,
       encoding: 'utf8',
       timeout: timeoutMs,
+      windowsHide: true,
     })
-    : spawnSync(String(config.cliPath || ''), args, {
+  } else if (hasWindowsBundle) {
+    result = runner(path.join(cliDirectory, 'node.exe'), [windowsCliArg, ...args], {
+      cwd: cliDirectory,
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      windowsHide: true,
+    })
+  } else {
+    result = runner(cliPath, args, {
       encoding: 'utf8',
       timeout: timeoutMs,
     })
+  }
 
   return {
     ...result,

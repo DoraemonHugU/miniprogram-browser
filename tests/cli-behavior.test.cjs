@@ -95,14 +95,15 @@ function createMiniProgramProjectAt(projectDir) {
 
 /**
  * 跨平台假 DevTools CLI：
- * - 始终提供 cli.js（Node 实现，记录 calls.log）
- * - 在 linux/WSL（devtoolsHost=win32）旁路 node.exe stub，满足 bundle 校验
- * - cliPath 指向 cli.js，与生产 normalize 后形态一致
+ * - Windows 走当前 cli.bat 入口；WSL 用旧 cli.js bundle 避免测试依赖 Windows Node
+ * - macOS / 裸 Linux 直接执行 POSIX wrapper
+ * - 三种入口都调用同一个 Node fixture，并记录 calls.log
  *
  * @param {{ onAuto?: string, onOpen?: string, onClose?: string, alwaysExit?: number, extraJs?: string }} [options]
  */
 function createFakeDevtoolsCli(options = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-'))
+  // 包含空格，确保 Windows cmd.exe 真实执行也覆盖常见安装路径。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb fake devtools-'))
   const callsPath = path.join(dir, 'calls.log')
   const cliJsPath = path.join(dir, 'cli.js')
   const onAuto = options.onAuto || '✔ IDE server has started, listening on http://127.0.0.1:38596'
@@ -129,7 +130,12 @@ if (cmd === 'auto') {
 process.exit(${alwaysExit});
 `)
 
-  // win32 host 路径：spawn(node.exe, [cli.jsWin, ...args])
+  const cliBatPath = path.join(dir, 'cli.bat')
+  fs.writeFileSync(cliBatPath, `@echo off\r
+node "%~dp0cli.js" %*\r
+`)
+
+  // WSL 测试保留旧 bundle 入口，避免依赖 Windows 侧另装 Node。
   const nodeExePath = path.join(dir, 'node.exe')
   if (process.platform === 'win32') {
     try {
@@ -158,8 +164,8 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
   return {
     dir,
     callsPath,
-    /** Windows/WSL 使用 cli.js + node.exe bundle；macOS/裸 Linux 直接执行 wrapper。 */
-    cliPath: process.platform === 'win32' || isWslRuntime() ? cliJsPath : shellCliPath,
+    /** Windows 使用 cli.bat，WSL 使用旧 bundle，macOS/裸 Linux 使用 wrapper。 */
+    cliPath: process.platform === 'win32' ? cliBatPath : (isWslRuntime() ? cliJsPath : shellCliPath),
     readCalls() {
       if (!fs.existsSync(callsPath)) {
         return []

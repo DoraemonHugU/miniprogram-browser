@@ -1613,33 +1613,12 @@ test('WSL UNC and macOS paths do not use the Windows pre-open sequence', () => {
   }), false)
 })
 
-test('enableAutomation runs Windows DevTools bundle from the bundle directory', () => {
+test('enableAutomation invokes the current Windows cli.bat entry without requiring node.exe', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-bundle-'))
-  const cwdPath = path.join(tempDir, 'cwd.log')
   const cliBatPath = path.join(tempDir, 'cli.bat')
-  const cliJsPath = path.join(tempDir, 'cli.js')
-  const nodeExePath = path.join(tempDir, 'node.exe')
   fs.writeFileSync(cliBatPath, '')
-  fs.writeFileSync(cliJsPath, `
-const fs = require('node:fs');
-fs.writeFileSync(${JSON.stringify(cwdPath)}, process.cwd());
-process.stdout.write('✔ IDE server has started, listening on http://127.0.0.1:38596\\n');
-if (process.argv[2] !== 'open') process.stdout.write('[info] ws connect 38539 abc def\\n');
-`)
-  if (process.platform === 'win32') {
-    try {
-      fs.linkSync(process.execPath, nodeExePath)
-    } catch (_) {
-      fs.copyFileSync(process.execPath, nodeExePath)
-    }
-  } else {
-    fs.writeFileSync(nodeExePath, `#!/bin/sh
-DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-shift
-exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
-`)
-    fs.chmodSync(nodeExePath, 0o755)
-  }
+
+  const calls = []
 
   enableAutomation({
     cliPath: cliBatPath,
@@ -1650,14 +1629,91 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
     runtime: 'linux',
     readProcVersion: '5.15.0-microsoft-standard-WSL2',
     toWindowsPath(inputPath) {
-      if (/[\\/]cli\.js$/u.test(inputPath)) {
-        return process.platform === 'win32' ? cliJsPath : 'F:\\tools\\wechat-devtools\\cli.js'
+      if (/[\\/]cli\.bat$/u.test(inputPath)) {
+        return 'F:\\tools\\wechat-devtools\\cli.bat'
       }
       return 'F:\\demo\\apps\\miniprogram'
     },
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options })
+      return {
+        status: 0,
+        signal: null,
+        output: [],
+        pid: 1,
+        stdout: '✔ IDE server has started, listening on http://127.0.0.1:38596\n',
+        stderr: '',
+      }
+    },
   })
 
-  assert.equal(fs.readFileSync(cwdPath, 'utf8').trim(), fs.realpathSync(tempDir))
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].command, 'cmd.exe')
+  assert.deepEqual(calls[0].args.slice(0, 4), [
+    '/d',
+    '/c',
+    'F:\\tools\\wechat-devtools\\cli.bat',
+    'auto',
+  ])
+  assert.equal(calls[0].options.cwd, tempDir)
+})
+
+test('validateAutomationCliConfig prefers cli.bat and falls back to the legacy cli.js bundle', () => {
+  const currentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-current-devtools-bundle-'))
+  fs.writeFileSync(path.join(currentDir, 'cli.bat'), '')
+  fs.writeFileSync(path.join(currentDir, 'cli.js'), '')
+  fs.writeFileSync(path.join(currentDir, 'node.exe'), '')
+
+  const currentConfig = { cliPath: currentDir }
+  validateAutomationCliConfig(currentConfig, WSL_TEST_OPTIONS)
+  assert.equal(currentConfig.cliPath, path.join(currentDir, 'cli.bat'))
+
+  const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-legacy-devtools-bundle-'))
+  fs.writeFileSync(path.join(legacyDir, 'cli.js'), '')
+  fs.writeFileSync(path.join(legacyDir, 'node.exe'), '')
+
+  const legacyConfig = { cliPath: legacyDir }
+  validateAutomationCliConfig(legacyConfig, WSL_TEST_OPTIONS)
+  assert.equal(legacyConfig.cliPath, path.join(legacyDir, 'cli.js'))
+})
+
+test('enableAutomation keeps the legacy cli.js plus node.exe execution path', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-legacy-devtools-bundle-'))
+  const cliJsPath = path.join(tempDir, 'cli.js')
+  const nodeExePath = path.join(tempDir, 'node.exe')
+  fs.writeFileSync(cliJsPath, '')
+  fs.writeFileSync(nodeExePath, '')
+
+  const calls = []
+  enableAutomation({
+    cliPath: cliJsPath,
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath(inputPath) {
+      if (/[\\/]cli\.js$/u.test(inputPath)) {
+        return 'F:\\tools\\wechat-devtools\\cli.js'
+      }
+      return WSL_TEST_OPTIONS.toWindowsPath(inputPath)
+    },
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options })
+      return {
+        status: 0,
+        signal: null,
+        output: [],
+        pid: 1,
+        stdout: '✔ IDE server has started, listening on http://127.0.0.1:38596\n',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].command, nodeExePath)
+  assert.equal(calls[0].args[0], 'F:\\tools\\wechat-devtools\\cli.js')
 })
 
 test('detectAutomationCliProgressTimeout recognizes timed out auto startup after visible progress', () => {

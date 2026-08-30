@@ -78,11 +78,12 @@ CLI 源码位于 `src/**/*.ts`，发布和本地执行入口由 TypeScript 编�
 
 1. 已安装 Node.js 22 或 24 LTS
 2. 已安装并登录微信开发者工具
-3. 已在开发者工具中开启 **服务端口**
+3. 已在开发者工具中开启 **服务端口**；升级开发者工具后请重新确认该开关
 4. 首次使用需要能确定小程序项目根目录；可以显式传 `--project`，也可以从当前目录 / Git 工作树唯一发现
 5. CLI 路径配置正确：
-   - 标准安装路径下，工具会优先尝试自动探测
-   - 非标准安装路径 / WSL 场景下，建议设置环境变量 `WECHAT_DEVTOOLS_CLI`
+   - 工具提供平台默认值；安装目录不同或使用 WSL 时，设置 `WECHAT_DEVTOOLS_CLI`
+   - Windows / WSL 当前推荐指向官方 `cli.bat`；旧安装布局的 `cli.js` 仅在同目录存在 `node.exe` 时自动兼容
+   - 也可指向 CLI 安装目录；同时存在新旧入口时优先使用 `cli.bat`
 6. WSL 场景下，`--project` 仍然填写 Linux 侧可读的小程序根目录；CLI 会按平台自动把可识别路径传给 DevTools
 
 例如：
@@ -96,6 +97,14 @@ macOS 默认安装位置通常是：
 ```bash
 export WECHAT_DEVTOOLS_CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
 ```
+
+Windows 下请使用实际安装目录内的 `cli.bat`；WSL 中传入对应的 Linux 挂载路径，例如：
+
+```bash
+export WECHAT_DEVTOOLS_CLI=/mnt/c/path/to/wechat-devtools/cli.bat
+```
+
+`miniprogram-browser` 会通过 `cmd.exe` 运行 `cli.bat`，不会再将它强制改写为 `cli.js`。对于旧版安装目录，仍可显式指向 `cli.js`，但其旁边必须有配套的 `node.exe`。
 
 如果你的 shell 已经设置了 `WECHAT_DEVTOOLS_CLI`，就不需要重复 `export`。
 

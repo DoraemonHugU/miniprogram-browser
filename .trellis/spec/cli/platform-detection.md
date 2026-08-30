@@ -60,6 +60,13 @@ function resolveEnvironment(config: AnyRecord, options?: AnyRecord): Environment
 - 设计动机：旧版用 `cliPath.endsWith('.bat')` 判定 Windows 包，但 Windows 上 `.exe` 包裹（非 .bat 入口）会被误判为 mac。`devtoolsHost` 本质是「DevTools 装在哪」，由运行宿主决定，与 CLI 入口名无关，故改为 runtime 推导。
 - `runtime.ts` 的 `buildAutomationArgs` 已改用 `env.devtoolsHost === 'win32'` 推导 `hasWindowsBundle`，与该单源一致。
 
+### 3.4 Windows CLI 入口选择
+
+- 平台判断不依赖 CLI 文件名；确认 Windows / WSL 之后，再按安装目录的实际文件选择入口。
+- 传入目录时优先 `cli.bat`；仅在缺少 `cli.bat` 时回退到 `cli.js`。不额外调用 CLI 解析版本号。
+- `cli.bat` 由 `cmd.exe /d /c` 执行，不需要同目录 `node.exe`。
+- 显式 `cli.js` 属于旧布局兼容路径，必须与同版本 `node.exe` 配套；不完整时直接报错。
+
 ## 4. Validation & Error Matrix
 
 - 无显式校验；`config` 容错（缺失/undefined → 视为 darwin）。
@@ -79,6 +86,7 @@ function resolveEnvironment(config: AnyRecord, options?: AnyRecord): Environment
   - `detectWsl`：含 microsoft 版本串 → true；普通 linux + 注入 `wslDistroName:''` → false；注入 `wslDistroName` 辅助 → true；非 linux + 辅助信号 → false；缺省读真实 `/proc/version` 不抛异常
   - `detectDevtoolsHost`：`'win32'/'linux' → 'win32'`；`'darwin' → 'darwin'`
   - `resolveEnvironment`：Windows / macOS / 裸 linux / WSL(microsoft 串) / WSL(WSL_DISTRO_NAME 辅助) 五态，`runtime`/`readProcVersion`/`wslDistroName` 全注入
+- `tests/runtime.test.cjs`：目录入口优先 `cli.bat`；新布局不需要 `node.exe`；旧 `cli.js + node.exe` 仍按配套入口执行。
 
 ## 7. Wrong vs Correct
 

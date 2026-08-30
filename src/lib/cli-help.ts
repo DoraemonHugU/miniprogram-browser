@@ -84,7 +84,7 @@ function buildHelpText() {
   -c, --compact                压缩 screenshot --mode layout；snapshot 默认已经 compact
   --devtools-project <path>    传给 DevTools CLI 的项目路径；自动路径策略不可用时使用
   --project-map <linux=windows> WSL 路径前缀到 Windows 盘符前缀的显式映射
-  --cli-path <path>            DevTools CLI 路径；也可用 WECHAT_DEVTOOLS_CLI
+  --cli-path <path>            DevTools CLI 路径；Windows/WSL 优先 cli.bat，也可用 WECHAT_DEVTOOLS_CLI
   --auto-port <port>           请求的自动化 ws 端口；本机 DevTools help 可能隐藏该选项，但 CLI 仍会透传给 /auto
   --devtools-port <port>       DevTools HTTP 端口；通常不传，默认由 DevTools 当前服务回显
 `
@@ -126,7 +126,7 @@ function buildCommandHelpText(command: unknown): string {
   - --fresh 表示“必须新起”；失败时不会偷偷 attach 到已有 runtime
   - DevTools debug 里的 ws connect <port> 是 CLI 自己的 /upgrade 长连接端口，不是 automation ws 端口
   - 同一 session 串行执行；不同 session 可以并发
-  - 非标准安装路径 / WSL 场景下，可通过 WECHAT_DEVTOOLS_CLI 指定 CLI 路径
+  - 非标准安装路径 / WSL 场景下，可通过 WECHAT_DEVTOOLS_CLI 指定 CLI 路径；Windows/WSL 优先 cli.bat
   - WSL 下 --project 仍指向本地可读路径；优先 /mnt/<drive>，必要时 --devtools-project / --project-map
   - 正常情况下不用手动传端口、路径映射或信任类参数；CLI 会自动处理
 
