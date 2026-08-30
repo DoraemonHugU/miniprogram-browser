@@ -6,7 +6,7 @@ const path = require('node:path')
 const { createRequire } = require('node:module')
 
 const repoRoot = path.resolve(__dirname, '..')
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const npmCliPath = process.env.npm_execpath
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'miniprogram-browser-install-'))
 const consumerRoot = path.join(tempRoot, 'consumer')
 
@@ -24,6 +24,13 @@ function run(command, args, options = {}) {
   return result.stdout || ''
 }
 
+function runNpm(args, options) {
+  if (!npmCliPath) {
+    throw new Error('npm_execpath is unavailable; run this gate through npm run test:package-install')
+  }
+  return run(process.execPath, [npmCliPath, ...args], options)
+}
+
 try {
   fs.mkdirSync(consumerRoot)
   fs.writeFileSync(path.join(consumerRoot, 'package.json'), JSON.stringify({
@@ -32,7 +39,7 @@ try {
     private: true,
   }, null, 2) + '\n')
 
-  const packOutput = run(npmCommand, [
+  const packOutput = runNpm([
     'pack',
     '--json',
     '--pack-destination',
@@ -41,7 +48,7 @@ try {
   const packResult = JSON.parse(packOutput)[0]
   const tarballPath = path.join(tempRoot, packResult.filename)
 
-  run(npmCommand, [
+  runNpm([
     'install',
     '--ignore-scripts',
     '--audit=false',
@@ -66,11 +73,11 @@ try {
   )
 
   assert.equal(
-    run(npmCommand, ['exec', '--offline', '--', 'miniprogram-browser', 'version'], { cwd: consumerRoot, capture: true }).trim(),
+    runNpm(['exec', '--offline', '--', 'miniprogram-browser', 'version'], { cwd: consumerRoot, capture: true }).trim(),
     cliPackage.version,
   )
   assert.match(
-    run(npmCommand, ['exec', '--offline', '--', 'miniprogram-browser', 'help'], { cwd: consumerRoot, capture: true }),
+    runNpm(['exec', '--offline', '--', 'miniprogram-browser', 'help'], { cwd: consumerRoot, capture: true }),
     /核心命令（优先使用）:[\s\S]*\n  open\s/u,
   )
 
