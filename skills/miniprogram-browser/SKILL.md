@@ -47,7 +47,7 @@ npx miniprogram-browser ...
 3. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
 4. 常规使用不要自己再手拼开发者工具的 `cli open`；路径、信任项目、端口等由本 CLI 处理
 5. 绑定后先 `path` 或 `app inspect` 确认当前状态
-6. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，不要先猜固定毫秒
+6. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，已知结果写精确条件，未知同页结果用 `--await change`
 7. 先用 `logs` / `exceptions` 看运行时输出，理解小程序当前发生了什么
 8. 非识图模型优先无参数 `snapshot`：默认输出 compact 语义树和压缩 ASCII 图
 9. 需要精确空间数据时，用 `snapshot --layout` 为每个 ref 附带 x/y/w/h 百分比；只要语义树时用 `--no-map`
@@ -111,7 +111,7 @@ export WECHAT_DEVTOOLS_CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cl
 - `demo/taro-demo`：进入目录后依次执行 `npm ci`、`npm run build:weapp`。
 - `demo/uni-app-demo`：进入目录后依次执行 `npm ci`、`npm run build:mp-weixin`。
 
-三套项目编译后都提供同一组五条路由，CLI 旅程完全相同；不要增加框架识别或框架专用命令。下面的 `<demo-project>` 和 `<demo-session>` 必须替换为本次公开 Demo 的路径与独立 session：
+三套项目编译后都提供同一组六条路由（含 Interaction），CLI 旅程完全相同；不要增加框架识别或框架专用命令。下面的 `<demo-project>` 和 `<demo-session>` 必须替换为本次公开 Demo 的路径与独立 session：
 
 ```bash
 miniprogram-browser open --project <demo-project> --session <demo-session>
@@ -124,6 +124,11 @@ miniprogram-browser click <button-ref> --session <demo-session> --follow
 # 重复控件旅程：每次列表变化后都使用 --follow 返回的新 refs
 miniprogram-browser goto pages/lists/index --session <demo-session> --follow
 miniprogram-browser click <add-item-ref> --session <demo-session> --follow
+# 真实交互旅程：滚动、滑动、长按和短暂同页状态
+miniprogram-browser goto pages/interaction/index --session <demo-session> --follow
+miniprogram-browser scroll down 300 --session <demo-session>
+miniprogram-browser swipe <swiper-ref> left --session <demo-session> --await change --follow
+miniprogram-browser longpress <longpress-ref> --session <demo-session> --await change --follow
 miniprogram-browser screenshot --session <demo-session>
 miniprogram-browser close --session <demo-session>
 ```
@@ -169,9 +174,10 @@ npx miniprogram-browser help
 
 优先级：
 
-1. 业务命令直接挂 `--await`
-2. 需要分步探测时用显式 `await <condition>`
-3. `wait <ms>` 只做最后兜底
+1. 已知业务结果直接挂精确 `--await`（`route:` / `visible:` / `hidden:`）
+2. 无法预知 selector 的同页结果，在 action 上使用 `--await change`
+3. 需要分步探测时用显式 `await <condition>`
+4. `wait <ms>` 只做最后兜底
 
 `wait 1500` 会完整暂停 1500ms；动作后的 `--wait 500` 是固定缓冲。`--timeout` 只限制条件等待的最长时间，条件满足会提前返回。
 
@@ -179,18 +185,21 @@ npx miniprogram-browser help
 miniprogram-browser await app-ready --session feat-a
 miniprogram-browser await stable --session feat-a
 miniprogram-browser goto /pages/order/detail --session feat-a --await route:/pages/order/detail
-miniprogram-browser click @e12 --session feat-a --await route-settled
+miniprogram-browser click @e12 --session feat-a --await change --follow
 miniprogram-browser screenshot --session feat-a --mode layout --await visible:.page-root
 miniprogram-browser wait 1200 --session feat-a
 ```
 
-如果 Agent 需要在一次操作后立即拿到新页面状态，可给 `goto`、`click` 或 `fill` 加 `--follow`。它会在动作完成后重新生成一次 refs 摘要；默认不自动跟随，避免每次操作都把完整页面树塞回上下文。
+如果 Agent 需要在一次操作后立即拿到新页面状态，可给 action 加 `--follow`。它会在动作完成后重新生成一次 refs 摘要；默认不自动跟随，避免每次操作都把完整页面树塞回上下文。
+
+`--await change` 会在动作前建立 route、页面栈和编译后 WXML 基线，并在观察到第一次变化时立即返回。它适合不知道 Taro/Vue/原生最终 selector 的同页更新；不能写成独立的 `await change`。它不会保存连续变化帧，持续时间很短的 Toast 仍可能需要后续动作证据能力。
 
 普通按钮、switch、checkbox 等点击后停留当前页是正常行为，CLI 不会猜测它应该跳转。只有任务明确要求导航时才加 `--await route-change` 或 `--await route:<path>`；未满足时由 await 给出准确失败。
 
 建议：
 
 - `open` 默认等待稳定（运行时响应、路径/页面栈短暂稳定等）
+- `stable` 只表示 route/page-stack 暂时安静且视图可读取，不代表业务请求或数据渲染已完成
 - automation 启用后立即探测 live 状态，未就绪才轮询；`doctor --wait` 限制的是状态轮询时长，`--wait 0` 表示单次探测
 - `goto` 直接发起路由动作并等待目标路由稳定，不依赖 SDK 内置固定 sleep
 - `RUNTIME_UNSTABLE` 时不要先重启；优先 `await stable`，再用 `doctor` / `devtools logs`
@@ -198,7 +207,7 @@ miniprogram-browser wait 1200 --session feat-a
 - 信任确认框：人确认后再 `open` / `await app-ready`
 - 若日志里已出现 AppID 相关成功线索，但 automation 仍连不上，更可能是开发者工具自身服务/编译未就绪，而不是路径写错
 - 不确定页面是否真显示时，可问人「已显示 / 仍白屏」，比盲目重复启动更稳
-- `goto/click/native/screenshot/snapshot` 优先写 `--await`
+- `goto/click/fill/back/scroll/swipe/longpress` 优先写合适的 `--await`
 - 不要把 `wait 3000` 当主路径
 
 ## 跨平台路径
@@ -440,7 +449,7 @@ miniprogram-browser app inspect --all
 
 | 优先 | 用途 | 示例 |
 |------|------|------|
-| 主路径 | 日常操作 | `open` `snapshot` `click` `fill` `get` `goto` `await` `close` `session` `path` |
+| 主路径 | 日常操作 | `open` `snapshot` `click` `fill` `back` `scroll` `swipe` `longpress` `get` `goto` `await` `close` `session` `path` |
 | 诊断 | 搞不清状态时 | `doctor` `logs` `exceptions` `timeline` `devtools logs` `app inspect` |
 | 逃逸 | 标准命令不够时 | `protocol` `eval` `native` `call` `query` `within` 及高级截图 |
 
@@ -487,6 +496,7 @@ miniprogram-browser app inspect --all
 - 误以为 `timeline` 是截图历史；它是路由事件
 - 误以为 `eval` 是浏览器 DOM 脚本
 - 误以为 `native` 等于普通 `click`
+- 误用 `eval` / `setData` 代替真实 `click`、`swipe` 或 `longpress`；标准动作应优先模拟用户输入，原生 `swiper` 可由 CLI 内部使用 automator 的组件动作完成
 - 误以为多 session 一定等于多个完全隔离的工具窗口；并行时仍可能共享同一运行中的小程序实例
 - 误以为可以无等待狂点；优先 `--await`
 - 误以为应直接调用包装库内部模块；请通过 CLI 使用

@@ -18,9 +18,10 @@
 
 - `open/connect` 复用同项目 live runtime，无法唯一选择时要求显式 session。
 - automation 启用后立即探测端口，未就绪才轮询；`doctor` 轮询 Tool/App 状态并在就绪后立即返回。
-- `goto/click/fill/native` 不默认插入固定 sleep，优先使用路由、元素或稳定状态。
+- action 不默认插入固定 sleep；已知结果使用路由/元素条件，未知同页结果使用框架无关的 `--await change`。
+- `back`、页面/容器滚动、滑动和长按已进入主路径；不使用 `eval/setData` 冒充交互结果。
 - `snapshot` 默认提供紧凑语义树与 ASCII 空间图；精确坐标和真实截图按需开启。
-- 原生、Taro、uni-app 三套合成 Demo 提供同构页面和统一回归旅程。
+- 原生、Taro、uni-app 三套合成 Demo 提供同构六页和统一交互回归旅程。
 
 验收信号：
 
@@ -34,7 +35,8 @@
 
 候选工作：
 
-- 将 Catalog 继续扩成组件库式入口，覆盖表单控件、列表增删、弹层、Toast、加载态和页面跳转。
+- 在现有组件库式 Catalog 上继续补充尚未覆盖的加载态、原生 Toast 和复杂嵌套滚动。
+- 验证系统 modal 的可靠控制；当前 Mac DevTools 2.02.2608040 中 `native confirmModal/cancelModal` 会返回空成功但不触发按钮，修复前不冻结专用 L0 命令。
 - 三套 Demo 保持相同的路由、测试标识和预期结果，不复制真实业务 UI 或数据。
 - 把新暴露的跨平台、重复元素和瞬时交互问题先写成失败测试，再修 CLI。
 

@@ -15,7 +15,7 @@
 
 | 层 | 稳定性 | 命令 |
 |----|--------|------|
-| **L0 主路径** | 稳定；破坏性变更需重大版本+文档 | `open` / `connect`，`goto` / `relaunch`，`snapshot`，`click` / `tap`，`fill` / `input`，`get`，`await`，`close`，`session list\|prune\|kill`，`path`，`help` |
+| **L0 主路径** | 稳定；破坏性变更需重大版本+文档 | `open` / `connect`，`goto` / `relaunch`，`snapshot`，`click` / `tap`，`back`，`scroll`，`swipe`，`longpress`，`fill` / `input`，`get`，`await`，`close`，`session list\|prune\|kill`，`path`，`help` |
 | **L1 诊断** | 稳定意图；字段可扩展 | `doctor`，`logs`，`exceptions`，`timeline`，`devtools logs`，`app inspect`，`page-stack`，`system-info` |
 | **L2 逃逸** | 尽力而为；可改可删 | `protocol`，`eval`，`native`，`call`，`query`，`within`，`wait`，`screenshot` 高级模式 |
 
@@ -48,7 +48,9 @@ open [ --project ] [ --session ]
   → 其余（strategy、devtoolsProject…）可出现，非硬依赖字段
 ```
 
-日常 `goto/click/fill/native` 不默认插入固定 sleep；需要明确结果时使用 `--await`，只有无法描述可观察状态时才显式 `--wait`。`goto` 必须直接发起底层路由动作，再按目标路由轮询确认，不得退回 `miniprogram-automator` 内置的固定 3 秒 route sleep。automation 启用后默认立即探测 live 端口，未就绪才在总 deadline 内轮询；`doctor --wait` 只限制状态轮询窗口，`--wait 0` 表示单次探测。这一取舍参考 agent-browser 的 [核心 snapshot/action 循环](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/SKILL.md) 与 [条件等待命令](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/references/commands.md)，但保留微信开发者工具冷启动所需的独立长预算。
+日常 action 不默认插入固定 sleep；已知结果使用 `route:` / `visible:` / `hidden:` 等精确 `--await`，未知同页结果使用 action 专属的 `--await change`。`change` 在动作前采集 route、页面栈和编译后 WXML 签名，动作后返回第一次可观察变化；它不依赖原生/Taro/uni-app 生命周期，也不等同于长期保存瞬时证据。独立 `await change` 因没有动作前基线必须报错。`stable` 只承诺路径/页面栈短暂稳定且视图可读取，不承诺业务数据完成。
+
+`goto` 必须直接发起底层路由动作，再按目标路由轮询确认，不得退回 `miniprogram-automator` 内置的固定 3 秒 route sleep。`back` 优先调用 DevTools 原生返回并验证 route；原生返回假成功时，使用无固定 3 秒等待的小程序页面栈回退。`swipe` 对普通元素优先发送 touch 序列；原生 `swiper` 在 DevTools 不执行组件默认行为时，回退到 automator 提供的 `swipeTo` 组件动作，仍不得用 `eval/setData` 改写业务状态。该边界与 [uni-app 自动化 API 对 `swipeTo` 的组件限定](https://uniapp.dcloud.net.cn/worktile/auto/api.html#element-swipeto) 一致。automation 启用后默认立即探测 live 端口，未就绪才在总 deadline 内轮询；`doctor --wait` 只限制状态轮询窗口，`--wait 0` 表示单次探测。这一取舍参考 agent-browser 的 [核心 snapshot/action 循环](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/SKILL.md) 与 [条件等待命令](https://github.com/vercel-labs/agent-browser/blob/main/skill-data/core/references/commands.md)，但保留微信开发者工具冷启动所需的独立长预算。
 
 ### 3.2 失败路径（产品）
 
@@ -90,11 +92,12 @@ open [ --project ] [ --session ]
 2. **页面结构可能变化后（点击后导航、列表刷新、弹层开关等）必须重新 `snapshot`，不得沿用旧号碰运气。**
 3. **路由变化后，旧页 `@e` 全部作废**（实现会 `Ref route mismatch`）。
 4. **收到 stale / unknown ref / selector 失效时：禁止重试同一旧 `@e`；重新 snapshot 再操作。**
-5. `--follow` 仅在显式请求时于 `goto/click/fill` 后生成一次新的 refs 摘要；默认操作输出保持低噪声。
+5. `--follow` 仅在显式请求时于 action 后生成一次新的 refs 摘要；默认操作输出保持低噪声。
 6. 普通按钮、表单控件点击后停留当前路由是正常成功；CLI 不得猜测“本应跳转”并输出登录/授权弹窗提示。确需验证导航时显式使用 `--await route-change` / `route:<path>`。
 7. **`@e` 仅在产生它的 session 内有效**；换 session 必须重新 snapshot。
 8. 默认 ASCII 图中的数字 = `@eN` 的编号 N；命令里仍写完整 `@eN`。文案以语义树为准，不以图内文字为准（图不渲染文案）。
 9. 同页存在多个 selector、文案都相同的控件时，每个 ref 必须解析到 snapshot 对应的 occurrence；带 id/data-sid 的同标签兄弟不得挤占通用 selector 的索引。
+10. 标准 checkbox/radio 的直接 element tap 若不会触发 group change，`click` 必须优先点击包含它的最小 label；不得只因底层 tap 返回成功就宣称状态已变化。
 
 ### 3.4 Snapshot 双通道
 
@@ -114,7 +117,7 @@ snapshot = 紧凑语义树（类型、文案、@eN、层级）+ 紧凑 ASCII 空
 微信原生 / Taro / uni-app
   → 上游各自生成标准微信小程序文件
   → 工程根 project.config.json 的 miniprogramRoot 指向原生产物
-  → open / inspect / snapshot / click / fill / goto / screenshot / close 使用同一契约
+  → open / inspect / snapshot / click / fill / back / scroll / swipe / longpress / goto / screenshot / close 使用同一契约
 ```
 
 - CLI 不检测 Taro/uni-app，也不增加框架专用参数或行为分支。
@@ -147,10 +150,13 @@ autoPort 不落 session 文件；成功可回显
 | 无法发现 project / session | 人话 + 可执行下一步（进入小程序目录或 `--project` / `--session`） |
 | `doctor` 仅连上 Tool endpoint、但 App runtime 未就绪 | `ok: false`，保留 `probe.connected: true` / `probe.appReady: false` 并给出下一步 |
 | 显式截图路径位于小程序项目内 | 截图仍执行，但返回可能触发重新编译/状态重置的 notice；默认路径仍放系统临时目录 |
+| 独立执行 `await change` | `CLI_USAGE_ERROR`；改为在 action 上使用 `--await change` |
+| `back` 当前页面栈只有一页 | 明确失败；需要特定页面时使用 `goto` |
 
 ## 5. Good / Base / Bad
 
 - **Good**：`open` → `snapshot` → `click @e3`（`@e3` 来自本轮输出）
+- **Good**：未知同页结果用 `click @e3 --await change --follow`；已知结果仍优先精确 selector/route
 - **Good**：click 导致跳转后先 `snapshot` 再点新 `@e`
 - **Good**：open 失败文本首屏可读（人话 + 短 raw 摘录）；JSON 仍有完整 `error.raw`
 - **Base**：同一语义树与顺序重复 snapshot，确定性生成相同 `@eN`
@@ -171,6 +177,7 @@ autoPort 不落 session 文件；成功可回显
   - `connectOrEnable({ allowEnable: false })` 非 live → 提示先 open
 - 若未来对输出字段做代码 enforcement，另开任务
 - 三框架公开 Demo：`tests/public-demo.test.cjs` 与 `tests/framework-demos.test.cjs` 固化共同路由、控件、重复列表、导航及合成数据边界；Taro/uni-app 另做显式构建和真实 DevTools gate
+- 真实交互与变化等待：`tests/runtime-actions.test.cjs` 覆盖优先 touch 的 swipe、原生 swiper 组件回退、页面/容器滚动、back 回退与 WXML change；真实 DevTools gate 验证公开 Demo 的实际状态变化
 
 ## 7. Wrong vs Correct
 

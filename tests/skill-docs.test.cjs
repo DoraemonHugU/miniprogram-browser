@@ -13,7 +13,7 @@ const { normalizeAwaitCondition } = require('../dist/lib/runtime.js')
 // Commands exposed by the CLI (top-level tokens from cli-help.ts cases + aliases).
 const CLI_COMMAND_TOKENS = [
   'open', 'connect', 'goto', 'snapshot', 'click', 'fill', 'get', 'app', 'doctor',
-  'status',
+  'back', 'scroll', 'swipe', 'longpress', 'status',
   'await', 'devtools', 'protocol', 'timeline', 'logs', 'exceptions', 'page-stack',
   'system-info', 'eval', 'native', 'call', 'wait', 'screenshot', 'session',
   'query', 'within', 'relaunch', 'path',
@@ -25,7 +25,7 @@ const CLI_COMMAND_TOKENS = [
 // Aliases (tap/input) are intentionally referenced via their primary command.
 const SHOULD_BE_DOCUMENTED = [
   'open', 'connect', 'goto', 'snapshot', 'click', 'fill', 'get', 'await',
-  'status',
+  'back', 'scroll', 'swipe', 'longpress', 'status',
   'app', 'doctor', 'devtools', 'protocol', 'timeline', 'logs', 'exceptions',
   'page-stack', 'system-info', 'eval', 'native', 'call', 'wait', 'screenshot',
   'session', 'query', 'within', 'relaunch', 'path',
@@ -36,7 +36,7 @@ const SHOULD_BE_DOCUMENTED = [
 const KNOWN_HIDDEN_FLAGS = new Set(['-h'])
 const DOCUMENTED_CONDITIONS = [
   'app-ready', 'stable', 'route:/pages/index/index', 'route-settled',
-  'route-change', 'visible:.page-root',
+  'route-change', 'visible:.page-root', 'change',
 ]
 
 function runCli(args) {

@@ -163,7 +163,7 @@ miniprogram-browser screenshot --mode annotate
 npx miniprogram-browser help
 ```
 
-仓库内提供三套只含合成数据、使用 `touristappid` 的公开回归项目。它们都提供 Catalog、Controls、Lists、Navigation 和 Detail 五条相同路由，CLI 不区分其上游框架：
+仓库内提供三套只含合成数据、使用 `touristappid` 的公开回归项目。它们都提供 Catalog、Controls、Lists、Navigation、Detail 和 Interaction 六条相同路由，CLI 不区分其上游框架：
 
 - `demo/public-demo`：微信原生源码，可直接打开。
 - `demo/taro-demo`：Taro React + TypeScript；先执行 `npm ci --prefix demo/taro-demo` 和 `npm run build:weapp --prefix demo/taro-demo`。
@@ -176,6 +176,9 @@ miniprogram-browser open --project <demo-project> --session <demo-session>
 miniprogram-browser app inspect --project <demo-project> --session <demo-session>
 miniprogram-browser snapshot --session <demo-session>
 miniprogram-browser goto pages/lists/index --session <demo-session> --follow
+miniprogram-browser goto pages/interaction/index --session <demo-session> --follow
+miniprogram-browser swipe <swiper-ref> left --session <demo-session> --await change --follow
+miniprogram-browser longpress <longpress-ref> --session <demo-session> --await change --follow
 miniprogram-browser screenshot --session <demo-session>
 miniprogram-browser close --session <demo-session>
 ```
@@ -246,7 +249,9 @@ miniprogram-browser await stable --session demo
 
 - 运行时语义快照与 `@eNN` refs
 - 多 session 并发；同一 session 串行；默认沿用活动 session 或 attach 同项目唯一 live runtime；多个不同 live runtime 且没有活动目标时要求 `--session`，不会按最新记录猜测；`--fresh` 是显式新 runtime 逃逸点
-- Agent 连续操作可在 `goto/click/fill` 后加 `--follow` 获取一次新的 refs 摘要；默认保持低噪声，不自动输出完整 Snapshot
+- Agent 连续操作可在 action 后加 `--follow` 获取一次新的 refs 摘要；默认保持低噪声，不自动输出完整 Snapshot
+- 必要真实交互：`back`、页面/容器 `scroll`、`swipe`、`longpress`；普通元素的 `swipe` 使用 touch，原生 `swiper` 必要时使用 automator 的组件动作，均不用 `eval/setData` 冒充结果
+- 未知同页结果可用 action 专属 `--await change`；它观察编译后 WXML/route/page-stack 的第一次变化，不依赖原生、Taro 或 uni-app 生命周期
 - **session 与 runtime 解耦**：session 存 route/refs 等用户上下文，不固化 `autoPort`；连接端口由 runtime 池管理，后续命令自动回绑
 - 默认项目级 session 管理；`session list --all` 是显式全局查看入口
 - 共享同一 `autoPort` 的命令通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime
@@ -308,7 +313,7 @@ miniprogram-browser goto /pages/preferences/index --session demo \
 miniprogram-browser screenshot --session demo --await visible:.page-root
 ```
 
-`goto/click/fill/native` 不再默认插入固定 sleep；能描述目标时直接等待目标，完成后立即继续。只有页面没有可观察条件、且 DevTools 确实需要缓冲时，才显式使用 `wait <ms>`。
+action 不再默认插入固定 sleep；能描述目标时直接等待 `route:` / `visible:` / `hidden:`，无法预知 selector 的同页更新使用 `--await change`。只有没有可观察状态、且 DevTools 确实需要缓冲时，才显式使用 `wait <ms>`。
 
 ```bash
 # 完整暂停 1500ms
@@ -320,7 +325,9 @@ miniprogram-browser click @e1 --session demo --wait 500
 
 `--timeout <ms>` 只是 `await / --await` 的最长等待时间，条件满足会提前返回；它不是固定 sleep。
 
-动作期间的 Toast、loading 等瞬时变化目前不会自动留档；动作级变化证据仍是研究候选，边界与验收标准见 [Roadmap](ROADMAP.md#research-candidate动作级瞬时变化证据)。
+`--await change` 必须挂在 `click/fill/scroll/swipe/longpress` 等动作上，因为它需要动作前基线；独立 `await change` 会明确报错。`stable` 只表示 route/page-stack 暂时安静且视图可读取，不代表业务数据一定完成。
+
+`change` 能在采样时捕捉第一次 WXML 变化，但不会把动作期间的 Toast、loading 等连续状态自动留档；动作级变化证据仍是研究候选，边界与验收标准见 [Roadmap](ROADMAP.md#research-candidate动作级瞬时变化证据)。
 
 更稳妥的方式是：
 
