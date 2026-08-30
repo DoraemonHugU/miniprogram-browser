@@ -6,6 +6,7 @@ const {
   detectWsl,
   detectDevtoolsHost,
   resolveEnvironment,
+  usesWindowsDevtoolsBundle,
 } = require('../dist/lib/platform.js')
 
 test('detectRuntimeOS 包 process.platform', () => {
@@ -102,4 +103,18 @@ test('resolveEnvironment: WSL = linux + win32 + needsBridge（WSL_DISTRO_NAME �
     isWsl: true,
     needsBridge: true,
   })
+})
+
+test('usesWindowsDevtoolsBundle 只接受 Windows 本机和真实 WSL 桥接', () => {
+  assert.equal(usesWindowsDevtoolsBundle(resolveEnvironment({}, { runtime: 'win32' })), true)
+  assert.equal(usesWindowsDevtoolsBundle(resolveEnvironment({}, { runtime: 'darwin' })), false)
+  assert.equal(usesWindowsDevtoolsBundle(resolveEnvironment({}, {
+    runtime: 'linux',
+    readProcVersion: '5.15.0-ubuntu-generic',
+    wslDistroName: '',
+  })), false)
+  assert.equal(usesWindowsDevtoolsBundle(resolveEnvironment({}, {
+    runtime: 'linux',
+    readProcVersion: '5.15.0-microsoft-standard-WSL2',
+  })), true)
 })

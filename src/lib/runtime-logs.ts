@@ -4,7 +4,7 @@ const { readFile, readdir, stat } = require('node:fs/promises')
 const { existsSync, readFileSync } = require('node:fs')
 const { spawnSync } = require('node:child_process')
 
-const { resolveEnvironment } = require('./platform')
+const { resolveEnvironment, usesWindowsDevtoolsBundle } = require('./platform')
 const { normalizeWindowsPathForCompare, toWindowsPath, runWindowsCommand } = require('./runtime-windows')
 
 function windowsPathToWslPath(inputPath: string): string {
@@ -38,7 +38,8 @@ function resolveDevtoolsLogRoot(config: Record<string, unknown>, options: Record
   }
 
   const cliDirectory = path.dirname(cliPath)
-  const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
+  const env = resolveEnvironment(config, options)
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(env)
   if (hasWindowsBundle) {
     const installPath = (options.toWindowsPath as (s: string) => string || toWindowsPath)(cliDirectory)
     const productHash = createHash('md5').update(installPath).digest('hex')
@@ -47,7 +48,7 @@ function resolveDevtoolsLogRoot(config: Record<string, unknown>, options: Record
       throw new Error('Unable to resolve Windows LOCALAPPDATA for DevTools logs.')
     }
     const logRootWin = path.win32.join(localAppData as string, '微信开发者工具', 'User Data', productHash, 'WeappLog')
-    const logRoot = process.platform === 'win32' ? logRootWin : (options.windowsPathToWslPath as (s: string) => string || windowsPathToWslPath)(logRootWin as string)
+    const logRoot = env.runtime === 'win32' ? logRootWin : (options.windowsPathToWslPath as (s: string) => string || windowsPathToWslPath)(logRootWin as string)
     if (!logRoot) {
       throw new Error(`Unable to convert DevTools log path: ${logRootWin}`)
     }
@@ -61,7 +62,6 @@ function resolveDevtoolsLogRoot(config: Record<string, unknown>, options: Record
     }
   }
 
-  const env = resolveEnvironment(config, options)
   if (env.runtime === 'darwin') {
     const installPath = path.dirname(cliPath)
     const productHash = createHash('md5').update(installPath).digest('hex')

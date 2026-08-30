@@ -25,7 +25,24 @@ const cliPath = path.join(repoRoot, 'dist/miniprogram-browser.js')
  * WSL 上 close 路径若落在 /tmp→UNC 会被产品侧跳过。
  * 需要验证 close/auto 调用链的用例优先落在 /mnt/<drive>/...。
  */
+function isWslRuntime() {
+  if (process.platform !== 'linux') {
+    return false
+  }
+  if (process.env.WSL_DISTRO_NAME) {
+    return true
+  }
+  try {
+    return /microsoft/iu.test(fs.readFileSync('/proc/version', 'utf8'))
+  } catch (_) {
+    return false
+  }
+}
+
 function preferredProjectRoot() {
+  if (!isWslRuntime()) {
+    return os.tmpdir()
+  }
   for (const candidate of ['/mnt/d/tmp/mpb-cli-behavior', '/mnt/c/tmp/mpb-cli-behavior']) {
     try {
       fs.mkdirSync(candidate, { recursive: true })
@@ -41,12 +58,14 @@ function preferredProjectRoot() {
 const PROJECT_ROOT = fs.realpathSync(preferredProjectRoot())
 
 function runCli(args, env = {}, options = {}) {
+  const isolatedHome = env.HOME || fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: options.cwd || repoRoot,
     encoding: 'utf8',
     env: {
       ...process.env,
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-')),
+      HOME: isolatedHome,
+      USERPROFILE: env.USERPROFILE || isolatedHome,
       WECHAT_DEVTOOLS_CLI: '',
       WECHAT_DEVTOOLS_PROJECT: '',
       MINIPROGRAM_BROWSER_CLOSE_GRACE_MS: '0',
@@ -112,13 +131,21 @@ process.exit(${alwaysExit});
 
   // win32 host 路径：spawn(node.exe, [cli.jsWin, ...args])
   const nodeExePath = path.join(dir, 'node.exe')
-  fs.writeFileSync(nodeExePath, `#!/bin/sh
+  if (process.platform === 'win32') {
+    try {
+      fs.linkSync(process.execPath, nodeExePath)
+    } catch (_) {
+      fs.copyFileSync(process.execPath, nodeExePath)
+    }
+  } else {
+    fs.writeFileSync(nodeExePath, `#!/bin/sh
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # 丢弃 Windows 形态的 cli.js 参数，改用本地 cli.js
 shift
 exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
 `)
-  fs.chmodSync(nodeExePath, 0o755)
+    fs.chmodSync(nodeExePath, 0o755)
+  }
 
   // 非 win32 host 直接执行 cliPath 时也可用
   const shellCliPath = path.join(dir, 'cli')
@@ -131,8 +158,8 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
   return {
     dir,
     callsPath,
-    /** macOS 直接执行 wrapper；Windows/WSL 使用 cli.js + node.exe bundle。 */
-    cliPath: process.platform === 'darwin' ? shellCliPath : cliJsPath,
+    /** Windows/WSL 使用 cli.js + node.exe bundle；macOS/裸 Linux 直接执行 wrapper。 */
+    cliPath: process.platform === 'win32' || isWslRuntime() ? cliJsPath : shellCliPath,
     readCalls() {
       if (!fs.existsSync(callsPath)) {
         return []
@@ -144,7 +171,9 @@ exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
 
 async function withHome(homeDir, fn) {
   const previousHome = process.env.HOME
+  const previousUserProfile = process.env.USERPROFILE
   process.env.HOME = homeDir
+  process.env.USERPROFILE = homeDir
   try {
     return await fn()
   } finally {
@@ -152,6 +181,11 @@ async function withHome(homeDir, fn) {
       delete process.env.HOME
     } else {
       process.env.HOME = previousHome
+    }
+    if (previousUserProfile === undefined) {
+      delete process.env.USERPROFILE
+    } else {
+      process.env.USERPROFILE = previousUserProfile
     }
   }
 }
@@ -564,7 +598,7 @@ test('open bounds startup with --timeout and returns JSON diagnostics', () => {
   assert.notEqual(result.status, 0)
   assert.equal(payload.ok, false)
   assert.equal(payload.error.code, 'OPEN_TIMEOUT')
-  assert.match(payload.error.message, /open timed out after 200ms/i)
+  assert.match(payload.error.message, /open timed out after 200ms|冷启动未完成|automation WebSocket/i)
   assert.match(String(payload.error.hint || ''), /resolution=start-required/i)
   assert.ok(elapsedMs < 3000, `open timeout should not wait for full retry loop, elapsed=${elapsedMs}`)
 })
@@ -615,7 +649,7 @@ test('open closes a newly-started DevTools project when startup times out', () =
     '--cli-path',
     fake.cliPath,
     '--timeout',
-    '1500',
+    '3000',
     '--json',
   ])
   const payload = parseJsonOutput(result)

@@ -2,7 +2,7 @@ const { existsSync, statSync, constants, accessSync } = require('node:fs')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
-const { resolveEnvironment } = require('./platform')
+const { resolveEnvironment, usesWindowsDevtoolsBundle } = require('./platform')
 const {
   toWindowsPath,
   isWslUncPath,
@@ -92,7 +92,7 @@ function resolveDevtoolsProjectPath(config: AnyRecord, options: AnyRecord = {}):
     return ''
   }
 
-  const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
   let devtoolsProjectPath = sourcePath
 
   if (hasWindowsBundle) {
@@ -120,7 +120,7 @@ function buildAutomationArgs(config: AnyRecord, options: AnyRecord = {}): { hasW
   const env = resolveEnvironment(config, options)
   // 由 env 推导 windows 包标志，与 runtime 单源一致（WSL 恒为 win32 桥接），
   // 不再依赖 cliPath 是否 .bat 的脆弱判断。
-  const hasWindowsBundle = env.devtoolsHost === 'win32'
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(env)
   let projectStrategy = 'direct'
   if (explicitProjectPath) {
     projectStrategy = 'explicit'
@@ -240,7 +240,7 @@ function validateAutomationCliConfig(config: AnyRecord, options: AnyRecord = {})
     throw error
   }
 
-  const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
   if (hasWindowsBundle) {
     const cliDirectory = path.dirname(cliPath)
     const nodeExePath = path.join(cliDirectory, 'node.exe')
@@ -262,7 +262,7 @@ function validateAutomationCliConfig(config: AnyRecord, options: AnyRecord = {})
 function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = {}): AnyRecord {
   validateAutomationCliConfig(config, options)
   const cliDirectory = path.dirname(String(config.cliPath || ''))
-  const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
   const timeoutMs = Number(options.timeoutMs || 30000)
   const converter = options.toWindowsPath || toWindowsPath
 
@@ -339,7 +339,7 @@ function resolveDevtoolsProjectPathForClose(config: AnyRecord, options: AnyRecor
     return ''
   }
 
-  const hasWindowsBundle = resolveEnvironment(config, options).devtoolsHost === 'win32'
+  const hasWindowsBundle = usesWindowsDevtoolsBundle(resolveEnvironment(config, options))
   if (!hasWindowsBundle) {
     return projectPath
   }

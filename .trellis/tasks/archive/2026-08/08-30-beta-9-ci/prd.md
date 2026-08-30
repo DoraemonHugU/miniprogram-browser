@@ -32,7 +32,7 @@
 
 ## Verification Result
 
-- Node.js 22.23.2 / macOS arm64：347 个 Node 测试、19 个图像处理测试、strict typecheck、lint、pack 全部通过。
+- Node.js 22.23.2 / macOS arm64：348 个 Node 测试、19 个图像处理测试、strict typecheck、lint、pack 全部通过。
 - Node.js 22.23.2 / npm 10 与 Node.js 24.20.0 / npm 11 的 tarball 全新安装、依赖解析和 CLI 启动门禁通过。
 - 全新消费者项目的 tarball 在线审计为 0 critical、0 high、5 moderate，不再重现旧 Jimp 的 high/critical 项。
 - Taro `build:weapp`、uni-app `build:mp-weixin` 和 `type-check` 通过。

@@ -80,9 +80,15 @@ function resolveEnvironment(config: AnyRecord, options: AnyRecord = {}): Environ
   }
 }
 
+/** Windows 本机或真实 WSL 桥接才使用 Windows DevTools bundle。裸 Linux 不做路径翻译。 */
+function usesWindowsDevtoolsBundle(environment: Environment): boolean {
+  return environment.runtime === 'win32' || environment.needsBridge
+}
+
 module.exports = {
   detectRuntimeOS,
   detectWsl,
   detectDevtoolsHost,
   resolveEnvironment,
+  usesWindowsDevtoolsBundle,
 }

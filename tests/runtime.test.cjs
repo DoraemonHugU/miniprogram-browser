@@ -1395,7 +1395,9 @@ test('validateAutomationCliConfig rejects missing and invalid CLI paths clearly'
   )
 })
 
-test('enableAutomation pre-opens the project and reuses the resolved DevTools port for auto', () => {
+test('enableAutomation pre-opens the project and reuses the resolved DevTools port for auto', {
+  skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
+}, () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-cli-'))
   const callsPath = path.join(tempDir, 'calls.log')
   const fakeCliPath = path.join(tempDir, 'cli')
@@ -1437,7 +1439,9 @@ test('enableAutomation pre-opens the project and reuses the resolved DevTools po
   assert.match(calls[1], /^auto --project /u)
 })
 
-test('enableAutomation skips open by default and runs auto directly', () => {
+test('enableAutomation skips open by default and runs auto directly', {
+  skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
+}, () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-cli-'))
   const callsPath = path.join(tempDir, 'calls.log')
   const fakeCliPath = path.join(tempDir, 'cli')
@@ -1474,18 +1478,26 @@ test('enableAutomation runs Windows DevTools bundle from the bundle directory', 
   const cliJsPath = path.join(tempDir, 'cli.js')
   const nodeExePath = path.join(tempDir, 'node.exe')
   fs.writeFileSync(cliBatPath, '')
-  fs.writeFileSync(cliJsPath, '')
-  fs.writeFileSync(nodeExePath, [
-    '#!/bin/sh',
-    `pwd > ${JSON.stringify(cwdPath)}`,
-    'if [ "$2" = "open" ]; then',
-    '  echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
-    '  exit 0',
-    'fi',
-    'echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
-    'echo "[info] ws connect 38539 abc def"',
-  ].join('\n'))
-  fs.chmodSync(nodeExePath, 0o755)
+  fs.writeFileSync(cliJsPath, `
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(cwdPath)}, process.cwd());
+process.stdout.write('✔ IDE server has started, listening on http://127.0.0.1:38596\\n');
+if (process.argv[2] !== 'open') process.stdout.write('[info] ws connect 38539 abc def\\n');
+`)
+  if (process.platform === 'win32') {
+    try {
+      fs.linkSync(process.execPath, nodeExePath)
+    } catch (_) {
+      fs.copyFileSync(process.execPath, nodeExePath)
+    }
+  } else {
+    fs.writeFileSync(nodeExePath, `#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+shift
+exec ${JSON.stringify(process.execPath)} "$DIR/cli.js" "$@"
+`)
+    fs.chmodSync(nodeExePath, 0o755)
+  }
 
   enableAutomation({
     cliPath: cliBatPath,
@@ -1523,7 +1535,9 @@ test('detectAutomationCliProgressTimeout recognizes timed out auto startup after
   })
 })
 
-test('closeDevtoolsProject closes the recorded DevTools project path', () => {
+test('closeDevtoolsProject closes the recorded DevTools project path', {
+  skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
+}, () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-close-cli-'))
   const callsPath = path.join(tempDir, 'calls.log')
   const fakeCliPath = path.join(tempDir, 'cli')
