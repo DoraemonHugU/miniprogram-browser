@@ -4,7 +4,8 @@ export default {
     'pages/controls/index',
     'pages/lists/index',
     'pages/navigation/index',
-    'pages/detail/index'
+    'pages/detail/index',
+    'pages/interaction/index'
   ],
   window: {
     navigationBarTitleText: 'Taro Public Demo',

@@ -14,6 +14,7 @@ const expectedPages = [
   'pages/lists/index',
   'pages/navigation/index',
   'pages/detail/index',
+  'pages/interaction/index',
 ]
 
 function read(relativePath) {
@@ -65,6 +66,18 @@ test('public demo controls and list pages expose observable interaction states',
   assert.match(listsJs, /setData\s*\(/u)
 })
 
+test('public demo interaction page covers scrolling, gestures, modal and transient state', () => {
+  const wxml = read('pages/interaction/index.wxml')
+  const source = read('pages/interaction/index.js')
+
+  assert.match(wxml, /<scroll-view\b[^>]*scroll-y/u)
+  assert.match(wxml, /<swiper\b/u)
+  assert.match(wxml, /bindlongpress=/u)
+  assert.match(source, /wx\.showModal\s*\(/u)
+  assert.match(source, /setTimeout\s*\(/u)
+  assert.match(wxml, /interaction-bottom/u)
+})
+
 test('public demo static route graph covers catalog navigation and detail back', async () => {
   const inspection = await inspectProjectStructure({
     projectPath: demoRoot,
@@ -78,6 +91,7 @@ test('public demo static route graph covers catalog navigation and detail back',
     'pages/lists/index',
     'pages/navigation/index',
     'pages/detail/index',
+    'pages/interaction/index',
   ]) {
     assert.ok(edges.some((edge) => edge.to === target), target)
   }
@@ -87,6 +101,6 @@ test('public demo static route graph covers catalog navigation and detail back',
 
 test('public demo catalog exposes standard navigator controls to automation', () => {
   const indexWxml = read('pages/index/index.wxml')
-  assert.equal((indexWxml.match(/<navigator\b/gu) || []).length, 3)
+  assert.equal((indexWxml.match(/<navigator\b/gu) || []).length, 4)
   assert.doesNotMatch(indexWxml, /bindtap=/u)
 })

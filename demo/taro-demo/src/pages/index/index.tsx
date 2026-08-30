@@ -21,6 +21,11 @@ export default function Index() {
         <Text className='card-description'>Navigate to a detail page and return</Text>
         <Text className='card-link'>Open page →</Text>
       </Navigator>
+      <Navigator className='card' id='catalog-card-interaction' url='/pages/interaction/index'>
+        <Text className='card-title'>Interaction</Text>
+        <Text className='card-description'>Scroll, swipe, long press, modal, and transient states</Text>
+        <Text className='card-link'>Open page →</Text>
+      </Navigator>
     </View>
   )
 }

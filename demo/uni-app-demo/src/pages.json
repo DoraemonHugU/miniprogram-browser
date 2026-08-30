@@ -29,6 +29,12 @@
       "style": {
         "navigationBarTitleText": "Detail"
       }
+    },
+    {
+      "path": "pages/interaction/index",
+      "style": {
+        "navigationBarTitleText": "Interaction"
+      }
     }
   ],
   "globalStyle": {

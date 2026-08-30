@@ -10,6 +10,7 @@ const expectedPages = [
   'pages/lists/index',
   'pages/navigation/index',
   'pages/detail/index',
+  'pages/interaction/index',
 ]
 
 function root(framework) {
@@ -122,6 +123,10 @@ test('framework demos expose the same controls, repeated lists and navigation be
   assert.match(taroSource, /Taro\.navigateTo\s*\(/u)
   assert.match(taroSource, /Taro\.navigateBack\s*\(/u)
   assert.match(read('taro', 'src/pages/index/index.tsx'), /<Navigator\b/u)
+  assert.match(taroSource, /<ScrollView\b/u)
+  assert.match(taroSource, /<Swiper\b/u)
+  assert.match(taroSource, /onLongPress=/u)
+  assert.match(taroSource, /Taro\.showModal\s*\(/u)
   assertSyntheticSource(taroSource)
 
   const uniSource = sourceTree('uni-app', ['.ts', '.vue'])
@@ -132,6 +137,10 @@ test('framework demos expose the same controls, repeated lists and navigation be
   assert.match(uniSource, /uni\.navigateTo\s*\(/u)
   assert.match(uniSource, /uni\.navigateBack\s*\(/u)
   assert.match(read('uni-app', 'src/pages/index/index.vue'), /<navigator\b/u)
+  assert.match(uniSource, /<scroll-view\b/u)
+  assert.match(uniSource, /<swiper\b/u)
+  assert.match(uniSource, /@longpress=/u)
+  assert.match(uniSource, /uni\.showModal\s*\(/u)
   assertSyntheticSource(uniSource)
 })
 
@@ -143,7 +152,7 @@ for (const framework of ['taro', 'uni-app']) {
       JSON.parse(fs.readFileSync(projectConfigPath, 'utf8')).miniprogramRoot,
       'app.json',
     ))
-  test(`${framework} compiled output satisfies the native five-page contract`, {
+  test(`${framework} compiled output satisfies the native six-page contract`, {
     skip: outputExists ? false : 'run the framework build first',
   }, () => {
     assertBuiltMiniProgram(framework)

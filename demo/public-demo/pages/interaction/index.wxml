@@ -1,0 +1,27 @@
+<view class="container">
+  <text class="title">Interaction</text>
+  <text class="hint">Synthetic controls for real scrolling, gestures, modal actions, and short-lived UI states.</text>
+  <text class="status" id="interaction-status">Status: {{status}}</text>
+
+  <text class="section-title">Scrollable container</text>
+  <scroll-view id="interaction-scroll" class="scroll-panel" scroll-y>
+    <view wx:for="{{scrollItems}}" wx:key="*this" class="scroll-item">{{item}}</view>
+  </scroll-view>
+
+  <text class="section-title">Swipe target</text>
+  <swiper id="interaction-swiper" class="swiper" indicator-dots bindchange="onSwiperChange">
+    <swiper-item><view class="slide slide-a">Synthetic slide 1</view></swiper-item>
+    <swiper-item><view class="slide slide-b">Synthetic slide 2</view></swiper-item>
+    <swiper-item><view class="slide slide-c">Synthetic slide 3</view></swiper-item>
+  </swiper>
+  <text class="status" id="interaction-swiper-status">Swiper index: {{swiperIndex}}</text>
+
+  <view id="interaction-longpress" class="gesture-target" bindlongpress="onLongpress">Long press target</view>
+  <button id="interaction-modal" bindtap="onOpenModal">Open modal</button>
+  <button id="interaction-transient" bindtap="onShowTransient">Show transient state</button>
+  <text class="transient" id="interaction-transient-status">{{transientStatus}}</text>
+
+  <view class="page-spacer">Page scroll test area</view>
+  <button id="interaction-bottom" bindtap="onBottomTap">Bottom page action</button>
+  <text class="status" id="interaction-bottom-status">Bottom taps: {{bottomTapCount}}</text>
+</view>
