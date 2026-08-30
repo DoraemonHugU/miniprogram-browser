@@ -755,6 +755,24 @@ test('summarizeDevtoolsStartupHints recognizes current DevTools login failure si
   assert.match(hints[0].message, /重新登录/)
 })
 
+test('DevTools code 10 with AppID-not-found text remains an AppID failure', () => {
+  const summaryLine = '[ERROR] { code: 10, message: Error: 不存在此 AppID 请检查后重新输入 }'
+  const hints = summarizeDevtoolsStartupHints({
+    files: [
+      {
+        path: '/tmp/logs/2026-08-31-latest.log',
+        lines: [summaryLine],
+      },
+    ],
+  })
+
+  assert.deepEqual(hints.map((item) => item.code), ['appid-not-found'])
+  assert.deepEqual(classifyOpenFailureFromStartupHints(hints, { summaryLine }), {
+    code: 'APPID_MISSING',
+    hint: 'devtoolsLog=appid-not-found',
+  })
+})
+
 test('classifyOpenFailureFromStartupHints prioritizes login failure over automation server noise', () => {
   const classification = classifyOpenFailureFromStartupHints([
     { code: 'login-expired', sample: '[ERROR] errcode= 41001 需要重新登录,access_token missing' },

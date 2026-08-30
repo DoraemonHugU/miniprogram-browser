@@ -171,6 +171,8 @@ await withMiniProgram(state, task) // allowEnable 默认 false
 ### 3.1.3 DevTools raw 分类与启动 hints
 
 - `Fetching AppID () permissions` **不是** AppID 失败信号；成功 auto 也会打印。真失败看 `41002` / `appid missing` 等。
+- 裸 `code: 10` 不作为登录失败判据；必须结合原文区分 `INVALID_LOGIN` / `需要重新登录` 与 `不存在此 AppID`。
+- GUI 游客模式、Tool endpoint、App runtime 是三层状态。`touristappid` 只约束公开测试数据，不保证免登录 automation；仅 Tool 可连时不得订阅会触发 `App.enableLog` 的 App 级事件，也不得宣称页面命令可用。
 - open 失败 diagnostics 的 WeappLog hints 应 **时间过滤**（默认近 10 分钟 mtime），避免陈旧 41002 挂到本次失败。
 
 ### 3.2 持久化过滤

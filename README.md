@@ -279,12 +279,13 @@ miniprogram-browser await stable --session demo
 
 ## 已知边界
 
-- 必须已登录微信开发者工具；登录 token 过期时无法启用自动化（无游客模式绕过）。失败时会给出人话说明，并保留 DevTools 原始错误
+- 完整 App automation 需要微信开发者工具处于可用登录态；GUI 游客模式能打开公开项目，不等于官方 CLI 已建立 App runtime。公开 Demo 使用 `touristappid` 是为了隔离生产身份和数据，不是登录绕过。失败时会区分登录与 AppID 原因，并保留 DevTools 原始错误
 - fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` / `devtools logs` 判断是否真的失败
 - 如果 fresh 启动阶段已经看到页面显示，但 `open` 仍未成功，重跑同一个不带 `--fresh` 的 `open`，再按需要 `await app-ready` / `await stable`；不要立刻再次 `--fresh`
 - `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳；若同时存在多个 live runtime，先用 `session list` 再显式传 `--session <name>`
 - 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工已打开的实例建议先 `doctor --project <path> --devtools-port <port>`
 - 如果 fresh 启动已经显示 `Using AppID: ...`，但后续仍连不上 automation，这通常不是路径或 AppID 问题，而是 DevTools 自身的 `cli server` / 编译链路仍未起来
+- DevTools CLI 的裸 `code: 10` 不能单独判断原因：`需要重新登录` / `INVALID_LOGIN` 属于登录问题，`不存在此 AppID` 属于 AppID 打开失败；以同一条原始错误文本为准
 - 如果真实 `screenshot` 偶发超时，优先切到 `screenshot --mode layout` 或默认 `snapshot` 的 ASCII 图；不要把 `close/open` 或重启 DevTools 当默认修复手段
 - 某些自定义组件在 automator 运行时里不透明，语义增强不能 100% 覆盖
 - 当前更适合定位为 **beta**，不建议直接宣称为稳定版 `1.0`

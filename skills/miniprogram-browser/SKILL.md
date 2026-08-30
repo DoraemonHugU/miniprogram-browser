@@ -21,7 +21,7 @@ npx miniprogram-browser ...
 
 - `--project` 指向当前系统可读的小程序项目根目录；当前目录或同 Git 工作树能唯一发现项目时可以省略
 - 传给微信开发者工具的项目路径由 CLI 按平台自动处理（macOS/Windows 通常可直接用；WSL 绝对路径统一交给系统 `wslpath` 转换，支持自定义 automount root；Linux 家目录转换成 UNC 后若 DevTools 不接受，再用 `--devtools-project` / `--project-map`）
-- 必须已登录微信开发者工具；登录过期时无法自动化，错误里会保留开发者工具侧的原始信息
+- 完整 App automation 需要微信开发者工具处于可用登录态；GUI 游客模式能打开公开项目，不等于官方 CLI 已建立 App runtime。错误里会保留开发者工具侧的原始信息
 - 它不是浏览器 DOM 自动化，部分自定义组件在运行时里可能不透明
 
 不要用它做上传、预览、发布、CI 打包；那属于 `miniprogram-ci`。
@@ -120,6 +120,8 @@ export WECHAT_DEVTOOLS_CLI=/mnt/c/path/to/wechat-devtools/cli.bat
 - `demo/uni-app-demo`：进入目录后依次执行 `npm ci`、`npm run build:mp-weixin`。
 
 三套项目编译后都提供同一组六条路由（含 Interaction），CLI 旅程完全相同；不要增加框架识别或框架专用命令。下面的 `<demo-project>` 和 `<demo-session>` 必须替换为本次公开 Demo 的路径与独立 session：
+
+`touristappid` 只用于保证公开 Demo 不携带生产身份或数据，不是 DevTools 登录绕过。门禁必须同时确认 Tool endpoint 和 App runtime ready；仅看到 GUI 游客模式或 `✔ auto` 不能判定可执行 `path` / `snapshot`。
 
 ```bash
 miniprogram-browser open --project <demo-project> --session <demo-session>
@@ -329,10 +331,12 @@ miniprogram-browser open --session agent-task-a --fresh
 
 不要假设一定有固定错误码字段；以可读说明 + 原始日志为准。
 
+DevTools 的裸 `code: 10` 不能独立决定原因：`INVALID_LOGIN` / `需要重新登录` 是登录失败，`不存在此 AppID` 是 AppID 打开失败。GUI 游客模式、Tool endpoint 可连、App runtime ready 是三层状态；只有最后一层满足后才能执行页面命令。
+
 **冷启动 vs 热启动（体验心智）**：
 
 - 热启动：已有 live automation → 直接连（快）
-- 冷启动：Windows/WSL 可直接消费的盘符路径会自动执行 `open → auto`；macOS、WSL UNC 等路径走平台适用的 `auto`，随后等端口 live 再连接
+- 冷启动：Windows/WSL 可直接消费的盘符路径会自动执行 `open → auto`；macOS、WSL UNC 等路径直接执行平台适用的 `auto`，随后等端口 live 再连接。这是平台启动时序差异，不代表游客模式在某个平台获得额外 automation 权限
 - 冷启动超时：CLI 会**自动**在「本 port 已 live / 同项目其它 live」时自愈重连，多数情况**不必**人再 open 一次
 - 自动救援只使用本次申请的端口或 runtime 池中明确属于同项目的端口；不会因为本机另一个 automation 端口可连就跨项目附着
 - 仍失败时再：加大 `--timeout` 重试同一 open；**不要立刻 `--fresh`**；最后才 `devtools logs` / 重启开发者工具
@@ -501,7 +505,7 @@ miniprogram-browser app inspect --all
 - 误以为 `open` 成功就等于已在目标页；应 `path` / `app inspect` / `snapshot` 确认
 - 误以为总能猜中项目目录；发现失败时要显式 `--project`
 - 误以为 WSL 里 `--project` 可以写 `P:\...`；应写 Linux 可读路径，必要时用 `--devtools-project` / `--project-map`
-- 误以为登录过期仍能自动化；需在开发者工具重新登录
+- 误以为 GUI 游客模式可用或 Tool endpoint 可连，就等于 App runtime 已可自动化；完整页面命令仍需 App runtime ready
 - 误以为 `Page.getElements` 超时必须换真实 AppID；先看 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE` 与原始协议错误，公开 Demo 继续使用 `touristappid`
 - 误以为必须每次手写端口；日常不用管，成功输出里的端口仅供确认与排障
 - 误以为 `@eN` 永久有效或跨页/跨 session 仍可用
