@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/cli/product-contracts.md", "reason": "保持 CLI 稳定面、@e 生命周期与 Skill 同步"}
+{"file": ".trellis/spec/cli/platform-detection.md", "reason": "约束 macOS、Windows 与 WSL 平台信号注入"}
+{"file": ".trellis/spec/cli/session-contracts.md", "reason": "保持 session identity、runtime 复用和清理语义"}
+{"file": ".trellis/spec/cli/screenshot-contracts.md", "reason": "保持截图默认模式、路径与 ref overlay 契约"}
+{"file": ".trellis/spec/cli/ascii-map-contracts.md", "reason": "修复重复 selector 几何时保持 ASCII map 契约"}
