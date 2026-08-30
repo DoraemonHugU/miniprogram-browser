@@ -41,6 +41,7 @@ const {
   validateAutomationCliConfig,
   parseResolvedIdePort,
   enableAutomation,
+  shouldOpenProjectBeforeAutomation,
   closeDevtoolsProject,
   callWxMethod,
   changeMiniProgramRoute,
@@ -59,6 +60,7 @@ const {
   waitForMiniProgramStable,
   extractLogSummary,
 } = require('../dist/lib/runtime.js')
+const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
 
 function createState() {
   return {
@@ -381,6 +383,55 @@ test('confirmRouteAfterAction requires stable expected route matches when reques
   assert.equal(result.path, 'pages/preferences/index')
   assert.equal(result.expectedMatched, true)
   assert.equal(currentPageCalls, 5)
+})
+
+test('readRuntimeTree reports an unavailable render automation channel instead of hanging', async () => {
+  const page = {
+    path: 'pages/index/index',
+    async $$() {
+      return await new Promise(() => {})
+    },
+  }
+
+  await assert.rejects(
+    readRuntimeTree(page, { queryTimeoutMs: 5 }),
+    (error) => {
+      assert.equal(error.code, 'DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE')
+      assert.match(error.message, /页面元素接口没有响应/u)
+      assert.match(error.raw, /Page\.getElements\(view\).*timed out/u)
+      assert.match(error.hint, /无需替换为生产 AppID/u)
+      return true
+    },
+  )
+})
+
+test('readRuntimeTree reports a hanging Element.getWXML channel', async () => {
+  const page = {
+    path: 'pages/index/index',
+    async $$(selector) {
+      if (selector !== 'view') {
+        return []
+      }
+      return [{
+        tagName: 'view',
+        async outerWxml() {
+          return await new Promise(() => {})
+        },
+        async text() {
+          return 'Ready'
+        },
+      }]
+    },
+  }
+
+  await assert.rejects(
+    readRuntimeTree(page, { elementTimeoutMs: 5 }),
+    (error) => {
+      assert.equal(error.code, 'DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE')
+      assert.match(error.raw, /Element\.getWXML\(view:0\).*timed out/u)
+      return true
+    },
+  )
 })
 
 test('readRuntimeTree rebuilds nested structure from runtime outerWxml', async () => {
@@ -1399,7 +1450,7 @@ test('validateAutomationCliConfig rejects missing and invalid CLI paths clearly'
   )
 })
 
-test('enableAutomation pre-opens the project and reuses the resolved DevTools port for auto', {
+test('enableAutomation pre-opens the project and records the resolved DevTools port without forcing auto', {
   skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
 }, () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-cli-'))
@@ -1441,6 +1492,7 @@ test('enableAutomation pre-opens the project and reuses the resolved DevTools po
   assert.doesNotMatch(calls[0], /--debug/u)
   assert.doesNotMatch(calls[0], /--port/u)
   assert.match(calls[1], /^auto --project /u)
+  assert.doesNotMatch(calls[1], /--port/u)
 })
 
 test('enableAutomation skips open by default and runs auto directly', {
@@ -1473,6 +1525,84 @@ test('enableAutomation skips open by default and runs auto directly', {
   assert.equal(config.devtoolsPort, '38597')
   assert.equal(calls.length, 1)
   assert.match(calls[0], /^auto --project /u)
+})
+
+test('toWindowsPath delegates Linux paths to official wslpath conversion', () => {
+  const calls = []
+  const converted = toWindowsPath('/custom-root/f/work/demo', {
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options })
+      return {
+        status: 0,
+        signal: null,
+        output: [],
+        pid: 1,
+        stdout: 'F:\\work\\demo\r\n',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(converted, 'F:\\work\\demo')
+  assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [
+    { command: 'wslpath', args: ['-w', '/custom-root/f/work/demo'] },
+  ])
+})
+
+test('toWindowsPath keeps the original wslpath error signal', () => {
+  assert.throws(
+    () => toWindowsPath('/custom-root/f/work/demo', {
+      spawnSync() {
+        return {
+          status: 1,
+          signal: null,
+          output: [],
+          pid: 1,
+          stdout: '',
+          stderr: 'wslpath: /custom-root/f/work/demo: No such file or directory',
+        }
+      },
+    }),
+    /No such file or directory/i,
+  )
+})
+
+test('Windows and WSL drive paths pre-open DevTools before enabling automation', () => {
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: '/custom-root/f/work/demo',
+    autoPort: '9421',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath() {
+      return 'F:\\work\\demo'
+    },
+  }), true)
+
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: 'F:\\work\\demo',
+    autoPort: '9421',
+  }, {
+    runtime: 'win32',
+  }), true)
+})
+
+test('WSL UNC and macOS paths do not use the Windows pre-open sequence', () => {
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: '/home/developer/work/demo',
+    autoPort: '9421',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath() {
+      return '\\\\wsl.localhost\\Ubuntu\\home\\developer\\work\\demo'
+    },
+  }), false)
+
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: '/Users/developer/work/demo',
+    autoPort: '9421',
+  }, {
+    runtime: 'darwin',
+  }), false)
 })
 
 test('enableAutomation runs Windows DevTools bundle from the bundle directory', () => {
@@ -1633,6 +1763,69 @@ test('connectOrEnable passes its remaining timeout budget to enableAutomation', 
   assert.ok(enableOptions.timeoutMs > 0 && enableOptions.timeoutMs <= 250, enableOptions)
 })
 
+test('connectOrEnable applies the platform pre-open decision to enableAutomation', async () => {
+  let enableOptions = null
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    timeoutMs: 250,
+  }, {
+    async connect() {
+      return {
+        ok: true,
+        async send() { return {} },
+      }
+    },
+    enable(_config, options) {
+      enableOptions = options
+      return {}
+    },
+    shouldOpenFirst() {
+      return true
+    },
+    async isLive() { return true },
+    async sleepFn() {},
+  })
+
+  assert.ok(result.ok)
+  assert.equal(enableOptions.openFirst, true)
+})
+
+test('connectOrEnable gives WSL open-first startup a quiet window before live probes', async () => {
+  const sleeps = []
+  let liveChecks = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    ...WSL_TEST_OPTIONS,
+    allowEnable: true,
+    forceEnable: true,
+    timeoutMs: 12000,
+  }, {
+    async connect() {
+      return {
+        ok: true,
+        async send() { return {} },
+      }
+    },
+    enable() {
+      return { projectOpened: true }
+    },
+    shouldOpenFirst() {
+      return true
+    },
+    async isLive() {
+      liveChecks += 1
+      return true
+    },
+    async sleepFn(ms) {
+      sleeps.push(ms)
+    },
+  })
+
+  assert.ok(result.ok)
+  assert.deepEqual(sleeps, [6000])
+  assert.equal(liveChecks, 1)
+})
+
 test('connectOrEnable waits for automation live after enable before connect', async () => {
   const calls = []
   let liveChecks = 0
@@ -1687,40 +1880,40 @@ test('discoverLiveAutomationPort finds first live port in range', async () => {
   assert.ok(probed.includes('9533'))
 })
 
-test('connectOrEnable discovers alternate live port when preferred autoPort never becomes live', async () => {
+test('connectOrEnable does not attach an unscoped alternate live port', async () => {
   const calls = []
   const config = { autoPort: '9517' }
-  // 直接测 discover 路径：wait-live 立即失败（无 min wait），再扫 port
-  const result = await connectOrEnable(config, {
-    allowEnable: true,
-    forceEnable: true,
-    connectTimeoutMs: 12000,
-    minWaitMs: 0,
-    onProgress(phase) {
-      calls.push(`progress:${phase}`)
-    },
-  }, {
-    async connect(cfg) {
-      calls.push(`connect:${cfg.autoPort}`)
-      return { ok: true, port: cfg.autoPort, async send() { return {} } }
-    },
-    enable() {
-      calls.push('enable')
-      return {}
-    },
-    async isLive(cfg) {
-      const port = String(cfg.autoPort || '')
-      calls.push(`live:${port}`)
-      return port === '9533'
-    },
-    // 跳过 minWait 的真实等待
-    async sleepFn() {},
-  })
+  await assert.rejects(
+    connectOrEnable(config, {
+      allowEnable: true,
+      forceEnable: true,
+      connectTimeoutMs: 30,
+      minWaitMs: 0,
+      onProgress(phase) {
+        calls.push(`progress:${phase}`)
+      },
+    }, {
+      async connect(cfg) {
+        calls.push(`connect:${cfg.autoPort}`)
+        return { ok: true, port: cfg.autoPort, async send() { return {} } }
+      },
+      enable() {
+        calls.push('enable')
+        return {}
+      },
+      async isLive(cfg) {
+        const port = String(cfg.autoPort || '')
+        calls.push(`live:${port}`)
+        return port === '9533'
+      },
+      async sleepFn() {},
+    }),
+    /autoPort=9517/u,
+  )
 
-  assert.ok(result.ok, `calls=${calls.join(',')}`)
-  assert.equal(String(config.autoPort), '9533')
-  assert.ok(calls.includes('progress:discover-port'), `calls=${calls.join(',')}`)
-  assert.ok(calls.includes('connect:9533'))
+  assert.equal(String(config.autoPort), '9517')
+  assert.ok(!calls.includes('progress:discover-port'), `calls=${calls.join(',')}`)
+  assert.ok(!calls.includes('connect:9533'))
 })
 
 test('connectOrEnable proceeds when port becomes live on final check after wait budget', async () => {
@@ -2103,6 +2296,43 @@ test('waitForMiniProgramStable resolves after route and page stack stay quiet', 
   assert.equal(result.viewReady, true)
   assert.ok(result.viewNodeCount > 0)
   assert.ok(currentPageCalls >= 1)
+})
+
+test('waitForMiniProgramStable uses a monotonic clock for its quiet window', async () => {
+  let monotonicMs = 0
+  const page = createInteractivePage(['Ready'])
+  page.path = 'pages/index/index'
+  const result = await waitForMiniProgramStable({
+    async currentPage() { return page },
+    async pageStack() { return [{ path: page.path, query: {} }] },
+  }, {
+    quietMs: 20,
+    timeoutMs: 100,
+    pollMs: 10,
+    now() { return monotonicMs },
+    async sleepFn(ms) { monotonicMs += ms },
+  })
+
+  assert.equal(result.ok, true)
+  assert.ok(result.stableMs >= 20)
+})
+
+test('waitForMiniProgramStable falls back when automator pageStack hangs', async () => {
+  const page = createInteractivePage(['Ready'])
+  page.path = 'pages/index/index'
+  const result = await waitForMiniProgramStable({
+    async currentPage() { return page },
+    async pageStack() { return await new Promise(() => {}) },
+  }, {
+    quietMs: 0,
+    timeoutMs: 100,
+    sampleTimeoutMs: 5,
+    viewProbeTimeoutMs: 20,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.path, 'pages/index/index')
+  assert.equal(result.pageStackDepth, 1)
 })
 
 test('waitForMiniProgramStable marks timeout as non-atomic when runtime keeps changing', async () => {

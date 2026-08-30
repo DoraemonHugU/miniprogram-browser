@@ -47,7 +47,7 @@ interface SessionState {
 
 const DEFAULT_OPEN_TIMEOUT_MS = 120000
 const DEFAULT_OPEN_STABLE_TIMEOUT_MS = 15000
-const DEFAULT_OPEN_AUTO_PORT_ATTEMPTS = 3
+const DEFAULT_OPEN_AUTO_PORT_ATTEMPTS = 4
 const DEVTOOLS_CLOSE_GRACE_MS = Math.max(0, Number(process.env.MINIPROGRAM_BROWSER_CLOSE_GRACE_MS || 3500))
 const TRANSIENT_DOCTOR_SESSION = '__doctor__'
 
@@ -171,7 +171,6 @@ const {
   collectDevtoolsLogs,
   closeDevtoolsProject,
   isAutomationEndpointLive,
-  discoverLiveAutomationPort,
   resolveTarget,
   resolveActionTarget,
   snapshotInteractive,
@@ -555,6 +554,13 @@ function resolveOpenTimeoutMs(options: AnyRecord) {
 function resolveOpenStableTimeoutMs(options: AnyRecord) {
   const openTimeoutMs = resolveOpenTimeoutMs(options)
   return Math.max(1000, Math.min(DEFAULT_OPEN_STABLE_TIMEOUT_MS, Math.floor(openTimeoutMs / 2)))
+}
+
+function resolveOpenAttemptBudget(openMode: string, totalTimeoutMs: number) {
+  if (openMode !== 'started') {
+    return Math.max(1, totalTimeoutMs)
+  }
+  return Math.max(1, Math.min(45000, totalTimeoutMs))
 }
 
 function createOpenTimeoutError(timeoutMs: number) {
@@ -1010,42 +1016,10 @@ async function tryHealOpenAfterStartFailure(state: SessionState, options: AnyRec
             emitOpenResult(attached, options)
             return attached
           } catch (_) {
-            // fall through to port scan
+            return null
           }
         }
       }
-    }
-  }
-
-  // 3) 扫描端口范围：auto 可能落在非指定 port
-  const discovered = await discoverLiveAutomationPort(state.config, {
-    preferredPort: String((state.config as AnyRecord).autoPort || ''),
-    timeoutMs: 600,
-    maxProbes: 35,
-  }).catch(() => '')
-  if (discovered) {
-    ;(state.config as AnyRecord).autoPort = discovered
-    try {
-      const connected = await withOpenTimeout(
-        () => connectOpenSession(state, options, {
-          mode: 'connected',
-          attachedTo: '',
-        }),
-        Math.min(30000, Math.max(8000, resolveOpenTimeoutMs(options))),
-      )
-      await ensureLiveRuntimeLaunch(state, {
-        route: connected.path || '',
-        autoPort: discovered,
-        devtoolsPort: connected.devtoolsPort || state.config.devtoolsPort,
-      })
-      await saveSessionState(state)
-      connected.rescuedFromStartFailure = true
-      connected.healedDiscoveredPort = true
-      connected.previousStartError = previousMessage
-      emitOpenResult(connected, options)
-      return connected
-    } catch (_) {
-      return null
     }
   }
 
@@ -1132,37 +1106,15 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
         return
       }
     }
-    // 池无 live 记录，但本机已有 automation 在监听（上次 auto 迟到/手工启用）
-    if (!String((state.config as AnyRecord).autoPort || '').trim()) {
-      const orphanPort = await discoverLiveAutomationPort(state.config, {
-        timeoutMs: remainingOpenMs(500),
-        maxProbes: 30,
-      }).catch(() => '')
-      if (orphanPort) {
-        ;(state.config as AnyRecord).autoPort = orphanPort
-        await saveSessionState(state)
-        const attached = await openSessionWithDiagnostics(state, options, {
-          mode: 'attached',
-          attachedTo: 'orphan-live',
-        })
-        await ensureLiveRuntimeLaunch(state, {
-          route: attached.path || '',
-          autoPort: attached.autoPort || orphanPort,
-          devtoolsPort: attached.devtoolsPort || state.config.devtoolsPort,
-        })
-        await saveSessionState(state)
-        emitOpenResult(attached, options)
-        return
-      }
-    }
   }
 
   const openMode = currentEndpointLive ? (state.runtimeAttached ? 'attached' : 'connected') : 'started'
   const attemptedAutoPorts: string[] = []
   let result
   let lastOpenError: AnyRecord | null = null
-  // 单次 auto 最多 25 秒；较短的用户预算不再人为切碎，避免进程刚启动就被杀掉。
-  const perAttemptBudget = Math.max(1, Math.min(25000, totalTimeoutMs))
+  // 已有 live runtime 时，连接+默认 stable 等待共享完整用户预算；只有真正冷启动
+  // 才分段重试，避免固定 25 秒把健康的 Windows/WSL attach 误判为启动失败。
+  const perAttemptBudget = resolveOpenAttemptBudget(openMode, totalTimeoutMs)
 
   for (let attempt = 1; attempt <= DEFAULT_OPEN_AUTO_PORT_ATTEMPTS; attempt += 1) {
     const remainingMs = Math.max(1, openDeadlineAt - Date.now())
@@ -1183,19 +1135,14 @@ async function handleOpenLocked(state: SessionState, options: AnyRecord) {
       if (attempt > 1) {
         emitProgress(`冷启动第 ${attempt}/${DEFAULT_OPEN_AUTO_PORT_ATTEMPTS} 次尝试（autoPort=${state.config.autoPort || '-'}）...`, options)
         await sleep(Math.min(3000, 1000 * attempt))
-        const latePort = await discoverLiveAutomationPort(state.config, {
-          preferredPort: String((state.config as AnyRecord).autoPort || ''),
-          timeoutMs: 400,
-          maxProbes: 50,
-        }).catch(() => '')
-        if (latePort) {
-          ;(state.config as AnyRecord).autoPort = latePort
+        const samePortBecameLive = await isStateAutoPortLive(state, 400)
+        if (samePortBecameLive) {
           result = await openSessionWithDiagnostics(state, options, {
             mode: 'connected',
             attachedTo: '',
           }, Math.min(attemptTimeoutMs, Math.max(1, openDeadlineAt - Date.now())))
           result.rescuedFromStartFailure = true
-          result.healedDiscoveredPort = true
+          result.healedSamePort = true
           result.openAttempt = attempt
           break
         }
@@ -1320,7 +1267,7 @@ function shouldRetryOpenWithAnotherAutoPort(state: SessionState, options: AnyRec
   if (code === 'WINDOWS_SOCKET_EXHAUSTED') {
     return false
   }
-  if (['DEVTOOLS_LOGIN_REQUIRED', 'DEVTOOLS_PLUGIN_MISSING'].includes(String(error.startupIssueCode || ''))) {
+  if (String(error.startupIssueCode || '') === 'DEVTOOLS_LOGIN_REQUIRED') {
     return false
   }
   // 冷启动：指定 port 未 live / 扫端口暂空 → 允许同一次 open 内换 port 再 auto
@@ -4265,6 +4212,7 @@ module.exports = {
   parseArgs,
   parseFocusRefs,
   normalizeOpenStableWaitError,
+  resolveOpenAttemptBudget,
   resolveOpenFailureNextAction,
   shouldRetryOpenWithAnotherAutoPort,
   enrichOpenFailure,

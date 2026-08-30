@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto')
 const net = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
+const { resolveEnvironment } = require('./platform')
 
 type AnyRecord = Record<string, unknown>
 
@@ -69,6 +70,7 @@ interface SessionConfig {
 
 const DEVTOOLS_PORT_RANGE = { start: 39085, end: 39185 }
 const AUTO_PORT_RANGE = { start: 9515, end: 9615 }
+const WSL_PREFERRED_AUTO_PORT = 9530
 const DEFAULT_MAX_INACTIVE_REFS = 200
 const DEFAULT_MAX_RUNTIME_EVENTS = 200
 const DEFAULT_MAX_ROUTE_EVENTS = 200
@@ -816,6 +818,37 @@ async function isPortAvailable(port: number): Promise<boolean> {
   return true
 }
 
+/** 只连接探测，不占用端口；用于 WSL 判断 Windows 侧是否已有 listener。 */
+async function isPortNotListening(port: number, timeoutMs = 150): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port })
+    let settled = false
+    const finish = (available: boolean) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      socket.destroy()
+      resolve(available)
+    }
+    socket.setTimeout(Math.max(1, timeoutMs))
+    socket.once('connect', () => finish(false))
+    socket.once('timeout', () => finish(true))
+    socket.once('error', () => finish(true))
+  })
+}
+
+/** WSL mirrored networking 下预绑定端口会短暂阻塞随后执行的 Windows bind。 */
+async function isAutomationPortAvailable(port: number, config: AnyRecord = {}, options: AnyRecord = {}): Promise<boolean> {
+  const localChecker = (options.localChecker as ((value: number) => Promise<boolean>) | undefined) || isPortAvailable
+  if (resolveEnvironment(config, options).isWsl) {
+    const wslChecker = (options.wslChecker as ((value: number) => Promise<boolean>) | undefined) || isPortNotListening
+    // 不从 WSL 侧 bind；但要排除已有 listener，避免误附着到其它项目的 runtime。
+    return await wslChecker(port)
+  }
+  return await localChecker(port)
+}
+
 async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionName: string): Promise<OtherSessionInfo[]> {
   const currentConfig = sessionDirOrConfig
   const registry = await readSessionRegistry(currentConfig)
@@ -830,9 +863,9 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
       }
 
       const candidateConfig: AnyRecord = {
-        ...currentConfig,
+        ...stripRuntimeFields(currentConfig),
         projectPath,
-        sessionDir: resolveSessionDir({ ...currentConfig, projectPath }),
+        sessionDir: resolveSessionDir({ ...stripRuntimeFields(currentConfig), projectPath }),
       }
       const filePath = path.join(candidateConfig.sessionDir as string, `${name}.json`)
       if (!existsSync(filePath)) {
@@ -859,7 +892,7 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
             epoch: Number(parsed.epoch || 0),
             createdAt: String(parsed.createdAt || '').trim(),
             updatedAt: String(parsed.updatedAt || '').trim(),
-            config: { ...candidateConfig, ...((parsed.config || {}) as AnyRecord) },
+            config: { ...candidateConfig, ...stripRuntimeFields((parsed.config || {}) as AnyRecord) },
           })
         }
       } catch (_: unknown) {
@@ -897,7 +930,7 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
             epoch: Number(parsed.epoch || 0),
             createdAt: String(parsed.createdAt || '').trim(),
             updatedAt: String(parsed.updatedAt || '').trim(),
-            config: { ...currentConfig, ...((parsed.config || {}) as AnyRecord), sessionDir: legacySessionDir },
+            config: { ...stripRuntimeFields(currentConfig), ...stripRuntimeFields((parsed.config || {}) as AnyRecord), sessionDir: legacySessionDir },
           })
           seen.add(identity)
         }
@@ -933,7 +966,29 @@ async function selectPort(preferredPort: string, range: { start: number; end: nu
   throw new Error(`No free port available in range ${range.start}-${range.end}`)
 }
 
-async function assignPorts(config: AnyRecord = {}, otherConfigs: AnyRecord[] = [], availabilityChecker: (port: number) => Promise<boolean> = isPortAvailable): Promise<AnyRecord> {
+/** WSL 下从稳定候选开始，只连接探测而不 bind。 */
+async function selectUnprobedWslAutomationPort(
+  reservedPorts: Set<number>,
+  availabilityChecker: (port: number) => Promise<boolean> = isPortNotListening,
+): Promise<string> {
+  const { start, end } = AUTO_PORT_RANGE
+  const size = end - start + 1
+  for (let offset = 0; offset < size; offset += 1) {
+    const port = start + ((WSL_PREFERRED_AUTO_PORT - start + offset) % size)
+    if (reservedPorts.has(port)) {
+      continue
+    }
+    try {
+      if (await availabilityChecker(port)) {
+        return String(port)
+      }
+    } catch (_: unknown) {
+    }
+  }
+  throw new Error(`No free port available in range ${start}-${end}`)
+}
+
+async function assignPorts(config: AnyRecord = {}, otherConfigs: AnyRecord[] = [], availabilityChecker?: (port: number) => Promise<boolean>): Promise<AnyRecord> {
   validateSessionPortConflicts(config, otherConfigs)
 
   const reservedAutoPorts = new Set<number>()
@@ -954,7 +1009,15 @@ async function assignPorts(config: AnyRecord = {}, otherConfigs: AnyRecord[] = [
   if (nextConfig.devtoolsPort) {
     reservedAutoPorts.add(Number(nextConfig.devtoolsPort))
   }
-  nextConfig.autoPort = await selectPort(nextConfig.autoPort as string, AUTO_PORT_RANGE, reservedAutoPorts, availabilityChecker)
+  const effectiveAvailabilityChecker = availabilityChecker
+    || ((port: number) => isAutomationPortAvailable(port, nextConfig))
+  const preferredAutoPort = normalizePort(nextConfig.autoPort)
+  const shouldAvoidWslPrebind = !preferredAutoPort
+    && Boolean(String(nextConfig.cliPath || '').trim())
+    && resolveEnvironment(nextConfig).isWsl
+  nextConfig.autoPort = shouldAvoidWslPrebind
+    ? await selectUnprobedWslAutomationPort(reservedAutoPorts, effectiveAvailabilityChecker)
+    : await selectPort(preferredAutoPort, AUTO_PORT_RANGE, reservedAutoPorts, effectiveAvailabilityChecker)
   return nextConfig
 }
 
@@ -991,7 +1054,7 @@ function createEmptySessionState({ sessionName, config }: CreateSessionStateInpu
   }
 }
 
-async function ensureSessionPorts(state: AnyRecord, availabilityChecker: (port: number) => Promise<boolean> = isPortAvailable): Promise<AnyRecord> {
+async function ensureSessionPorts(state: AnyRecord, availabilityChecker?: (port: number) => Promise<boolean>): Promise<AnyRecord> {
   const stateConfig = state.config as AnyRecord
   const needsAutoPort = !normalizePort(stateConfig.autoPort)
 
@@ -1509,6 +1572,8 @@ module.exports = {
   createDefaultConfig,
   createEmptySessionState,
   assignPorts,
+  isAutomationPortAvailable,
+  selectUnprobedWslAutomationPort,
   ensureSessionPorts,
   acquireSessionLock,
   releaseSessionLock,

@@ -25,6 +25,8 @@ type SnapshotOptions = {
   compact?: boolean
   depth?: number
   raw?: boolean
+  queryTimeoutMs?: number
+  elementTimeoutMs?: number
 }
 
 /** 节点匹配策略（与 ref record 的 strategy 对齐，字段均为可选） */
@@ -107,6 +109,9 @@ const RUNTIME_SNAPSHOT_SEED_TAGS = [
   'icon',
   'progress',
 ]
+
+const DEFAULT_RUNTIME_SNAPSHOT_QUERY_TIMEOUT_MS = 3000
+const DEFAULT_RUNTIME_SNAPSHOT_ELEMENT_TIMEOUT_MS = 3000
 
 /** 可交互标签集合：可点击/输入的 WXML 组件 */
 const INTERACTIVE_RUNTIME_TAGS = new Set([
@@ -641,6 +646,48 @@ function applySnapshotOptions(nodes: SnapshotNode[], options: SnapshotOptions = 
 
 // ---- 快照树构建 ----
 
+type SnapshotTimeoutError = Error & {
+  code?: string
+  hint?: string
+  raw?: string
+}
+
+async function withRuntimeSnapshotTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(`${label} timed out after ${timeoutMs}ms`) as SnapshotTimeoutError
+          error.code = 'DEVTOOLS_RENDER_AUTOMATION_TIMEOUT'
+          reject(error)
+        }, Math.max(1, timeoutMs))
+      }),
+    ])
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
+}
+
+function isRuntimeSnapshotTimeout(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object'
+    && (error as SnapshotTimeoutError).code === 'DEVTOOLS_RENDER_AUTOMATION_TIMEOUT')
+}
+
+function buildRenderAutomationUnavailableError(error: unknown): SnapshotTimeoutError {
+  const raw = error instanceof Error ? error.message : String(error)
+  const unavailable = new Error(
+    'DevTools automation 已连接，但页面元素接口没有响应；当前 DevTools 的渲染侧 automation/ideplugin 未就绪。',
+  ) as SnapshotTimeoutError
+  unavailable.code = 'DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE'
+  unavailable.hint = '请重启或升级微信开发者工具并重新执行 open；无需替换为生产 AppID。'
+  unavailable.raw = raw
+  return unavailable
+}
+
 /** 根据 outerWxml 中业务键的出现位置推导数据顺序 */
 function deriveRuntimeOrder(rootWxml: string, item: SnapshotNode): number {
   if (item.businessKey) {
@@ -658,14 +705,31 @@ function deriveRuntimeOrder(rootWxml: string, item: SnapshotNode): number {
 }
 
 /** 采集指定标签名的所有元素并解析为快照项 */
-async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string): Promise<SnapshotNode[]> {
-  const elements = await page.$$(tagName)
+async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string, options: SnapshotOptions = {}): Promise<SnapshotNode[]> {
+  const queryTimeoutMs = Math.max(1, Number(options.queryTimeoutMs ?? DEFAULT_RUNTIME_SNAPSHOT_QUERY_TIMEOUT_MS))
+  const elementTimeoutMs = Math.max(1, Number(options.elementTimeoutMs ?? DEFAULT_RUNTIME_SNAPSHOT_ELEMENT_TIMEOUT_MS))
+  const elements = await withRuntimeSnapshotTimeout(
+    page.$$(tagName),
+    queryTimeoutMs,
+    `Page.getElements(${tagName})`,
+  )
   const items: SnapshotNode[] = []
   const selectorOccurrences = new Map<string, number>()
 
   for (let index = 0; index < elements.length; index += 1) {
     const element = elements[index]
-    const outerWxml = await element.outerWxml().catch(() => '')
+    let outerWxml = ''
+    try {
+      outerWxml = await withRuntimeSnapshotTimeout(
+        element.outerWxml(),
+        elementTimeoutMs,
+        `Element.getWXML(${tagName}:${index})`,
+      )
+    } catch (error: unknown) {
+      if (isRuntimeSnapshotTimeout(error)) {
+        throw error
+      }
+    }
     if (!outerWxml) {
       continue
     }
@@ -675,7 +739,18 @@ async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string):
     const selector = deriveRuntimeSelector(resolvedTagName, attributes)
     const selectorIndex = selectorOccurrences.get(selector) || 0
     selectorOccurrences.set(selector, selectorIndex + 1)
-    const text = await element.text().catch(() => '')
+    let text = ''
+    try {
+      text = await withRuntimeSnapshotTimeout(
+        element.text(),
+        elementTimeoutMs,
+        `Element.getDOMProperties(${tagName}:${index})`,
+      )
+    } catch (error: unknown) {
+      if (isRuntimeSnapshotTimeout(error)) {
+        throw error
+      }
+    }
     items.push({
       tagName: resolvedTagName,
       selector,
@@ -802,8 +877,14 @@ function buildRawRuntimeTree(items: SnapshotNode[]): SnapshotNode[] {
 async function readRuntimeTree(page: SnapshotPage, options: SnapshotOptions = {}): Promise<{ pageKey: string; nodes: SnapshotNode[] }> {
   const seedItems: SnapshotNode[] = []
   for (const tagName of RUNTIME_SNAPSHOT_SEED_TAGS) {
-    const items = await collectRuntimeSnapshotItems(page, tagName).catch(() => [])
-    seedItems.push(...items)
+    try {
+      const items = await collectRuntimeSnapshotItems(page, tagName, options)
+      seedItems.push(...items)
+    } catch (error: unknown) {
+      if (isRuntimeSnapshotTimeout(error)) {
+        throw buildRenderAutomationUnavailableError(error)
+      }
+    }
   }
 
   if (!seedItems.length) {
@@ -820,7 +901,14 @@ async function readRuntimeTree(page: SnapshotPage, options: SnapshotOptions = {}
   const seenKeys = new Set()
 
   for (const tagName of tagNames) {
-    const items = await collectRuntimeSnapshotItems(page, tagName).catch(() => [])
+    let items: SnapshotNode[] = []
+    try {
+      items = await collectRuntimeSnapshotItems(page, tagName, options)
+    } catch (error: unknown) {
+      if (isRuntimeSnapshotTimeout(error)) {
+        throw buildRenderAutomationUnavailableError(error)
+      }
+    }
     for (const item of items) {
       const dedupeKey = item.businessKey || `${item.selector}:${item.index}:${item.outerWxml}`
       if (seenKeys.has(dedupeKey)) {

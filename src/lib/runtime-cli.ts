@@ -177,6 +177,15 @@ function buildDevtoolsOpenArgs(config: AnyRecord, options: AnyRecord = {}): { ar
   }
 }
 
+/**
+ * Windows DevTools 对盘符路径可可靠执行 open→auto；WSL UNC 的 open 会触发
+ * code 17，因此只让可直接消费的 Windows 路径使用两阶段冷启动。
+ */
+function shouldOpenProjectBeforeAutomation(config: AnyRecord, options: AnyRecord = {}): boolean {
+  const { hasWindowsBundle, devtoolsProjectPath } = buildAutomationArgs(config, options)
+  return hasWindowsBundle && Boolean(devtoolsProjectPath) && !isWslUncPath(devtoolsProjectPath)
+}
+
 // ---- CLI 验证与运行 ----
 
 function normalizeCliPath(rawPath: string): string {
@@ -401,10 +410,9 @@ function closeDevtoolsProject(config: AnyRecord, options: AnyRecord = {}): AnyRe
 }
 
 function enableAutomation(config: AnyRecord, options: AnyRecord = {}): AnyRecord {
-  // openPrefer 模式：先 open（GUI 项目打开）再 auto（自动化启用）。
-  // 默认跳过 open 直接 auto，因为 devtools auto 已涵盖启动 IDE + 打开项目 + 自动化注册的全部流程，
-  // 而 devtools open 在 WSL/UNC 路径下始终抛代码 17（QR_PATH_NOT_VALID_OR_NOT_EXIST），
-  // 且在 headless 场景下无实际意义。
+  // Windows 可消费的本地路径由连接层自动选择 open→auto，规避部分 DevTools
+  // 冷启动时直接 auto 触发 cli server/plugin 未就绪。WSL UNC 仍跳过 open，
+  // 因为该路径会触发 code 17（QR_PATH_NOT_VALID_OR_NOT_EXIST）。
   let preOpen = null
   if (options.openFirst) {
     preOpen = openDevtoolsProject(config, options)
@@ -417,7 +425,11 @@ function enableAutomation(config: AnyRecord, options: AnyRecord = {}): AnyRecord
     }
   }
 
-  const result = runAutomationCli(config, options)
+  // 部分 Windows DevTools 版本在 open 成功后继续给 auto 传 --port，会输出
+  // “✔ auto”但不真正监听 automation 端口。open 已完成实例定位，auto 让官方
+  // CLI自行连接该实例；解析出的 DevTools port 仍保留在 config 供观测与 cleanup。
+  const automationConfig = preOpen ? { ...config, devtoolsPort: '' } : config
+  const result = runAutomationCli(automationConfig, options)
   const startupIssue = detectAutomationStartupIssue(result.raw)
   const cliFailure = parseAutomationCliFailure(result, config)
   const progressTimeout = detectAutomationCliProgressTimeout(result)
@@ -459,6 +471,7 @@ module.exports = {
   resolveDevtoolsProjectPath,
   buildAutomationArgs,
   buildDevtoolsOpenArgs,
+  shouldOpenProjectBeforeAutomation,
   validateAutomationCliConfig,
   runDevtoolsCli,
   runAutomationCli,

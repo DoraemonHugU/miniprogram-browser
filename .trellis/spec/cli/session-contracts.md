@@ -138,6 +138,7 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 ### 3.1.4 open 冷启动时序与 cleanup
 
 - enable 后必须在 open deadline 内 **poll live** 再 connect（`waitUntilAutomationLive`），禁止只靠固定 sleep。
+- Windows/WSL 盘符路径冷启动使用官方 CLI `open → auto`；`open` 返回的 IDE service port 可记录，但 `auto` 不继续强塞 `--port`。WSL 分配 automation port 时不得先从 Linux 侧 bind，避免 mirrored networking 把短暂占用映射给随后启动的 Windows DevTools。
 - open/doctor 的 `--timeout` 是完整操作总预算；live probe、`enableAutomation`、late probe、discover 与 connect 必须接收当时的剩余预算，禁止内部固定最小 timeout 反向突破 deadline。
 - started 失败 cleanup：若同项目仍有其它 live runtime，**禁止** `close` 项目窗（`skippedCloseReason=shared-live-runtime`）。
 - session 文件持久化 `createdAt`/`updatedAt`；`session list` 展示创建时间。
@@ -145,6 +146,7 @@ await ensureSessionPorts(state)          // 已有 autoPort 则跳过分配
 - **autoPort 由 CLI 自管**：分配 / 预留 / 附着；使用者日常不选 port。
 - **同 autoPort 多条 live launch/session 视为同一 runtime**。
 - **多个不同 live autoPort**：显式 session 或活动 session 命中则 attach；否则返回 `ambiguous` / `MULTIPLE_LIVE_RUNTIMES`，在人话提示和 JSON diagnostics 中列出候选 session、选择原因和可复制命令；不按 `updatedAt` 选择“最新”，也不要求用户手填 autoPort。
+- **禁止无归属的全局端口救援**：端口范围探测不能证明 endpoint 属于当前项目；open 失败后只允许救援本次申请的端口或 runtime 池中明确属于同项目的端口。
 - **噪音收敛**：`reconcileRuntimeLaunches` 把过期 `starting`（默认 >3min）标 `stale`；探测失败的 starting 立即 stale。`session list` 默认隐藏 `gate/e2e/test` 前缀的 stale；`--noise` 看全量。
 - 同项目 `open` 串行：`locks/__open_project__.lock`，避免双 auto。
 - `OPEN_TIMEOUT` 不被 WeappLog 的 `cli-server-start-error` 覆盖 code。
@@ -254,6 +256,7 @@ autoPort 冲突检查在运行时分配时由 `validateSessionPortConflicts` 处
 | doctor 时 automation 失败 | session 不保存，下次重试自动分配新端口 |
 | doctor Tool endpoint live、App runtime 未就绪 | `ok=false`，但保留 `probe.connected=true` / `probe.appReady=false` |
 | 旧 session 文件含 autoPort | `loadSessionState` 通过 `stripRuntimeFields` 忽略 |
+| 读取其它 session 时当前 config 含 runtime port | `loadOtherSessionConfigs` 先 strip；不得把当前端口复制成其它 session 的冲突 |
 | goto 输入无前导 `/` | 自动补 `/`，发给 DevTools 前已标准化为绝对路径 |
 
 ## 5. Good / Base / Bad Cases

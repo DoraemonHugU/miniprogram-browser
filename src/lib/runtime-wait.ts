@@ -29,6 +29,7 @@ const {
 const {
   resolveTarget,
 } = require('./runtime-resolve')
+const { performance } = require('node:perf_hooks')
 
 import type { MiniProgram } from 'miniprogram-automator'
 import type { SessionState } from '../types/core'
@@ -426,13 +427,29 @@ async function countVisibleElements(elements: VisibleElement[]): Promise<number>
 
 // ---- 稳定等待 ----
 
+async function withStableProbeTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout`)), Math.max(1, timeoutMs))
+      }),
+    ])
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
+}
+
 /** 采集当前页面栈的稳定快照样本 */
-async function readStableRuntimeSample(miniProgram: MiniProgram): Promise<StableSample> {
-  const page = await getCurrentPage(miniProgram)
+async function readStableRuntimeSample(miniProgram: MiniProgram, timeoutMs = 2000): Promise<StableSample> {
+  const page = await withStableProbeTimeout(getCurrentPage(miniProgram), timeoutMs, 'stable currentPage') as AnyRecord
   const pathValue = normalizeRuntimeRoute(page && page.path ? page.path : '')
   let stack: { path?: string; query?: Record<string, unknown> }[] = []
   try {
-    stack = await getPageStack(miniProgram)
+    stack = await withStableProbeTimeout(getPageStack(miniProgram), timeoutMs, 'stable pageStack')
   } catch (_error: unknown) {
     stack = pathValue ? [{ path: pathValue, query: {} }] : []
   }
@@ -456,16 +473,19 @@ async function waitForMiniProgramStable(miniProgram: MiniProgram, options: AnyRe
   const timeoutMs = Math.max(1, Number(options.timeoutMs ?? options.timeout ?? DEFAULT_AWAIT_TIMEOUTS.stable))
   const quietMs = Math.max(0, Number(options.quietMs ?? 1200))
   const pollMs = Math.max(1, Number(options.pollMs ?? 300))
+  const sampleTimeoutMs = Math.max(1, Number(options.sampleTimeoutMs ?? 2000))
+  const viewProbeTimeoutMs = Math.max(1, Number(options.viewProbeTimeoutMs ?? 3000))
   const sleepFn = (options.sleepFn as SleepFn) || sleep
-  const startedAt = Date.now()
+  const now = (options.now as (() => number) | undefined) || (() => performance.now())
+  const startedAt = now()
   let lastSignature = ''
   let stableSince = 0
   let lastSample: StableSample | null = null
   let lastHint = 'phase=stable'
 
-  while (Date.now() - startedAt <= timeoutMs) {
+  while (now() - startedAt <= timeoutMs) {
     try {
-      const sample = await readStableRuntimeSample(miniProgram)
+      const sample = await readStableRuntimeSample(miniProgram, sampleTimeoutMs)
       lastSample = sample
 
       if (!sample.path) {
@@ -474,13 +494,13 @@ async function waitForMiniProgramStable(miniProgram: MiniProgram, options: AnyRe
         stableSince = 0
       } else if (sample.signature !== lastSignature) {
         lastSignature = sample.signature
-        stableSince = Date.now()
+        stableSince = now()
         lastHint = `phase=stable; current=${sample.path}`
         if (quietMs === 0) {
           break
         }
       } else {
-        const stableMs = Date.now() - stableSince
+        const stableMs = now() - stableSince
         lastHint = `phase=stable; current=${sample.path}; stableMs=${stableMs}`
         if (stableMs >= quietMs) {
           break
@@ -496,27 +516,40 @@ async function waitForMiniProgramStable(miniProgram: MiniProgram, options: AnyRe
     await sleepFn(pollMs)
   }
 
-  if (!lastSample || !lastSample.path || (quietMs > 0 && Date.now() - stableSince < quietMs)) {
+  if (!lastSample || !lastSample.path || (quietMs > 0 && now() - stableSince < quietMs)) {
     throw buildRuntimeStableTimeoutError(timeoutMs, lastHint, {
       path: lastSample && lastSample.path ? lastSample.path : '',
-      elapsedMs: Date.now() - startedAt,
+      elapsedMs: now() - startedAt,
     })
   }
 
-  const viewProbe = options.skipViewProbe
-    ? { viewReady: false, viewNodeCount: 0 }
-    : await probeRuntimeViewReady(lastSample.page)
+  let viewProbe: AnyRecord = { viewReady: false, viewNodeCount: 0 }
+  if (!options.skipViewProbe) {
+    try {
+      viewProbe = await withStableProbeTimeout(
+        probeRuntimeViewReady(lastSample.page),
+        viewProbeTimeoutMs,
+        'stable view probe',
+      )
+    } catch (error: unknown) {
+      viewProbe = {
+        viewReady: false,
+        viewNodeCount: 0,
+        viewError: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
 
   return {
     ok: true,
     condition: 'stable',
     path: lastSample.path,
-    elapsedMs: Date.now() - startedAt,
-    stableMs: Date.now() - stableSince,
+    elapsedMs: now() - startedAt,
+    stableMs: now() - stableSince,
     pageStackDepth: lastSample.pageStackDepth,
-    viewReady: viewProbe.viewReady,
-    viewNodeCount: viewProbe.viewNodeCount,
-    viewError: viewProbe.viewError || undefined,
+    viewReady: Boolean(viewProbe.viewReady),
+    viewNodeCount: Number(viewProbe.viewNodeCount || 0),
+    viewError: viewProbe.viewError ? String(viewProbe.viewError) : undefined,
   }
 }
 

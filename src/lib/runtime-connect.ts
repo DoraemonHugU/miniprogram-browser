@@ -16,6 +16,7 @@ const { getCurrentPage } = require('./runtime-bridge')
 const { sleep } = require('./runtime-wait')
 const { wrapConnectErrorWithStartupIssue } = require('./runtime-cli-shared')
 const { mkdir } = require('node:fs/promises')
+const { resolveEnvironment } = require('./platform')
 
 // ---- 外部依赖类型 —— 仅声明本文件用到的方法 ----
 
@@ -631,7 +632,10 @@ async function sendAutomationProtocol(config: Record<string, unknown>, method: s
  */
 async function connectOrEnable(config: Record<string, unknown>, options: Record<string, unknown> = {}, overrides: Record<string, unknown> = {}): Promise<MiniProgramRef> {
   const configConnector = (overrides.connect as ConnectFn | undefined) || connectWithRetry
-  const enable = (overrides.enable as EnableFn | undefined) || (await Promise.resolve().then(() => require('./runtime-cli'))).enableAutomation
+  const runtimeCli = await Promise.resolve().then(() => require('./runtime-cli'))
+  const enable = (overrides.enable as EnableFn | undefined) || runtimeCli.enableAutomation
+  const shouldOpenFirst = (overrides.shouldOpenFirst as ((cfg: Record<string, unknown>, opts?: Record<string, unknown>) => boolean) | undefined)
+    || runtimeCli.shouldOpenProjectBeforeAutomation
   const sleepFn = overrides.sleepFn || sleep
   const liveCheck = (overrides.isLive as ((cfg: Record<string, unknown>, opts?: Record<string, unknown>) => Promise<boolean>) | undefined)
     || isAutomationEndpointLive
@@ -681,7 +685,10 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
   // 2. enable: devtools auto
   onProgress && onProgress('enable')
   const enableTimeoutMs = Math.max(1, deadlineAt - Date.now())
-  metadata = (enable(config, { openFirst: false, timeoutMs: enableTimeoutMs }) || {}) as Record<string, unknown>
+  const openFirst = options.openFirst !== undefined
+    ? options.openFirst === true
+    : shouldOpenFirst(config, options)
+  metadata = (enable(config, { openFirst, timeoutMs: enableTimeoutMs }) || {}) as Record<string, unknown>
   if (!String(config.devtoolsPort || '').trim() && metadata.resolvedDevtoolsPort) {
     config.devtoolsPort = metadata.resolvedDevtoolsPort
   }
@@ -689,9 +696,12 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
   // 3. 在 deadline 内立即探测并等待 automation 端口 live
   onProgress && onProgress('wait-live')
   const preferredPort = String(config.autoPort || '').trim()
+  const defaultMinWaitMs = metadata.projectOpened && resolveEnvironment(config, options).isWsl
+    ? 6000
+    : 0
   let becameLive = await waitUntilAutomationLive(config, {
     deadlineAt,
-    minWaitMs: Number.isFinite(Number(options.minWaitMs)) ? Number(options.minWaitMs) : 0,
+    minWaitMs: Number.isFinite(Number(options.minWaitMs)) ? Number(options.minWaitMs) : defaultMinWaitMs,
     sleepFn,
     isLive: liveCheck,
     automator: options.automator,
@@ -703,32 +713,12 @@ async function connectOrEnable(config: Record<string, unknown>, options: Record<
       automator: options.automator,
     }).catch(() => false)
   }
-  // DevTools 有时 ✔ auto 但指定 port 未监听，实际挂在范围内其它 port（或迟到）
-  if (!becameLive) {
-    onProgress && onProgress('discover-port')
-    const remainingMs = deadlineAt ? Math.max(0, deadlineAt - Date.now()) : 8000
-    const discovered = remainingMs > 0 ? await discoverLiveAutomationPort(config, {
-      preferredPort,
-      timeoutMs: Math.min(400, remainingMs),
-      tcpTimeoutMs: Math.min(120, remainingMs),
-      // 覆盖 AUTO_PORT_RANGE 常见段；preferred 失败后至少扫到 preferred+40
-      maxProbes: 50,
-      isLive: liveCheck,
-      automator: options.automator,
-    }).catch(() => '') : ''
-    if (discovered) {
-      config.autoPort = discovered
-      metadata.discoveredAutoPort = discovered
-      metadata.preferredAutoPort = preferredPort || undefined
-      becameLive = true
-    }
-  }
   if (!becameLive) {
     const portLabel = preferredPort || '(未分配)'
     throw new Error(
       [
-        `冷启动未完成：devtools auto 已返回，但本机未发现可用 automation WebSocket`,
-        `（优先端口 autoPort=${portLabel}；已扫描 ${9515}-${9615} 仍无 live）。`,
+        `冷启动未完成：devtools auto 已返回，但请求的 automation WebSocket 未就绪`,
+        `（autoPort=${portLabel}）。`,
         '常见原因：开发者工具 automation/cli server 未真正起来（日志可见 start cli server error）、模拟器未打开、或多实例异常。',
         '建议：1) 只保留一个开发者工具窗口并打开项目，确认模拟器页面可见；2) 不要立刻 --fresh，直接再 open 一次；',
         '3) 仍失败则重启开发者工具后再 open；4) 需要细节时看 devtools logs。',

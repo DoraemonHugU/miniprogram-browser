@@ -7,25 +7,26 @@
 
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 
-function toWindowsPath(inputPath: string): string {
+type SpawnSyncFn = typeof spawnSync
+
+function toWindowsPath(inputPath: string, options: { spawnSync?: SpawnSyncFn } = {}): string {
   const normalizedInput = String(inputPath || '').trim()
   if (!normalizedInput.startsWith('/')) {
     return normalizedInput
   }
 
-  const mountedDriveMatch = normalizedInput.match(/^\/mnt\/([a-z])(?:\/(.*))?$/iu)
-  if (mountedDriveMatch) {
-    const [, driveLetter, rest = ''] = mountedDriveMatch
-    const windowsRest = rest ? rest.replace(/\//gu, '\\') : ''
-    return `${driveLetter.toUpperCase()}:\\${windowsRest}`
+  // WSL 的 automount root 可配置，不能假设盘符路径永远位于 /mnt。
+  // 统一使用系统自带 wslpath 作为路径翻译的权威实现：
+  // https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation
+  const runner = options.spawnSync || spawnSync
+  const result = runner('wslpath', ['-w', normalizedInput], { encoding: 'utf8' }) as SpawnSyncReturns<string>
+  const converted = String(result.stdout || '').trim()
+  if (result.status !== 0 || !converted) {
+    const detail = String(result.stderr || result.error?.message || `exit status ${result.status}`).trim()
+    throw new Error(`Failed to convert path with wslpath: ${normalizedInput}${detail ? ` (${detail})` : ''}`)
   }
 
-  const result: SpawnSyncReturns<string> = spawnSync('wslpath', ['-w', normalizedInput], { encoding: 'utf8' })
-  if (result.status !== 0) {
-    throw new Error(`Failed to convert path with wslpath: ${normalizedInput}`)
-  }
-
-  return result.stdout.trim()
+  return converted
 }
 
 function isWslUncPath(inputPath: string): boolean {

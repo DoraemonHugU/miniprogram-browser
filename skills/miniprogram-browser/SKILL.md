@@ -20,7 +20,7 @@ npx miniprogram-browser ...
 它适合让 agent 直接操作微信小程序，但要记住：
 
 - `--project` 指向当前系统可读的小程序项目根目录；当前目录或同 Git 工作树能唯一发现项目时可以省略
-- 传给微信开发者工具的项目路径由 CLI 按平台自动处理（macOS/Windows 通常可直接用；WSL 下 `/mnt/<盘符>/...` 会自动转成对应盘符路径；不够用时再用 `--devtools-project` / `--project-map`）
+- 传给微信开发者工具的项目路径由 CLI 按平台自动处理（macOS/Windows 通常可直接用；WSL 绝对路径统一交给系统 `wslpath` 转换，支持自定义 automount root；Linux 家目录转换成 UNC 后若 DevTools 不接受，再用 `--devtools-project` / `--project-map`）
 - 必须已登录微信开发者工具；登录过期时无法自动化，错误里会保留开发者工具侧的原始信息
 - 它不是浏览器 DOM 自动化，部分自定义组件在运行时里可能不透明
 
@@ -44,7 +44,7 @@ npx miniprogram-browser ...
 
 1. `open` 绑定的是一个**小程序工作会话（session）**，不是浏览器 URL
 2. 同一项目下，`open` 默认优先沿用活动 session，再复用唯一可用的开发者工具实例；如果有多个不同 live runtime 且没有活动目标，不按“最新”猜测，需用 `--session` 选定；没有可复用实例，或你显式 `--fresh` 时，才会尝试新开
-3. `open` 默认会等待通用稳定条件；超时不一定代表小程序已失败，可能只是还在编译/刷新，可继续用 `await stable` 或 `doctor` 判断
+3. `open` 默认会等待通用稳定条件；路径/页面栈稳定后即可连接，渲染树探测结果通过 `viewReady` / `viewError` 额外观察；超时不一定代表小程序已失败，可能只是还在编译/刷新
 4. 常规使用不要自己再手拼开发者工具的 `cli open`；路径、信任项目、端口等由本 CLI 处理
 5. 绑定后先 `path` 或 `app inspect` 确认当前状态
 6. 再 `goto` 到目标路由；页面跳转或点击后优先用 `--await`，已知结果写精确条件，未知同页结果用 `--await change`
@@ -199,7 +199,7 @@ miniprogram-browser wait 1200 --session feat-a
 建议：
 
 - `open` 默认等待稳定（运行时响应、路径/页面栈短暂稳定等）
-- `stable` 只表示 route/page-stack 暂时安静且视图可读取，不代表业务请求或数据渲染已完成
+- `stable` 只表示 route/page-stack 暂时安静，不代表业务请求、数据渲染或渲染侧 automation 已完成；视图能力单独看 `viewReady` / `viewError`
 - automation 启用后立即探测 live 状态，未就绪才轮询；`doctor --wait` 限制的是状态轮询时长，`--wait 0` 表示单次探测
 - `goto` 直接发起路由动作并等待目标路由稳定，不依赖 SDK 内置固定 sleep
 - `RUNTIME_UNSTABLE` 时不要先重启；优先 `await stable`，再用 `doctor` / `devtools logs`
@@ -215,7 +215,7 @@ miniprogram-browser wait 1200 --session feat-a
 目标：macOS / Windows / WSL 同一套用法。
 
 - `--project` 始终写**当前 shell 可读**的小程序根目录
-- macOS / Windows / WSL `/mnt/*` 由 CLI 自动转成开发者工具可接受的路径
+- macOS / Windows 路径直接使用；WSL 绝对路径由系统 `wslpath` 转换，不假定挂载根一定是 `/mnt`（见 [Microsoft WSL path translation](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation)）
 - WSL **推荐**项目在 `/mnt/<盘符>/...`（例如 `/mnt/d/work/...`）
 - Linux 家目录路径（如 `/home/...`）若开发者工具无法直接打开，用下面的高级兜底，或把项目放到盘符挂载路径
 - 不要为了路径问题改用 GUI 截图、OCR、PowerShell 控窗
@@ -322,9 +322,12 @@ miniprogram-browser open --session agent-task-a --fresh
 **冷启动 vs 热启动（体验心智）**：
 
 - 热启动：已有 live automation → 直接连（快）
-- 冷启动：要先 `devtools auto`，再等到端口 live，再连（慢是正常的；进度里会出现「等待 automation 端口就绪」）
+- 冷启动：Windows/WSL 可直接消费的盘符路径会自动执行 `open → auto`；macOS、WSL UNC 等路径走平台适用的 `auto`，随后等端口 live 再连接
 - 冷启动超时：CLI 会**自动**在「本 port 已 live / 同项目其它 live」时自愈重连，多数情况**不必**人再 open 一次
+- 自动救援只使用本次申请的端口或 runtime 池中明确属于同项目的端口；不会因为本机另一个 automation 端口可连就跨项目附着
 - 仍失败时再：加大 `--timeout` 重试同一 open；**不要立刻 `--fresh`**；最后才 `devtools logs` / 重启开发者工具
+
+若 `snapshot` 返回 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE`，表示 WebSocket 和 `App.*` 已连通，但 DevTools 的 `Page.*` / `Element.*` 渲染侧接口没有响应。保留 `raw` 后先重启或升级 DevTools；这不是把公开 Demo 的 `touristappid` 换成生产 AppID 就能解决的问题。
 
 ## 诊断与逃逸
 
@@ -489,6 +492,7 @@ miniprogram-browser app inspect --all
 - 误以为总能猜中项目目录；发现失败时要显式 `--project`
 - 误以为 WSL 里 `--project` 可以写 `P:\...`；应写 Linux 可读路径，必要时用 `--devtools-project` / `--project-map`
 - 误以为登录过期仍能自动化；需在开发者工具重新登录
+- 误以为 `Page.getElements` 超时必须换真实 AppID；先看 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE` 与原始协议错误，公开 Demo 继续使用 `touristappid`
 - 误以为必须每次手写端口；日常不用管，成功输出里的端口仅供确认与排障
 - 误以为 `@eN` 永久有效或跨页/跨 session 仍可用
 - 误以为默认 ASCII 图上的 `3` 表示「第三项」而不是 `@e3`

@@ -26,6 +26,8 @@ const {
   createDefaultConfig,
   createEmptySessionState,
   assignPorts,
+  isAutomationPortAvailable,
+  selectUnprobedWslAutomationPort,
   ensureSessionPorts,
   saveSessionState,
   resolveSessionConfig,
@@ -670,6 +672,38 @@ test('loadOtherSessionConfigs skips the current session in its project legacy di
   }
 })
 
+test('loadOtherSessionConfigs does not copy current runtime ports into another session', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-other-runtime-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-other-runtime.json`)
+  try {
+    await fs.promises.writeFile(path.join(tempDir, 'other.json'), JSON.stringify({
+      name: 'other',
+      config: {
+        projectPath: '/worktree-a/apps/miniprogram',
+        sessionDir: tempDir,
+        legacySessionDir: tempDir,
+        sessionRegistryFile: registryFile,
+      },
+    }))
+
+    const configs = await loadOtherSessionConfigs({
+      projectPath: '/worktree-a/apps/miniprogram',
+      sessionDir: tempDir,
+      legacySessionDir: tempDir,
+      sessionRegistryFile: registryFile,
+      autoPort: '9530',
+      devtoolsPort: '11636',
+    }, 'demo')
+
+    assert.equal(configs.length, 1)
+    assert.equal(configs[0].config.autoPort, undefined)
+    assert.equal(configs[0].config.devtoolsPort, undefined)
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
+})
+
 test('assignPorts rejects caller-specified autoPort already used by another session', async () => {
   await assert.rejects(
     assignPorts(
@@ -720,7 +754,7 @@ test('ensureSessionPorts assigns only automation port for a fresh session', asyn
   }
 })
 
-test('ensureSessionPorts avoids reserved auto ports for fresh session', async () => {
+test('ensureSessionPorts ignores legacy runtime ports persisted in another session file', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-fresh-reserved-'))
   const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-reserved.json`)
   try {
@@ -745,7 +779,7 @@ test('ensureSessionPorts avoids reserved auto ports for fresh session', async ()
 
     const result = await ensureSessionPorts(state, async () => true)
     assert.equal(result.config.devtoolsPort, '')
-    assert.equal(result.config.autoPort, '9516')
+    assert.equal(result.config.autoPort, '9515')
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
     await fs.promises.rm(registryFile, { force: true })
@@ -1291,7 +1325,51 @@ const {
   enrichOpenFailure,
   tryHealOpenAfterStartFailure,
   cleanupStartedOpenRuntime,
+  shouldRetryOpenWithAnotherAutoPort,
+  resolveOpenAttemptBudget,
 } = require('../dist/miniprogram-browser.js')
+
+test('resolveOpenAttemptBudget keeps the full budget for live runtime attachment', () => {
+  assert.equal(resolveOpenAttemptBudget('connected', 120000), 120000)
+  assert.equal(resolveOpenAttemptBudget('attached', 60000), 60000)
+  assert.equal(resolveOpenAttemptBudget('started', 120000), 45000)
+})
+
+test('isAutomationPortAvailable does not pre-bind the candidate from WSL', async () => {
+  let localChecks = 0
+  let wslChecks = 0
+  const options = {
+    runtime: 'linux',
+    readProcVersion: '5.15.0-microsoft-standard-WSL2',
+    wslDistroName: 'ubuntu-test',
+    async localChecker() {
+      localChecks += 1
+      return false
+    },
+    async wslChecker() {
+      wslChecks += 1
+      return true
+    },
+  }
+
+  assert.equal(await isAutomationPortAvailable(9515, {}, options), true)
+  assert.equal(localChecks, 0)
+  assert.equal(wslChecks, 1)
+})
+
+test('selectUnprobedWslAutomationPort skips reserved and listening ports without binding them', async () => {
+  assert.equal(await selectUnprobedWslAutomationPort(new Set(), async (port) => port !== 9530), '9531')
+  assert.equal(await selectUnprobedWslAutomationPort(new Set([9530, 9531]), async () => true), '9532')
+})
+
+test('cold start retries another autoPort when plugin logs accompany an open timeout', () => {
+  assert.equal(shouldRetryOpenWithAnotherAutoPort({
+    portResolution: { autoPortAssigned: true },
+  }, {}, 'started', {
+    code: 'OPEN_TIMEOUT',
+    startupIssueCode: 'DEVTOOLS_PLUGIN_MISSING',
+  }, 1), true)
+})
 
 test('enrichOpenFailure does not overwrite OPEN_TIMEOUT with cli-server-start-error hints', async () => {
   const error = {

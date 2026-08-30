@@ -7,6 +7,7 @@
 
 const {
   buildAutomationArgs,
+  shouldOpenProjectBeforeAutomation,
   validateAutomationCliConfig,
   closeDevtoolsProject,
   enableAutomation,
@@ -179,6 +180,7 @@ module.exports = {
   enableAutomation,
   closeDevtoolsProject,
   buildAutomationArgs,
+  shouldOpenProjectBeforeAutomation,
   // ---- runtime-snapshot ----
   readRuntimeTree,
   applySnapshotOptions,
