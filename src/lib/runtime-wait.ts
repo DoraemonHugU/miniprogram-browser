@@ -19,6 +19,8 @@ const {
 } = require('./runtime-state')
 const {
   probeRuntimeViewReady,
+  readRuntimeTree,
+  buildRuntimeViewSignature,
 } = require('./runtime-snapshot')
 const {
   getCurrentPage,
@@ -26,7 +28,7 @@ const {
 } = require('./runtime-bridge')
 const {
   resolveTarget,
-} = require('./runtime')
+} = require('./runtime-resolve')
 
 import type { MiniProgram } from 'miniprogram-automator'
 import type { SessionState } from '../types/core'
@@ -71,6 +73,7 @@ interface WaitResult {
   viewReady?: boolean
   viewNodeCount?: number
   viewError?: string
+  changed?: boolean
 }
 
 /** 可见性检查的元素（仅需 size 方法） */
@@ -95,6 +98,7 @@ const DEFAULT_AWAIT_TIMEOUTS: Record<string, number> = {
   visible: 12000,
   hidden: 12000,
   ref: 12000,
+  change: 8000,
 }
 
 // ---- 条件解析 ----
@@ -103,7 +107,7 @@ const DEFAULT_AWAIT_TIMEOUTS: Record<string, number> = {
  * 解析 await 条件字符串为标准化的条件对象。
  *
  * 支持格式：
- * - 内置类型：tool-ready, app-ready, stable, route-change, route-settled, auto
+ * - 内置类型：tool-ready, app-ready, stable, route-change, route-settled, change, auto
  * - route:/pages/xxx、selector:.xxx、visible:.xxx、hidden:.xxx
  * - @e1（ref 引用）
  * - /pages/xxx（直接路由）
@@ -116,7 +120,7 @@ function normalizeAwaitCondition(rawValue: unknown): AwaitCondition {
     throw error
   }
 
-  const builtInKinds = new Set(['tool-ready', 'app-ready', 'stable', 'route-change', 'route-settled', 'auto'])
+  const builtInKinds = new Set(['tool-ready', 'app-ready', 'stable', 'route-change', 'route-settled', 'change', 'auto'])
   if (builtInKinds.has(raw)) {
     return {
       kind: raw,
@@ -276,6 +280,7 @@ function scoreLogSummaryLine(line: unknown): number {
  * - route-settled：等待 path 连续 2 次不变
  * - selector / visible / hidden：通过 $$ 查询
  * - ref：通过 resolveTarget 检查 ref 可解析
+ * - change：对比动作前后的 route、页面栈和编译后 WXML 签名
  */
 async function waitForMiniProgramCondition(miniProgram: MiniProgram, state: SessionState, condition: AwaitCondition, options: AnyRecord = {}): Promise<WaitResult> {
   if (condition.kind === 'stable') {
@@ -284,6 +289,12 @@ async function waitForMiniProgramCondition(miniProgram: MiniProgram, state: Sess
       pollMs: options.pollMs,
       sleepFn: options.sleepFn,
     })
+  }
+
+  if (condition.kind === 'change' && !String(options.signatureBefore || '')) {
+    const error = new Error('await change 只能用于动作的 --await change，因为独立等待没有动作前基线。') as ErrorWithMeta
+    error.code = 'CLI_USAGE_ERROR'
+    throw error
   }
 
   const timeoutMs = resolveAwaitTimeoutMs(condition, options.timeoutMs || options.timeout)
@@ -344,6 +355,18 @@ async function waitForMiniProgramCondition(miniProgram: MiniProgram, state: Sess
       } catch (_error: unknown) {
         lastHint = `kind=ref; target=${condition.value}`
       }
+    } else if (condition.kind === 'change') {
+      const sample = await readRuntimeChangeSignature(miniProgram, page)
+      if (sample.signature !== String(options.signatureBefore)) {
+        return {
+          ok: true,
+          condition,
+          path: String(sample.path || ''),
+          elapsedMs: Date.now() - startedAt,
+          changed: true,
+        }
+      }
+      lastHint = `kind=change; current=${currentPath || '(empty)'}`
     } else {
       const error = new Error(`Unsupported await condition kind: ${condition.kind}`) as ErrorWithMeta
       error.code = 'CLI_USAGE_ERROR'
@@ -356,6 +379,26 @@ async function waitForMiniProgramCondition(miniProgram: MiniProgram, state: Sess
   throw buildAwaitTimeoutError(condition, timeoutMs, lastHint, {
     path: lastPath,
   })
+}
+
+/** 读取 route、页面栈和编译后语义 WXML 的统一签名。 */
+async function readRuntimeChangeSignature(miniProgram: MiniProgram, currentPage: unknown = null): Promise<AnyRecord> {
+  const page = (currentPage || await getCurrentPage(miniProgram)) as AnyRecord
+  const path = normalizeRuntimeRoute(page && page.path ? page.path : '')
+  let stack: { path?: string; query?: Record<string, unknown> }[] = []
+  try {
+    stack = await getPageStack(miniProgram)
+  } catch (_error: unknown) {
+    stack = path ? [{ path, query: {} }] : []
+  }
+  // 使用 raw tree 只生成内存签名，确保普通 view 中的临时状态也能被观察到；不会扩大 snapshot 输出。
+  const tree = await readRuntimeTree(page, { raw: true })
+  const signature = [
+    path,
+    buildPageStackSignature(stack),
+    buildRuntimeViewSignature(tree.nodes || []),
+  ].join('\n---\n')
+  return { path, signature }
 }
 
 /** 统计元素列表中可见元素数量（通过 size 检测） */
@@ -541,6 +584,7 @@ module.exports = {
   truncateLogSummaryLine,
   scoreLogSummaryLine,
   waitForMiniProgramCondition,
+  readRuntimeChangeSignature,
   waitForMiniProgramStable,
   countVisibleElements,
   readStableRuntimeSample,

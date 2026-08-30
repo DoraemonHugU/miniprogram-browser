@@ -101,6 +101,10 @@ test('buildHelpText groups commands by priority and purpose', () => {
   assert.match(help, /devtools logs/)
   assert.match(help, /eval <js>/)
   assert.match(help, /session kill <name>/)
+  assert.match(help, /back/)
+  assert.match(help, /scroll/)
+  assert.match(help, /swipe/)
+  assert.match(help, /longpress/)
 })
 
 test('buildHelpText mentions summary and full detail options', () => {
@@ -257,7 +261,15 @@ test('buildCommandHelpText returns await command details', () => {
   assert.match(help, /^await/m)
   assert.match(help, /tool-ready|app-ready/)
   assert.match(help, /route:|selector:|visible:|hidden:|ref:/)
+  assert.match(help, /change/)
   assert.match(help, /--timeout <ms>/)
+})
+
+test('interaction command help exposes concise real-user operations', () => {
+  assert.match(buildCommandHelpText('back'), /返回上一页/u)
+  assert.match(buildCommandHelpText('scroll'), /up\|down/u)
+  assert.match(buildCommandHelpText('swipe'), /left\|right\|up\|down/u)
+  assert.match(buildCommandHelpText('longpress'), /长按/u)
 })
 
 test('buildCommandHelpText returns project-scoped session management details', () => {

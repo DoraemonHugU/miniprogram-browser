@@ -14,6 +14,10 @@ function buildHelpText() {
   goto <route>                 重启到指定路由
   snapshot                     生成紧凑语义 refs 与 ASCII 空间图
   click <target>               点击 ref 或 selector
+  back                         返回上一页
+  scroll ...                   滚动页面或 scroll-view
+  swipe <target> <direction>   滑动 ref 或 selector 指向的元素
+  longpress <target>           长按 ref 或 selector
   fill <target> <text>         输入文本
   get <what> [target]          读取 text/value/count/data/path/attr/prop/rect
   await <condition>            显式等待运行态条件成立
@@ -63,7 +67,7 @@ function buildHelpText() {
   --fresh                      open 时强制请求新 runtime；失败不会静默降级为 attach
   --mode <page|visual|annotate|layout> 截图模式，默认 page（真实页面 PNG）
   --no-ref                     截图时不绘制 @eN 标签
-  --await <condition>          动作后显式等待条件成立
+  --await <condition>          动作后显式等待条件成立；未知同页结果可用 change
   --follow                     动作完成后生成一次新的 refs 摘要（默认关闭，避免输出膨胀）
   --no-await                   关闭命令默认隐式等待
   --wait <ms>                  动作后固定等待；doctor 为轮询窗口，screenshot 为截图超时
@@ -182,6 +186,43 @@ function buildCommandHelpText(command: unknown): string {
 作用:
   点击 ref 或 selector，并在同页未跳转时给出必要提示；传 --follow 时返回动作后的新 refs 摘要。
 `
+    case 'back':
+      return `back
+
+用法:
+  miniprogram-browser back --session <name> [--await <condition>] [--timeout <ms>] [--follow]
+
+作用:
+  返回上一页。优先模拟 DevTools 原生返回；若原生调用未改变页面，则使用小程序页面栈返回并验证 route 确实变化。
+`
+    case 'scroll':
+      return `scroll
+
+用法:
+  miniprogram-browser scroll <up|down> [distance] --session <name>
+  miniprogram-browser scroll <target> <up|down|left|right> [distance] --session <name>
+
+作用:
+  第一种滚动当前页面；第二种滚动目标 scroll-view。默认距离 300。
+`
+    case 'swipe':
+      return `swipe
+
+用法:
+  miniprogram-browser swipe <target> <left|right|up|down> [distance] --session <name> [--await <condition>] [--follow]
+
+作用:
+  普通元素优先发送 touchstart/touchmove/touchend；原生 swiper 不响应 touch 时使用 automator 组件动作。默认距离 180。
+`
+    case 'longpress':
+      return `longpress
+
+用法:
+  miniprogram-browser longpress <target> --session <name> [--await <condition>] [--follow]
+
+作用:
+  对 ref 或 selector 执行真实长按。
+`
     case 'fill':
     case 'input':
       return `fill/input
@@ -244,6 +285,7 @@ function buildCommandHelpText(command: unknown): string {
 
 作用:
   显式等待单个条件成立；适合替代硬编码 sleep。stable 是通用运行态稳定条件，不依赖业务 selector。
+  动作结果无法预先描述时，在 click/fill/scroll/swipe/longpress 上使用 --await change；它需要动作前基线，不能单独执行 await change。
 `
     case 'devtools':
       return `devtools logs

@@ -86,6 +86,19 @@ async function changeMiniProgramRoute(miniProgram: MiniProgram, method: 'reLaunc
   return miniProgram.callWxMethod(method, { url })
 }
 
+/** 返回上一页，避开 automator.navigateBack() 内置的固定 3 秒等待。 */
+async function navigateMiniProgramBack(miniProgram: MiniProgram): Promise<unknown> {
+  const currentPage = await miniProgram.currentPage().catch(() => null)
+  const pluginMatch = currentPage && currentPage.path
+    ? String(currentPage.path).match(/^plugin-private:\/\/([^/]+)\//u)
+    : null
+
+  if (pluginMatch && typeof miniProgram.callPluginWxMethod === 'function') {
+    return miniProgram.callPluginWxMethod(pluginMatch[1], 'navigateBack')
+  }
+  return miniProgram.callWxMethod('navigateBack')
+}
+
 /** 调用页面方法 */
 async function callPageMethod(page: PageHandle, method: string, rawArgs: string[] = []): Promise<unknown> {
   return page.callMethod(method, ...parseCallArguments(rawArgs))
@@ -183,6 +196,7 @@ module.exports = {
   getPageStack,
   callWxMethod,
   changeMiniProgramRoute,
+  navigateMiniProgramBack,
   callPageMethod,
   evaluateInMiniProgram,
   callNativeMethod,

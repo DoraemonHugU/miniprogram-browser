@@ -53,6 +53,7 @@ const {
   buildNativeDiagnostic,
   waitForMiniProgramStable,
   waitForMiniProgramCondition,
+  readRuntimeChangeSignature,
 } = require('./runtime-wait')
 const {
   getCurrentPage,
@@ -61,6 +62,7 @@ const {
   getRuntimeAppConfig,
   callWxMethod,
   changeMiniProgramRoute,
+  navigateMiniProgramBack,
   callPageMethod,
   evaluateInMiniProgram,
   callNativeMethod,
@@ -69,12 +71,21 @@ const {
   getElementRect,
 } = require('./runtime-bridge')
 const {
+  normalizeActionDirection,
+  normalizeActionDistance,
+  performPageScroll,
+  performElementScroll,
+  performElementSwipe,
+  navigateBackWithFallback,
+} = require('./runtime-actions')
+const {
   ensureRouteTimelineMonitor,
   syncRouteTimelineEvents,
 } = require('./runtime-timeline')
 const {
   resolveRecord,
   resolveTarget,
+  resolveActionTarget,
   snapshotInteractive,
   queryRecords,
 } = require('./runtime-resolve')
@@ -103,6 +114,14 @@ module.exports = {
   buildNativeDiagnostic,
   waitForMiniProgramStable,
   waitForMiniProgramCondition,
+  readRuntimeChangeSignature,
+  // ---- runtime-actions ----
+  normalizeActionDirection,
+  normalizeActionDistance,
+  performPageScroll,
+  performElementScroll,
+  performElementSwipe,
+  navigateBackWithFallback,
   // ---- runtime-connect ----
   withMiniProgram,
   withTimeout,
@@ -124,6 +143,7 @@ module.exports = {
   getPageStack,
   callWxMethod,
   changeMiniProgramRoute,
+  navigateMiniProgramBack,
   callPageMethod,
   evaluateInMiniProgram,
   callNativeMethod,
@@ -167,6 +187,7 @@ module.exports = {
   isRefToken,
   resolveRecord,
   resolveTarget,
+  resolveActionTarget,
   snapshotInteractive,
   queryRecords,
   // ---- runtime-logs ----

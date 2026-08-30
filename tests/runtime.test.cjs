@@ -13,6 +13,7 @@ const {
   snapshotInteractive,
   queryRecords,
   resolveTarget,
+  resolveActionTarget,
   applySnapshotOptions,
   getStoredRuntimeEvents,
   clearStoredRuntimeEvents,
@@ -201,6 +202,51 @@ test('resolveTarget re-resolves reordered view refs by semantic identity', async
   const element = await resolveTarget(reorderedPage, snapshotResult.state, betaRecord.ref)
 
   assert.equal(await element.text(), 'Beta')
+})
+
+test('resolveActionTarget prefers the containing label for checkbox and radio refs', async () => {
+  const checkbox = {
+    tagName: 'checkbox',
+    async outerWxml() { return '<checkbox value="alpha" checked="false"></checkbox>' },
+  }
+  const label = {
+    tagName: 'label',
+    async outerWxml() { return '<label><checkbox value="alpha" checked="false"></checkbox>Alpha</label>' },
+  }
+  const page = {
+    path: 'pages/controls/index',
+    async $$(selector) {
+      if (selector === 'checkbox') return [checkbox]
+      if (selector === 'label') return [label]
+      return []
+    },
+  }
+  const state = createState()
+  state.refs['@e1'] = {
+    ref: '@e1',
+    route: page.path,
+    kind: 'checkbox',
+    strategy: { kind: 'selector', selector: 'checkbox', index: 0 },
+  }
+
+  const resolved = await resolveActionTarget(page, state, '@e1')
+
+  assert.equal(resolved.element, label)
+  assert.equal(resolved.originalElement, checkbox)
+  assert.equal(resolved.via, 'label')
+})
+
+test('resolveActionTarget keeps non-control targets unchanged', async () => {
+  const button = { tagName: 'button' }
+  const page = {
+    async $(selector) { return selector === '#save' ? button : null },
+  }
+
+  const resolved = await resolveActionTarget(page, createState(), '#save')
+
+  assert.equal(resolved.element, button)
+  assert.equal(resolved.originalElement, button)
+  assert.equal(resolved.via, 'target')
 })
 
 test('subtreeForScope respects pageKey with query params', async () => {
@@ -557,7 +603,105 @@ test('readRuntimeTree keeps clickable wrapper as button with combined text', asy
   assert.equal(tree.nodes[0].text, '反馈建议 把想法告诉我们 ›')
 })
 
-test('snapshotInteractive adds contextual labels for list items under section titles', async () => {
+test('readRuntimeTree keeps structural gesture targets even when descendants have no text nodes', async () => {
+  const scrollWxml = '<scroll-view id="feed" scroll-y><view>Row 1</view></scroll-view>'
+  const swiperWxml = '<swiper id="carousel"><swiper-item><view>Slide 1</view></swiper-item></swiper>'
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector === 'view') {
+        return [
+          { tagName: 'view', async text() { return 'Row 1 Slide 1' }, async outerWxml() { return `<view>${scrollWxml}${swiperWxml}</view>` } },
+          { tagName: 'view', async text() { return 'Row 1' }, async outerWxml() { return '<view>Row 1</view>' } },
+          { tagName: 'view', async text() { return 'Slide 1' }, async outerWxml() { return '<view>Slide 1</view>' } },
+        ]
+      }
+      if (selector === 'scroll-view') {
+        return [{ tagName: 'scroll-view', async text() { return 'Row 1' }, async outerWxml() { return scrollWxml } }]
+      }
+      if (selector === 'swiper') {
+        return [{ tagName: 'swiper', async text() { return 'Slide 1' }, async outerWxml() { return swiperWxml } }]
+      }
+      if (selector === 'swiper-item') {
+        return [{ tagName: 'swiper-item', async text() { return 'Slide 1' }, async outerWxml() { return '<swiper-item><view>Slide 1</view></swiper-item>' } }]
+      }
+      return []
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.deepEqual(tree.nodes.map((node) => node.kind), ['scroll-view', 'swiper'])
+  assert.deepEqual(tree.nodes[1].children, [])
+})
+
+test('readRuntimeTree exposes longpress wrappers as labeled buttons', async () => {
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'view') return []
+      return [{
+        tagName: 'view',
+        async text() { return 'Long press target' },
+        async outerWxml() { return '<view id="hold" bindlongpress="onHold">Long press target</view>' },
+      }]
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.equal(tree.nodes[0].kind, 'button')
+  assert.equal(tree.nodes[0].text, 'Long press target')
+})
+
+test('readRuntimeTree keeps explicitly identified direct-text views when compiled WXML strips events', async () => {
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'view') return []
+      return [{
+        tagName: 'view',
+        async text() { return 'Long press target' },
+        async outerWxml() { return '<view id="hold">Long press target</view>' },
+      }]
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.equal(tree.nodes[0].kind, 'view')
+  assert.equal(tree.nodes[0].text, 'Long press target')
+})
+
+test('readRuntimeTree ignores compiler-generated matching id and data-sid wrappers', async () => {
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'view') return []
+      return [{
+        tagName: 'view',
+        async text() { return 'Generated row' },
+        async outerWxml() { return '<view id="_Ay" data-sid="_Ay">Generated row</view>' },
+      }, {
+        tagName: 'view',
+        async text() { return 'Explicit action' },
+        async outerWxml() { return '<view id="interaction-action" data-sid="_Az">Explicit action</view>' },
+      }]
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.equal(tree.nodes.length, 1)
+  assert.equal(tree.nodes[0].businessKey, 'id:interaction-action')
+  assert.equal(tree.nodes[0].text, 'Explicit action')
+})
+
+test('snapshotInteractive keeps meaningful button labels free from unrelated section suffixes', async () => {
   const page = {
     path: 'pages/dashboard/index',
     async $$(selector) {
@@ -603,9 +747,52 @@ test('snapshotInteractive adds contextual labels for list items under section ti
   }
 
   const result = await snapshotInteractive(page, createState())
-  assert.equal(result.records.length, 1)
-  assert.equal(result.records[0].kind, 'button')
-  assert.equal(result.records[0].text, '冒烟测试待办 今天 19:00 <今日待办>')
+  assert.deepEqual(result.records.map((record) => [record.kind, record.text]), [
+    ['text', '今日待办'],
+    ['button', '冒烟测试待办 今天 19:00'],
+  ])
+})
+
+test('snapshotInteractive uses a concise navigator label and removes descendant text noise', async () => {
+  const navigatorWxml = '<navigator url="/pages/controls/index"><view><text>Controls</text><text>Open page →</text></view></navigator>'
+  const page = {
+    path: 'pages/index/index',
+    query: {},
+    async $$(selector) {
+      if (selector === 'view') {
+        return [{
+          tagName: 'view',
+          async text() { return 'Controls Open page →' },
+          async outerWxml() { return `<view>${navigatorWxml}</view>` },
+        }, {
+          tagName: 'view',
+          async text() { return 'Controls Open page →' },
+          async outerWxml() { return '<view><text>Controls</text><text>Open page →</text></view>' },
+        }]
+      }
+      if (selector === 'navigator') {
+        return [{
+          tagName: 'navigator',
+          async text() { return 'Controls Open page →' },
+          async outerWxml() { return navigatorWxml },
+        }]
+      }
+      if (selector === 'text') {
+        return ['Controls', 'Open page →'].map((value) => ({
+          tagName: 'text',
+          async text() { return value },
+          async outerWxml() { return `<text>${value}</text>` },
+        }))
+      }
+      return []
+    },
+  }
+
+  const result = await snapshotInteractive(page, createState())
+
+  assert.deepEqual(result.records.map((record) => [record.kind, record.text]), [
+    ['navigator', 'Controls'],
+  ])
 })
 
 test('queryRecords rejects unsupported query modes', async () => {
@@ -642,9 +829,9 @@ test('queryRecords business mode uses rebuilt runtime tree', async () => {
     },
   }
 
-  const result = await queryRecords(page, createState(), 'business', 'data-sid:save-btn')
+  const result = await queryRecords(page, createState(), 'business', 'id:save-btn')
   assert.equal(result.records.length, 1)
-  assert.equal(result.records[0].businessKey, 'data-sid:save-btn')
+  assert.equal(result.records[0].businessKey, 'id:save-btn')
   assert.equal(result.records[0].strategy.selector, '[id="save-btn"]')
 })
 
@@ -663,6 +850,19 @@ test('applySnapshotOptions compact flattens empty view containers', () => {
 
   const result = applySnapshotOptions(nodes, { compact: true })
   assert.deepEqual(result.map((item) => item.kind), ['text', 'button'])
+})
+
+test('applySnapshotOptions compact keeps structural gesture containers', () => {
+  const nodes = [{
+    kind: 'swiper',
+    text: '',
+    children: [{ kind: 'swiper-item', tagName: 'swiper-item', text: '', children: [] }],
+  }]
+
+  const result = applySnapshotOptions(nodes, { compact: true })
+
+  assert.equal(result[0].kind, 'swiper')
+  assert.equal(result[0].children[0].kind, 'swiper-item')
 })
 
 test('snapshotInteractive applies depth limit before ref allocation', async () => {
@@ -1938,6 +2138,34 @@ test('waitForMiniProgramCondition resolves route targets after polling', async (
   assert.equal(result.ok, true)
   assert.equal(result.condition.kind, 'route')
   assert.equal(result.path, 'pages/profile/index')
+})
+
+test('waitForMiniProgramCondition resolves an existing ref through runtime-resolve', async () => {
+  const button = { tagName: 'button' }
+  const page = {
+    path: 'pages/index/index',
+    async $$(selector) { return selector === 'button' ? [button] : [] },
+  }
+  const state = createState()
+  state.refs['@e1'] = {
+    ref: '@e1',
+    route: page.path,
+    kind: 'button',
+    strategy: { kind: 'selector', selector: 'button', index: 0 },
+  }
+  const miniProgram = {
+    async currentPage() { return page },
+  }
+
+  const result = await waitForMiniProgramCondition(
+    miniProgram,
+    state,
+    normalizeAwaitCondition('ref:@e1'),
+    { timeout: 20, pollMs: 1 },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(result.path, page.path)
 })
 
 test('waitForMiniProgramCondition times out hidden checks with a short fact-style summary', async () => {

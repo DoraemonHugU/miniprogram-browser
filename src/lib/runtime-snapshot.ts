@@ -40,12 +40,14 @@ interface SnapshotStrategy {
  * 所有字段均为可选，以便上层用结构化对象或纯测试对象构造。
  */
 interface SnapshotNode {
+  runtimeKey?: string
   businessKey?: string | null
   selector?: string | null
   kind?: string
   tagName?: string
   identityText?: string
   text?: string
+  rawText?: string
   strategy?: SnapshotStrategy
   children?: SnapshotNode[]
   canonicalPath?: string
@@ -128,7 +130,6 @@ const CONTENT_RUNTIME_TAGS = new Set([
 const STRUCTURAL_RUNTIME_TAGS = new Set([
   'scroll-view',
   'swiper',
-  'swiper-item',
 ])
 
 // ---- WXML 解析 ----
@@ -183,15 +184,19 @@ function normalizeRuntimeText(value: string): string {
 
 /**
  * 从 WXML 属性中推导业务键。
- * 优先级：data-sid > id。
+ * 优先显式 id；忽略 Taro 等编译器为普通节点生成的相同短 id/data-sid。
  */
 function deriveRuntimeBusinessKey(attributes: WxmlAttributes): string | null {
-  if (attributes['data-sid']) {
-    return `data-sid:${attributes['data-sid']}`
+  const id = normalizeRuntimeText(attributes.id)
+  const dataSid = normalizeRuntimeText(attributes['data-sid'])
+  const generatedKey = id && id === dataSid && /^_[a-zA-Z0-9]+$/u.test(id)
+
+  if (id && !generatedKey) {
+    return `id:${id}`
   }
 
-  if (attributes.id) {
-    return `id:${attributes.id}`
+  if (dataSid && !generatedKey) {
+    return `data-sid:${dataSid}`
   }
 
   return null
@@ -199,12 +204,16 @@ function deriveRuntimeBusinessKey(attributes: WxmlAttributes): string | null {
 
 /** 从标签名和属性推导用于 $$() 的选择器表达式 */
 function deriveRuntimeSelector(tagName: string, attributes: WxmlAttributes): string {
-  if (attributes.id) {
-    return `[id="${String(attributes.id).replace(/(["\\])/gu, '\\$1')}"]`
+  const id = normalizeRuntimeText(attributes.id)
+  const dataSid = normalizeRuntimeText(attributes['data-sid'])
+  const generatedKey = id && id === dataSid && /^_[a-zA-Z0-9]+$/u.test(id)
+
+  if (id && !generatedKey) {
+    return `[id="${id.replace(/(["\\])/gu, '\\$1')}"]`
   }
 
-  if (attributes['data-sid']) {
-    return `[data-sid="${attributes['data-sid']}"]`
+  if (dataSid && !generatedKey) {
+    return `[data-sid="${dataSid}"]`
   }
 
   return tagName
@@ -222,7 +231,15 @@ function deriveRuntimeKind(tagName: string, attributes: WxmlAttributes): string 
 
   if (
     tagName === 'view'
-    && (attributes['hover-class'] || attributes.bindtap || attributes.catchtap || attributes.bindlongpress)
+    && (
+      attributes['hover-class']
+      || attributes.bindtap
+      || attributes.catchtap
+      || attributes.bindlongpress
+      || attributes.catchlongpress
+      || attributes.bindlongtap
+      || attributes.catchlongtap
+    )
   ) {
     return 'button'
   }
@@ -234,10 +251,17 @@ function deriveRuntimeKind(tagName: string, attributes: WxmlAttributes): string 
  * 推导需要保留的节点文本。
  * 仅对交互式/内容类标签保留文本，普通容器节点的文本不保留（避免冗余）。
  */
-function deriveRuntimeText(tagName: string, attributes: WxmlAttributes, text: string): string {
+function deriveRuntimeText(tagName: string, attributes: WxmlAttributes, text: string, outerWxml = ''): string {
   const normalized = normalizeRuntimeText(text)
   if (!normalized) {
     return ''
+  }
+
+  if (tagName === 'navigator') {
+    const firstText = String(outerWxml || '').match(/<text\b[^>]*>([^<]+)<\/text>/u)
+    if (firstText) {
+      return normalizeRuntimeText(firstText[1])
+    }
   }
 
   if (INTERACTIVE_RUNTIME_TAGS.has(tagName)) {
@@ -248,7 +272,25 @@ function deriveRuntimeText(tagName: string, attributes: WxmlAttributes, text: st
     return normalized
   }
 
-  if (attributes['hover-class'] || attributes.bindtap || attributes.catchtap || attributes.role) {
+  // DevTools 编译后的 outerWxml 可能移除事件绑定。显式 id/data-sid 且只含
+  // 直接文本的 view 仍是稳定、低噪音的操作候选，应保留给 Agent。
+  if (deriveRuntimeBusinessKey(attributes)) {
+    const directText = String(outerWxml || '').match(/^<([a-zA-Z][\w-]*)\b[^>]*>\s*([^<]+?)\s*<\/\1>$/u)
+    if (directText) {
+      return normalizeRuntimeText(directText[2])
+    }
+  }
+
+  if (
+    attributes['hover-class']
+    || attributes.bindtap
+    || attributes.catchtap
+    || attributes.bindlongpress
+    || attributes.catchlongpress
+    || attributes.bindlongtap
+    || attributes.catchlongtap
+    || attributes.role
+  ) {
     return normalized
   }
 
@@ -264,12 +306,16 @@ function isInteractiveRuntimeNode(node: SnapshotNode): boolean {
 
 /** 快照节点是否为纯内容元素 */
 function isContentRuntimeNode(node: SnapshotNode): boolean {
-  return CONTENT_RUNTIME_TAGS.has(node.tagName || '') && Boolean(normalizeRuntimeText(node.text || ''))
+  const hasText = Boolean(normalizeRuntimeText(node.text || ''))
+  return hasText && (
+    CONTENT_RUNTIME_TAGS.has(node.tagName || '')
+    || Boolean(node.businessKey)
+  )
 }
 
 /** 快照节点是否为结构容器元素 */
 function isStructuralRuntimeNode(node: SnapshotNode): boolean {
-  return STRUCTURAL_RUNTIME_TAGS.has(node.tagName || '')
+  return STRUCTURAL_RUNTIME_TAGS.has(node.tagName || node.kind || '')
 }
 
 // ---- 节点转换 ----
@@ -312,14 +358,15 @@ function toSnapshotNode(node: SnapshotNode, children: SnapshotNode[] = []): Snap
 
 /** 将原始节点转换为包含完整元数据的原始快照节点 */
 function toRawRuntimeNode(node: SnapshotNode, children: SnapshotNode[] = []): SnapshotNode {
+  const rawText = normalizeRuntimeText(node.rawText || node.text || '')
   return {
     businessKey: node.businessKey || undefined,
     selector: node.selector,
     index: Number(node.index || 0),
     kind: node.kind || node.tagName || 'view',
     tagName: node.tagName || 'view',
-    identityText: normalizeRuntimeText(node.text || ''),
-    text: normalizeRuntimeText(node.text || ''),
+    identityText: rawText,
+    text: rawText,
     strategy: {
       kind: 'selector',
       selector: node.selector,
@@ -331,34 +378,12 @@ function toRawRuntimeNode(node: SnapshotNode, children: SnapshotNode[] = []): Sn
 
 // ---- 树结构变换 ----
 
-/** 为快照节点继承上下文，将按钮文本与所在 section 标题拼接 */
-function enrichRuntimeNodeContext(nodes: SnapshotNode[], inheritedSection = ''): SnapshotNode[] {
-  const nextNodes: SnapshotNode[] = []
-  let currentSection = inheritedSection
-
-  for (const node of nodes || []) {
-    const text = normalizeRuntimeText(node.text || '')
-    const children = enrichRuntimeNodeContext(node.children || [], currentSection)
-    let nextNode: SnapshotNode = {
-      ...node,
-      children,
-    }
-
-    if (node.kind === 'text' && text && (children.length > 0 || text.length <= 8)) {
-      currentSection = text
-    }
-
-    if (node.kind === 'button' && currentSection && text && !text.includes(`<${currentSection}>`) && text !== currentSection) {
-      nextNode = {
-        ...nextNode,
-        text: `${text} <${currentSection}>`,
-      }
-    }
-
-    nextNodes.push(nextNode)
-  }
-
-  return nextNodes
+/** 保留节点自身语义，不把相邻 section 文本自动拼入可操作标签。 */
+function enrichRuntimeNodeContext(nodes: SnapshotNode[]): SnapshotNode[] {
+  return (nodes || []).map((node) => ({
+    ...node,
+    children: enrichRuntimeNodeContext(node.children || []),
+  }))
 }
 
 /** 移除被可交互兄弟节点文本覆盖的冗余文本节点 */
@@ -412,11 +437,15 @@ function pruneRuntimeNode(node: SnapshotNode, depth = 0): SnapshotNode[] {
   }
 
   const children = flattenNodeGroups((node.children || []).map((child) => pruneRuntimeNode(child, depth + 1)))
+  if (isStructuralRuntimeNode(node)) {
+    return [toSnapshotNode(node, children)]
+  }
+
   if (!children.length) {
     return []
   }
 
-  const shouldKeepContainer = isStructuralRuntimeNode(node) || children.length > 1
+  const shouldKeepContainer = children.length > 1
   if (!shouldKeepContainer || depth === 0) {
     return children
   }
@@ -460,6 +489,7 @@ function compactSnapshotNodes(nodes: SnapshotNode[]): SnapshotNode[] {
       && nextChildren.length > 0
       && !isInteractiveRuntimeNode(nextNode)
       && !isContentRuntimeNode(nextNode)
+      && !isStructuralRuntimeNode(nextNode)
 
     if (isEmptyContainer) {
       compacted.push(...nextChildren)
@@ -554,6 +584,25 @@ function buildRuntimeRecordSignature(node: SnapshotNode): string {
   ].join('|')
 }
 
+/** 构建只包含 Agent 可观察语义的视图签名，用于动作前后变化等待。 */
+function buildRuntimeViewSignature(nodes: SnapshotNode[]): string {
+  const parts: string[] = []
+  const visit = (items: SnapshotNode[]): void => {
+    for (const node of items || []) {
+      parts.push([
+        node.kind || node.tagName || '',
+        node.businessKey || '',
+        node.selector || '',
+        Number(node.index || 0),
+        normalizeRuntimeText(node.text || ''),
+      ].join('|'))
+      visit(node.children || [])
+    }
+  }
+  visit(nodes || [])
+  return parts.join('\n')
+}
+
 /** 在节点树中按 stableKey 查找节点 */
 function findNodeByStableKey(nodes: SnapshotNode[], pageKey: string, route: string, stableKey: string): SnapshotNode | null {
   if (!stableKey) {
@@ -634,7 +683,8 @@ async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string):
       attributes,
       businessKey: deriveRuntimeBusinessKey(attributes),
       kind: deriveRuntimeKind(resolvedTagName, attributes),
-      text: deriveRuntimeText(resolvedTagName, attributes, text),
+      text: deriveRuntimeText(resolvedTagName, attributes, text, outerWxml),
+      rawText: normalizeRuntimeText(text),
       outerWxml,
       children: [],
       parentKey: null,
@@ -647,30 +697,24 @@ async function collectRuntimeSnapshotItems(page: SnapshotPage, tagName: string):
 
 /** 通过 outerWxml 层级关系为快照项推导父子关系 */
 function attachRuntimeSnapshotParents(items: SnapshotNode[], rootWxml: string): void {
-  const withKeys = items.filter((item) => item.businessKey)
+  items.forEach((item, index) => {
+    item.runtimeKey = `runtime:${index}`
+  })
 
   for (const item of items) {
     item.order = deriveRuntimeOrder(rootWxml, item)
-    if (!item.businessKey) {
-      continue
-    }
-
-    const candidates = withKeys
+    const candidates = items
       .filter((candidate) => {
-        if (candidate === item || !candidate.outerWxml || !item.businessKey) {
+        if (candidate === item || candidate.tagName === 'label' || !candidate.outerWxml || !item.outerWxml) {
           return false
         }
 
         return (candidate.outerWxml?.length ?? 0) > (item.outerWxml?.length ?? 0)
-          && (candidate.outerWxml?.includes(
-            item.businessKey.startsWith('data-sid:')
-              ? `data-sid="${item.businessKey.slice('data-sid:'.length)}"`
-              : `id="${item.businessKey.slice('id:'.length)}"`,
-          ) ?? false)
+          && candidate.outerWxml.includes(item.outerWxml)
       })
       .sort((left, right) => (left.outerWxml?.length ?? 0) - (right.outerWxml?.length ?? 0))
 
-    item.parentKey = candidates[0] ? candidates[0].businessKey : null
+    item.parentKey = candidates[0] ? candidates[0].runtimeKey : null
   }
 }
 
@@ -684,9 +728,7 @@ function buildRuntimeSnapshotTree(items: SnapshotNode[]): SnapshotNode[] {
 
   for (const item of items) {
     item.children = []
-    if (item.businessKey) {
-      itemsByKey.set(item.businessKey, item)
-    }
+    itemsByKey.set(item.runtimeKey || item.businessKey, item)
   }
 
   for (const item of items) {
@@ -722,9 +764,7 @@ function buildRawRuntimeTree(items: SnapshotNode[]): SnapshotNode[] {
 
   for (const item of items) {
     item.children = []
-    if (item.businessKey) {
-      itemsByKey.set(item.businessKey, item)
-    }
+    itemsByKey.set(item.runtimeKey || item.businessKey, item)
   }
 
   for (const item of items) {
@@ -964,6 +1004,7 @@ module.exports = {
   assignCanonicalPaths,
   buildNodeStableKey,
   buildRuntimeRecordSignature,
+  buildRuntimeViewSignature,
   findNodeByStableKey,
   selectorIndexInSubtree,
   applySnapshotOptions,

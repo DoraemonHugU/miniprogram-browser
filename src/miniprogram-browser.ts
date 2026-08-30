@@ -173,11 +173,17 @@ const {
   isAutomationEndpointLive,
   discoverLiveAutomationPort,
   resolveTarget,
+  resolveActionTarget,
   snapshotInteractive,
   queryRecords,
   isRefToken,
   waitForMiniProgramStable,
   waitForMiniProgramCondition,
+  readRuntimeChangeSignature,
+  performPageScroll,
+  performElementScroll,
+  performElementSwipe,
+  navigateBackWithFallback,
   summarizeDevtoolsCliRaw,
 } = require('./lib/runtime')
 
@@ -1991,7 +1997,7 @@ function resolveExplicitAwaitCondition(rawValue: unknown, command: string, optio
   if (raw === 'auto') {
     if (command === 'goto' || command === 'relaunch') {
       raw = `route:${context.route || ''}`
-    } else if (command === 'click' || command === 'tap' || command === 'native' || command === 'screenshot' || command === 'snapshot') {
+    } else if (['click', 'tap', 'fill', 'input', 'back', 'scroll', 'swipe', 'longpress', 'native', 'screenshot', 'snapshot'].includes(command)) {
       raw = 'route-settled'
     } else {
       raw = 'app-ready'
@@ -1999,6 +2005,54 @@ function resolveExplicitAwaitCondition(rawValue: unknown, command: string, optio
   }
 
   return normalizeAwaitCondition(raw)
+}
+
+async function captureActionAwaitBaseline(miniProgram: AnyRecord, condition: AnyRecord | null): Promise<string> {
+  if (!condition || condition.kind !== 'change') {
+    return ''
+  }
+  const baseline = await readRuntimeChangeSignature(miniProgram)
+  return String(baseline.signature || '')
+}
+
+async function waitForActionCondition(
+  miniProgram: AnyRecord,
+  state: SessionState,
+  condition: AnyRecord | null,
+  options: AnyRecord,
+  context: AnyRecord,
+): Promise<AnyRecord | null> {
+  if (!condition) {
+    return null
+  }
+  return await waitForMiniProgramCondition(miniProgram, state, condition, {
+    timeout: options.timeout,
+    pathBefore: context.pathBefore,
+    scopeRef: context.scopeRef || null,
+    signatureBefore: context.signatureBefore || '',
+  })
+}
+
+async function finishRuntimeAction(
+  miniProgram: AnyRecord,
+  state: SessionState,
+  action: string,
+  condition: AnyRecord | null,
+  options: AnyRecord,
+  context: AnyRecord,
+): Promise<AnyRecord> {
+  const waitMs = resolveActionWaitMs(action, options.wait)
+  if (waitMs > 0) {
+    await sleep(waitMs)
+  }
+  const awaited = await waitForActionCondition(miniProgram, state, condition, options, context)
+  if (awaited) {
+    state.route = String(awaited.path || context.pathBefore || '')
+    return awaited
+  }
+  const page = await getCurrentPage(miniProgram)
+  state.route = String(page.path || context.pathBefore || '')
+  return { path: state.route }
 }
 
 async function buildOpenFailureDiagnostics(state: SessionState, options: AnyRecord) {
@@ -2890,6 +2944,7 @@ async function handleRelaunch(state: SessionState, route: string, options: AnyRe
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const pageBefore = await getCurrentPage(miniProgram).catch(() => null)
     const pathBefore = pageBefore && pageBefore.path ? pageBefore.path : state.route || ''
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
     const runtimeConfig = await getRuntimeAppConfig(miniProgram).catch(() => ({ tabBar: { list: [] } }))
     const method = isTabBarRoute(route, runtimeConfig) && typeof miniProgram.switchTab === 'function'
       ? 'switchTab'
@@ -2906,6 +2961,7 @@ async function handleRelaunch(state: SessionState, route: string, options: AnyRe
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
         pathBefore,
+        signatureBefore,
       }).then((result: AnyRecord) => ({
         path: result.path,
         routeEvents: [],
@@ -3067,7 +3123,9 @@ async function handleTap(state: SessionState, target: string, options: AnyRecord
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
-    const element = await resolveTarget(page, state, target, scopeRef)
+    const actionTarget = await resolveActionTarget(page, state, target, scopeRef)
+    const element = actionTarget.element
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
     await element.tap()
     if (waitMs > 0) {
       await sleep(waitMs)
@@ -3077,6 +3135,7 @@ async function handleTap(state: SessionState, target: string, options: AnyRecord
         timeout: options.timeout,
         pathBefore,
         scopeRef,
+        signatureBefore,
       }).then(async (result: AnyRecord) => ({
         path: result.path,
         routeEvents: (await syncRouteTimelineEvents(miniProgram, state)).events,
@@ -3097,6 +3156,124 @@ async function handleTap(state: SessionState, target: string, options: AnyRecord
   })
 
   markPendingVisualAction(state, 'click', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
+  await saveSessionState(state)
+  emit(attachFollowupPayload(payload, followup), options)
+}
+
+async function handleBack(state: SessionState, options: AnyRecord) {
+  const awaitCondition = resolveExplicitAwaitCondition(options.await, 'back', options)
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
+    const page = await getCurrentPage(miniProgram)
+    const pathBefore = String(page.path || '')
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
+    const result = await navigateBackWithFallback(miniProgram, state, {
+      timeout: options.timeout,
+    })
+    const awaited = await finishRuntimeAction(miniProgram, state, 'back', awaitCondition, options, {
+      pathBefore,
+      signatureBefore,
+    })
+    return {
+      message: `已返回 ${awaited.path || result.path}`,
+      path: awaited.path || result.path,
+    }
+  })
+
+  markPendingVisualAction(state, 'back', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
+  await saveSessionState(state)
+  emit(attachFollowupPayload(payload, followup), options)
+}
+
+async function handleScroll(state: SessionState, args: string[], options: AnyRecord, scopeRef: string | null = null) {
+  const pageDirections = new Set(['up', 'down'])
+  const pageMode = pageDirections.has(String(args[0] || '').toLowerCase())
+  const target = pageMode ? '' : args[0]
+  const direction = pageMode ? args[0] : args[1]
+  const distance = pageMode ? args[1] : args[2]
+  if (!direction) {
+    throw new Error('scroll requires: scroll <up|down> [distance], or scroll <target> <up|down|left|right> [distance].')
+  }
+
+  const awaitCondition = resolveExplicitAwaitCondition(options.await, 'scroll', options)
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
+    const page = await getCurrentPage(miniProgram)
+    const pathBefore = String(page.path || '')
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
+    if (pageMode) {
+      await performPageScroll(miniProgram, page, direction, distance)
+    } else {
+      await performElementScroll(await resolveTarget(page, state, target, scopeRef), direction, distance)
+    }
+    const awaited = await finishRuntimeAction(miniProgram, state, 'scroll', awaitCondition, options, {
+      pathBefore,
+      scopeRef,
+      signatureBefore,
+    })
+    return {
+      message: pageMode ? `已向${direction}滚动页面` : `已向${direction}滚动 ${target}`,
+      path: awaited.path || pathBefore,
+    }
+  })
+
+  markPendingVisualAction(state, 'scroll', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
+  await saveSessionState(state)
+  emit(attachFollowupPayload(payload, followup), options)
+}
+
+async function handleSwipe(state: SessionState, target: string, direction: string, distance: string, options: AnyRecord, scopeRef: string | null = null) {
+  if (!target || !direction) {
+    throw new Error('swipe requires a target and direction, e.g. swipe @e3 left.')
+  }
+  const awaitCondition = resolveExplicitAwaitCondition(options.await, 'swipe', options)
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
+    const page = await getCurrentPage(miniProgram)
+    const pathBefore = String(page.path || '')
+    const element = await resolveTarget(page, state, target, scopeRef)
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
+    const result = await performElementSwipe(element, direction, distance)
+    const awaited = await finishRuntimeAction(miniProgram, state, 'swipe', awaitCondition, options, {
+      pathBefore,
+      scopeRef,
+      signatureBefore,
+    })
+    return {
+      message: `已向${result.direction}滑动 ${target}`,
+      path: awaited.path || pathBefore,
+    }
+  })
+
+  markPendingVisualAction(state, 'swipe', payload.path)
+  const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
+  await saveSessionState(state)
+  emit(attachFollowupPayload(payload, followup), options)
+}
+
+async function handleLongpress(state: SessionState, target: string, options: AnyRecord, scopeRef: string | null = null) {
+  if (!target) {
+    throw new Error('longpress requires a target, e.g. longpress @e3.')
+  }
+  const awaitCondition = resolveExplicitAwaitCondition(options.await, 'longpress', options)
+  const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
+    const page = await getCurrentPage(miniProgram)
+    const pathBefore = String(page.path || '')
+    const element = await resolveTarget(page, state, target, scopeRef)
+    if (typeof element.longpress !== 'function') {
+      throw new Error(`Target does not support longpress: ${target}`)
+    }
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
+    await element.longpress()
+    const awaited = await finishRuntimeAction(miniProgram, state, 'longpress', awaitCondition, options, {
+      pathBefore,
+      scopeRef,
+      signatureBefore,
+    })
+    return { message: `已长按 ${target}`, path: awaited.path || pathBefore }
+  })
+
+  markPendingVisualAction(state, 'longpress', payload.path)
   const followup = options.follow ? await collectFollowupSnapshot(state, options) : null
   await saveSessionState(state)
   emit(attachFollowupPayload(payload, followup), options)
@@ -3128,6 +3305,7 @@ async function performInputAndWait(
 ) {
   const waitMs = resolveActionWaitMs('fill', options.wait)
   const awaitCondition = resolveExplicitAwaitCondition(options.await, 'fill', options)
+  const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
 
   await element.input(value)
   if (waitMs > 0) {
@@ -3141,6 +3319,7 @@ async function performInputAndWait(
     timeout: options.timeout,
     pathBefore,
     scopeRef,
+    signatureBefore,
   })
 }
 
@@ -3282,6 +3461,7 @@ async function handleNative(state: SessionState, method: string, args: string[],
   const payload = await withMiniProgram(state, async (miniProgram: AnyRecord) => {
     const page = await getCurrentPage(miniProgram)
     const pathBefore = page.path
+    const signatureBefore = await captureActionAwaitBaseline(miniProgram, awaitCondition)
     const result = await callNativeMethod(miniProgram, method, args)
     if (waitMs > 0) {
       await sleep(waitMs)
@@ -3290,6 +3470,7 @@ async function handleNative(state: SessionState, method: string, args: string[],
       ? await waitForMiniProgramCondition(miniProgram, state, awaitCondition, {
         timeout: options.timeout,
         pathBefore,
+        signatureBefore,
       }).then(async (awaitResult: AnyRecord) => ({
         path: awaitResult.path,
         routeEvents: (await syncRouteTimelineEvents(miniProgram, state)).events,
@@ -3783,6 +3964,18 @@ async function dispatch(state: SessionState, positional: string[], options: AnyR
     case 'tap':
     case 'click':
       await handleTap(state, rest[0], options, (context.scopeRef as string | null) || null)
+      return
+    case 'back':
+      await handleBack(state, options)
+      return
+    case 'scroll':
+      await handleScroll(state, rest, options, (context.scopeRef as string | null) || null)
+      return
+    case 'swipe':
+      await handleSwipe(state, rest[0], rest[1], rest[2], options, (context.scopeRef as string | null) || null)
+      return
+    case 'longpress':
+      await handleLongpress(state, rest[0], options, (context.scopeRef as string | null) || null)
       return
     case 'input':
     case 'fill':

@@ -193,6 +193,71 @@ async function resolveTarget(page: AnyRecord, state: AnyRecord, token: string, s
   return element
 }
 
+function openingTagOf(outerWxml: string): string {
+  const match = String(outerWxml || '').match(/^<[^>]+>/u)
+  return match ? match[0] : ''
+}
+
+async function findContainingLabel(scope: PageHandle, control: AnyRecord): Promise<AnyRecord | null> {
+  const readControlWxml = (control as { outerWxml?: () => Promise<string> }).outerWxml
+  if (typeof readControlWxml !== 'function') {
+    return null
+  }
+
+  const controlWxml = await readControlWxml.call(control).catch(() => '')
+  const controlOpeningTag = openingTagOf(controlWxml)
+  if (!controlWxml && !controlOpeningTag) {
+    return null
+  }
+
+  const labels = await scope.$$('label').catch(() => []) as AnyRecord[]
+  const matches: { element: AnyRecord; length: number }[] = []
+  for (const label of labels) {
+    const readLabelWxml = (label as { outerWxml?: () => Promise<string> }).outerWxml
+    if (typeof readLabelWxml !== 'function') {
+      continue
+    }
+    const labelWxml = await readLabelWxml.call(label).catch(() => '')
+    if ((controlWxml && labelWxml.includes(controlWxml))
+      || (controlOpeningTag && labelWxml.includes(controlOpeningTag))) {
+      matches.push({ element: label, length: labelWxml.length })
+    }
+  }
+
+  matches.sort((left, right) => left.length - right.length)
+  return matches.length ? matches[0].element : null
+}
+
+/**
+ * 解析真实点击目标。标准 checkbox/radio 在 DevTools 中直接 tap 可能不触发 group change，
+ * 因此优先点击包裹它的 label；其他元素保持原目标。
+ */
+async function resolveActionTarget(page: AnyRecord, state: AnyRecord, token: string, scopeRef: string | null = null): Promise<AnyRecord> {
+  const originalElement = await resolveTarget(page, state, token, scopeRef)
+  const record = isRefToken(token)
+    ? (state.refs as Record<string, AnyRecord | undefined>)[token]
+    : null
+  const kind = String((record && record.kind) || originalElement.tagName || '')
+
+  if (kind !== 'checkbox' && kind !== 'radio') {
+    return { element: originalElement, originalElement, via: 'target' }
+  }
+
+  let labelScope = page as PageHandle
+  if (scopeRef) {
+    const scopeRecord = (state.refs as Record<string, AnyRecord | undefined>)[scopeRef]
+    if (scopeRecord) {
+      labelScope = await resolveRecord(page, state, scopeRecord) as unknown as PageHandle
+    }
+  }
+  const label = await findContainingLabel(labelScope, originalElement)
+  return {
+    element: label || originalElement,
+    originalElement,
+    via: label ? 'label' : 'target',
+  }
+}
+
 /**
  * 交互式快照：重建页面 ref 映射，返回带 ref 的 snapshot 记录。
  *
@@ -351,6 +416,7 @@ async function queryRecords(page: AnyRecord, state: AnyRecord, mode: string, val
 module.exports = {
   resolveRecord,
   resolveTarget,
+  resolveActionTarget,
   snapshotInteractive,
   queryRecords,
 }
