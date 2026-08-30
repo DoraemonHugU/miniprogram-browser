@@ -75,6 +75,14 @@ const WSL_TEST_OPTIONS = {
   runtime: 'linux',
   readProcVersion: '5.15.0-microsoft-standard-WSL2',
   wslDistroName: 'ubuntu-test',
+  toWindowsPath(inputPath) {
+    const match = String(inputPath).match(/^\/mnt\/([a-z])(?:\/(.*))?$/iu)
+    if (!match) {
+      throw new Error(`Unexpected WSL test path: ${inputPath}`)
+    }
+    const [, driveLetter, rest = ''] = match
+    return `${driveLetter.toUpperCase()}:\\${rest.replace(/\//gu, '\\')}`
+  },
 }
 
 function createInteractivePage(labels) {

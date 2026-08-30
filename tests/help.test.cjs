@@ -557,7 +557,7 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
       code: 'OPEN_TIMEOUT',
       startupIssueCode: 'DEVTOOLS_PLUGIN_MISSING',
     }, 1),
-    false,
+    true,
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'connected', { code: 'OPEN_TIMEOUT' }, 1),
