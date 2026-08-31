@@ -331,6 +331,8 @@ miniprogram-browser open --session agent-task-a --fresh
 
 DevTools 的 `code: 10` 可能是“AppID 不存在”或“需要重新登录”，不是固定的登录过期码。`islogin=false` 也不能单独证明游客自动化不可用；以本次 CLI 原文和 App/view 的实际响应为准，不改用生产 AppID 绕过公开 Demo 验收。
 
+Windows/WSL 的 DevTools `2.02.2608060` 游客态已实测：官方 `open` 拒绝 `touristappid`，单独 `auto` 虽成功但仅 Tool endpoint 可连，App runtime 不响应。遇到该组合应保留原始错误并停止无变化的重复尝试；不要绕过失败的 `open`，或把 `auto` 成功输出、Tool 连通当作可用证据。验收仍需 `open → path → 非空 snapshot`；正式登录后的结果未验证。
+
 **冷启动 vs 热启动（体验心智）**：
 
 - 热启动：已有 live automation → 直接连（快）

@@ -109,6 +109,12 @@ export WECHAT_DEVTOOLS_CLI=/mnt/c/path/to/wechat-devtools/cli.bat
 
 如果你的 shell 已经设置了 `WECHAT_DEVTOOLS_CLI`，就不需要重复 `export`。
 
+### Windows 游客模式的已知限制
+
+2026-08-31 的 Windows/WSL 复验中，DevTools `2.02.2608060` 对公开 `touristappid` Demo 的官方 `open` 返回 `code: 10`、`不存在此 AppID 请检查后重新输入`。单独调用官方 `auto` 虽显示成功，但只有 Tool endpoint 可连，App runtime 调用仍超时；该环境的真实启动门禁及 L0 验收尚未通过。
+
+因此不能把跳过 `open` 直接 `auto` 当作可靠兜底，也不能用端口连通代替 `open → path → 非空 snapshot` 的验证。这是上述版本与游客状态下的已知结果，不代表所有 Windows 环境都不可用；正式登录后是否可用尚未验证。
+
 ### 跨平台项目路径
 
 `miniprogram-browser` 会按当前平台自动处理传给微信开发者工具 CLI 的项目路径。正常情况下只传当前 shell 可读的 `--project`；如果当前目录或同 Git 工作树能唯一发现小程序项目，也可以省略：
