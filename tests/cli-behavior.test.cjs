@@ -18,6 +18,7 @@ const {
   setActiveSession,
 } = require('../dist/lib/session-store.js')
 const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
+const { runDevtoolsCli } = require('../dist/lib/runtime-cli.js')
 
 const repoRoot = path.resolve(__dirname, '..')
 const cliPath = path.join(repoRoot, 'dist/miniprogram-browser.js')
@@ -649,6 +650,24 @@ test('open reports adopt/bootstrap resolution when reusing an explicit DevTools 
   assert.equal(payload.error.diagnostics.cleanup.sessionCleared, true)
 })
 
+test('DevTools CLI preserves project argv through real open, auto and close subprocesses', () => {
+  const fake = createFakeDevtoolsCli()
+  const expectedCalls = []
+
+  for (const name of ['plain', 'with spaces', '中文 示例']) {
+    const localProjectPath = path.join(PROJECT_ROOT, name)
+    const projectPath = isWslRuntime() ? toWindowsPath(localProjectPath) : localProjectPath
+    for (const command of ['open', 'auto', 'close']) {
+      const args = [command, '--project', projectPath]
+      const result = runDevtoolsCli({ cliPath: fake.cliPath }, args)
+      assert.equal(result.status, 0, JSON.stringify({ args, raw: result.raw, error: result.error }, null, 2))
+      expectedCalls.push(args)
+    }
+  }
+
+  assert.deepEqual(fake.readCallArgs(), expectedCalls)
+})
+
 test('open preserves complete --project argv with spaces and Chinese during startup cleanup', () => {
   const projectParent = fs.mkdtempSync(path.join(PROJECT_ROOT, 'mpb project 中文-'))
   const projectDir = createMiniProgramProject(projectParent)
@@ -672,17 +691,20 @@ test('open preserves complete --project argv with spaces and Chinese during star
   const payload = parseJsonOutput(result)
   const calls = fake.readCalls()
   const callArgs = fake.readCallArgs()
+  const failureContext = `${JSON.stringify(callArgs)}\n${JSON.stringify(payload, null, 2)}`
 
   assert.notEqual(result.status, 0)
-  assert.equal(payload.error.code, 'OPEN_TIMEOUT')
-  const failureContext = `${calls.join('\n')}\n${JSON.stringify(payload, null, 2)}`
+  assert.equal(payload.error.code, 'OPEN_TIMEOUT', failureContext)
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), failureContext)
   assert.ok(calls.some((line) => /^close --project /u.test(line)), failureContext)
-  const autoArgs = callArgs.find((args) => args[0] === 'auto')
-  assert.ok(autoArgs, JSON.stringify(callArgs))
-  const projectArgIndex = autoArgs.indexOf('--project')
-  assert.ok(projectArgIndex >= 0, JSON.stringify(autoArgs))
-  assert.equal(autoArgs[projectArgIndex + 1], isWslRuntime() ? toWindowsPath(projectDir) : projectDir)
+  const expectedCommands = process.platform === 'win32' || isWslRuntime() ? ['open', 'auto', 'close'] : ['auto', 'close']
+  for (const command of expectedCommands) {
+    const args = callArgs.find((entry) => entry[0] === command)
+    assert.ok(args, failureContext)
+    const projectArgIndex = args.indexOf('--project')
+    assert.ok(projectArgIndex >= 0, failureContext)
+    assert.equal(args[projectArgIndex + 1], isWslRuntime() ? toWindowsPath(projectDir) : projectDir, failureContext)
+  }
   assert.match(projectDir, /mpb project 中文-/u)
   assert.equal(payload.error.diagnostics.cleanup.projectClosed, true)
 })
