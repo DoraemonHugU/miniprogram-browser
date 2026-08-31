@@ -285,7 +285,10 @@ function runDevtoolsCli(config: AnyRecord, args: string[], options: AnyRecord = 
   if (hasWindowsBundle && /\.bat$/iu.test(cliPath)) {
     // Node 官方约束：Windows 不能把 .bat 当作独立可执行文件，需由 cmd.exe 启动。
     // https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows
-    result = runner('cmd.exe', ['/d', '/c', windowsCliArg, ...args], {
+    // cwd 已定位安装目录；用相对入口，避免安装路径和项目路径都含空格时，
+    // cmd /c 剥除首尾引号，将完整的 CLI 路径截断。
+    // https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd#remarks
+    result = runner('cmd.exe', ['/d', '/c', `.\\${path.win32.basename(windowsCliArg)}`, ...args], {
       cwd: cliDirectory,
       encoding: 'utf8',
       timeout: timeoutMs,

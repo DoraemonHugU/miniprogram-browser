@@ -1613,50 +1613,51 @@ test('WSL UNC and macOS paths do not use the Windows pre-open sequence', () => {
   }), false)
 })
 
-test('enableAutomation invokes the current Windows cli.bat entry without requiring node.exe', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-bundle-'))
-  const cliBatPath = path.join(tempDir, 'cli.bat')
-  fs.writeFileSync(cliBatPath, '')
+for (const runtime of ['win32', 'linux']) {
+  test(`enableAutomation invokes cli.bat from its working directory on ${runtime} without node.exe`, () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb fake devtools 中文-'))
+    const cliBatPath = path.join(tempDir, 'cli.bat')
+    fs.writeFileSync(cliBatPath, '')
 
-  const calls = []
+    const calls = []
 
-  enableAutomation({
-    cliPath: cliBatPath,
-    projectPath: '/mnt/f/demo/apps/miniprogram',
-    autoPort: '9421',
-    devtoolsPort: '',
-  }, {
-    runtime: 'linux',
-    readProcVersion: '5.15.0-microsoft-standard-WSL2',
-    toWindowsPath(inputPath) {
-      if (/[\\/]cli\.bat$/u.test(inputPath)) {
-        return 'F:\\tools\\wechat-devtools\\cli.bat'
-      }
-      return 'F:\\demo\\apps\\miniprogram'
-    },
-    spawnSync(command, args, options) {
-      calls.push({ command, args, options })
-      return {
-        status: 0,
-        signal: null,
-        output: [],
-        pid: 1,
-        stdout: '✔ IDE server has started, listening on http://127.0.0.1:38596\n',
-        stderr: '',
-      }
-    },
+    enableAutomation({
+      cliPath: cliBatPath,
+      projectPath: '/mnt/f/demo project/中文',
+      autoPort: '9421',
+      devtoolsPort: '',
+    }, {
+      runtime,
+      readProcVersion: '5.15.0-microsoft-standard-WSL2',
+      toWindowsPath(inputPath) {
+        if (/[\\/]cli\.bat$/u.test(inputPath)) {
+          return 'F:\\tools 中文\\wechat devtools\\cli.bat'
+        }
+        return 'F:\\demo project\\中文'
+      },
+      spawnSync(command, args, options) {
+        calls.push({ command, args, options })
+        return {
+          status: 0,
+          signal: null,
+          output: [],
+          pid: 1,
+          stdout: '✔ IDE server has started, listening on http://127.0.0.1:38596\n',
+          stderr: '',
+        }
+      },
+    })
+
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].command, 'cmd.exe')
+    assert.deepEqual(calls[0].args, [
+      '/d', '/c', '.\\cli.bat', 'auto',
+      '--project', 'F:\\demo project\\中文',
+      '--auto-port', '9421', '--debug',
+    ])
+    assert.equal(calls[0].options.cwd, tempDir)
   })
-
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].command, 'cmd.exe')
-  assert.deepEqual(calls[0].args.slice(0, 4), [
-    '/d',
-    '/c',
-    'F:\\tools\\wechat-devtools\\cli.bat',
-    'auto',
-  ])
-  assert.equal(calls[0].options.cwd, tempDir)
-})
+}
 
 test('validateAutomationCliConfig prefers cli.bat and falls back to the legacy cli.js bundle', () => {
   const currentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-current-devtools-bundle-'))
