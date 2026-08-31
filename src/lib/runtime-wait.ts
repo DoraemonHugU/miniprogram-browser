@@ -497,7 +497,7 @@ function buildNativeDiagnostic(method: string, result: unknown, context: AnyReco
     } else if (method === 'goHome') {
       hint = 'DevTools 当前宿主环境可能不支持 goHome，或当前并非可回首页场景；可改用 relaunch 到首页。'
     } else if (method === 'confirmModal' || method === 'cancelModal') {
-      hint = '当前可能没有系统 modal；先触发对应动作，再调用该 native 命令。'
+      hint = '请先截图确认弹窗，再核验业务回调结果；当前 DevTools 的原生控制通道可能不可用。'
     }
 
     diagnostic.message = `${method} failed`
@@ -506,11 +506,9 @@ function buildNativeDiagnostic(method: string, result: unknown, context: AnyReco
     return diagnostic
   }
 
-  if ((method === 'confirmModal' || method === 'cancelModal')
-    && context.pathBefore === context.pathAfter
-    && routeNotices.length === 0) {
-    diagnostic.message = `${method} 未观察到明显变化`
-    diagnostic.hint = '当前可能没有系统 modal，或该 modal 对当前路由没有可见影响；可结合 timeline/logs 再确认。'
+  if (method === 'confirmModal' || method === 'cancelModal') {
+    diagnostic.message = `已调用 native ${method}；弹窗结果未验证`
+    diagnostic.hint = '原生接口的空返回不证明弹窗已处理；请通过截图或业务回调结果核验，不能仅依据路由判断。'
     return diagnostic
   }
 

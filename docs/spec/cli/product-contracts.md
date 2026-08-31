@@ -54,7 +54,7 @@ open [ --project ] [ --session ]
 
 真机 L0 门禁覆盖左右滑动、原生 swiper、长按、页面/容器滚动、瞬时状态与返回，并在成功或失败退出时清理自己的 session。
 
-`miniprogram-automator` 的 `confirmModal` / `cancelModal` 返回空结果不能证明弹窗已关闭。在该能力能用真实官方自动化路径验收前，不将弹窗确认/取消暴露为 L0 命令，也不用 `eval/setData`、OCR 或 GUI 驱动伪造通过。
+`miniprogram-automator` 的 `confirmModal` / `cancelModal` 返回空结果不能证明弹窗已关闭；CLI 必须提示结果未验证，不能根据路由是否变化推断弹窗状态。在该能力能用真实官方自动化路径验收前，不将弹窗确认/取消暴露为 L0 命令，也不用 `eval/setData`、OCR 或 GUI 驱动伪造通过。
 
 Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
 

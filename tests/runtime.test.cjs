@@ -1280,7 +1280,7 @@ test('buildNativeDiagnostic explains failed native switchTab', () => {
   assert.match(diagnostic.hint, /tabBar|原生 tab/i)
 })
 
-test('buildNativeDiagnostic reports route change after confirmModal', () => {
+test('buildNativeDiagnostic preserves observed routes without claiming modal completion', () => {
   const diagnostic = buildNativeDiagnostic('confirmModal', {}, {
     pathBefore: 'pages/dashboard/index',
     pathAfter: 'pages/account-profile/index',
@@ -1290,19 +1290,22 @@ test('buildNativeDiagnostic reports route change after confirmModal', () => {
   })
 
   assert.equal(diagnostic.path, 'pages/account-profile/index')
-  assert.match(diagnostic.message, /已执行 native confirmModal/)
+  assert.match(diagnostic.message, /confirmModal.*弹窗结果未验证/u)
   assert.deepEqual(diagnostic.notices, ['navigateTo pages/dashboard/index -> pages/account-profile/index'])
 })
 
-test('buildNativeDiagnostic warns when confirmModal has no visible effect', () => {
-  const diagnostic = buildNativeDiagnostic('confirmModal', {}, {
-    pathBefore: 'pages/dashboard/index',
-    pathAfter: 'pages/dashboard/index',
-    routeEvents: [],
-  })
+test('buildNativeDiagnostic does not infer modal state from an unchanged route', () => {
+  for (const method of ['confirmModal', 'cancelModal']) {
+    const diagnostic = buildNativeDiagnostic(method, {}, {
+      pathBefore: 'pages/dashboard/index',
+      pathAfter: 'pages/dashboard/index',
+      routeEvents: [],
+    })
 
-  assert.match(diagnostic.message, /confirmModal 未观察到明显变化/)
-  assert.match(diagnostic.hint, /当前可能没有系统 modal|logs|timeline/i)
+    assert.match(diagnostic.message, /弹窗结果未验证/u)
+    assert.match(diagnostic.hint, /截图|业务回调/u)
+    assert.doesNotMatch(diagnostic.hint, /当前可能没有系统 modal/u)
+  }
 })
 
 test('buildClickNotices keeps successful same-page clicks free of speculative navigation warnings', () => {
