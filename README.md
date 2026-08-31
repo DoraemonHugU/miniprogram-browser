@@ -78,7 +78,7 @@ CLI 源码位于 `src/**/*.ts`，发布和本地执行入口由 TypeScript 编�
 使用前请确保：
 
 1. 已安装 Node.js 22 或 24 LTS
-2. 已安装并登录微信开发者工具
+2. 已安装微信开发者工具；普通项目需有效登录态，游客 Demo 的自动化可用性须以实际门禁为准
 3. 已在开发者工具中开启 **服务端口**；升级开发者工具后请重新确认该开关
 4. 首次使用需要能确定小程序项目根目录；可以显式传 `--project`，也可以从当前目录 / Git 工作树唯一发现
 5. CLI 路径配置正确：
@@ -280,8 +280,8 @@ miniprogram-browser await stable --session demo
 
 ## 已知边界
 
-- 必须已登录微信开发者工具；登录 token 过期时无法启用自动化（无游客模式绕过）。失败时会给出人话说明，并保留 DevTools 原始错误
-- fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` / `devtools logs` 判断是否真的失败
+- `islogin=false` 只说明没有正式账号登录，不能单独判定游客 Demo 不支持自动化；`code: 10` 也不等于登录过期。CLI 按本次错误原文区分“AppID 不存在”“需要重新登录”和 token 过期，保留 raw；明确登录拒绝时不绕过账号校验。游客模式仍须通过 `open → path → snapshot` 才算可用
+- fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` 和本次返回的原始错误判断是否真的失败
 - 如果 fresh 启动阶段已经看到页面显示，但 `open` 仍未成功，重跑同一个不带 `--fresh` 的 `open`，再按需要 `await app-ready` / `await stable`；不要立刻再次 `--fresh`
 - `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳；若同时存在多个 live runtime，先用 `session list` 再显式传 `--session <name>`
 - 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工已打开的实例建议先 `doctor --project <path> --devtools-port <port>`

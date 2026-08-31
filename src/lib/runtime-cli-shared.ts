@@ -42,7 +42,7 @@ function hasAutomationCliSuccessSignal(rawMessage: string): boolean {
     return false
   }
   // 明确致命信号优先于成功外观（例如成功 Using 之后又 INVALID_LOGIN 极少见，但 41002 真失败更常见）
-  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|errcode\s*=\s*41002|\bappid missing\b/iu.test(message)) {
+  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|errcode\s*=\s*41002|\bappid missing\b|不存在此\s*AppID|需要重新登录|请先登录|code:\s*10\b/iu.test(message)) {
     return false
   }
   return /Using AppID:\s*wx\w+/iu.test(message)
@@ -66,7 +66,7 @@ function summarizeDevtoolsCliRaw(rawMessage: string, options: { maxLines?: numbe
     return raw
   }
 
-  const signalPattern = /\[error\]|INVALID_LOGIN|access_token|errcode\s*=|41002|42001|appid missing|Using AppID|start cli server error|QR_PATH|code:\s*1[07]\b|wait IDE port timeout|must be restarted|TypeError|Cannot read propert|long connection established|[✔√]\s*auto\b/iu
+  const signalPattern = /\[error\]|INVALID_LOGIN|access_token|errcode\s*=|41002|42001|appid missing|不存在此\s*AppID|需要重新登录|请先登录|Using AppID|start cli server error|QR_PATH|code:\s*1[07]\b|wait IDE port timeout|must be restarted|TypeError|Cannot read propert|long connection established|[✔√]\s*auto\b/iu
   const signalLines: string[] = []
   const otherLines: string[] = []
   for (const line of lines) {
@@ -132,8 +132,9 @@ function explainDevtoolsFailureRaw(rawMessage: string): string | null {
     return null
   }
 
-  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001|code:\s*10\b/iu.test(message)) {
-    return '微信开发者工具登录态失效（access_token 过期 / INVALID_LOGIN）。自动化无法在未登录状态下启用；请在 DevTools 中重新登录后再 open/connect。底层原始错误见 raw。'
+  // code 10 是通用错误编号；只有具体错误文本能区分登录与 AppID 问题。
+  if (/INVALID_LOGIN|access_token\s*expired|errcode\s*=\s*42001/iu.test(message)) {
+    return '微信开发者工具登录态失效（access_token 过期 / INVALID_LOGIN）。本次调用被登录校验拒绝；请在 DevTools 中重新登录后再 open/connect。底层原始错误见 raw。'
   }
 
   // 真 AppID 失败：必须有 41002 / appid missing 等明确失败信号；
@@ -142,8 +143,12 @@ function explainDevtoolsFailureRaw(rawMessage: string): string | null {
     return 'DevTools 未能读取到有效 AppID（常见 41002 / appid missing）。请确认项目 project.config 中 AppID 配置正确，并在开发者工具中能正常打开该项目。底层原始错误见 raw。'
   }
 
-  if (/not login|islogin.*false|please login|请先登录/iu.test(message)) {
-    return '微信开发者工具当前未登录。请先完成 DevTools 登录，再重试 open/connect。底层原始错误见 raw。'
+  if (/不存在此\s*AppID/iu.test(message)) {
+    return 'DevTools 未接受当前项目的 AppID。请核对 project.config.json 的 AppID 与本次官方 CLI 原始错误；不能仅凭 code 10 判定登录过期。底层原始错误见 raw。'
+  }
+
+  if (/not login|please login|请先登录|需要重新登录/iu.test(message)) {
+    return '微信开发者工具明确要求登录后才能完成本次调用。请在 DevTools 中完成登录，再重试 open/connect。底层原始错误见 raw。'
   }
 
   return null
@@ -216,7 +221,8 @@ function parseAutomationCliFailure(result: { error?: Error; raw?: string; stdout
   // 登录失效等关键失败：优先人话，raw 保留完整底层输出
   const explained = explainDevtoolsFailureRaw(raw)
   if (explained) {
-    const signalLine = raw.split(/\r?\n/u).find((line) => /INVALID_LOGIN|access_token|41002|42001|code:\s*10\b/iu.test(line))
+    const signalLine = raw.split(/\r?\n/u).find((line) => /INVALID_LOGIN|access_token|41002|42001|不存在此\s*AppID|需要重新登录|请先登录/iu.test(line))
+      || raw.split(/\r?\n/u).find((line) => /code:\s*10\b/iu.test(line))
       || raw.split(/\r?\n/u).find((line) => /^\s*\[error\]/iu.test(line))
       || raw
     return {
@@ -227,8 +233,8 @@ function parseAutomationCliFailure(result: { error?: Error; raw?: string; stdout
     }
   }
 
-  if (/^\s*\[error\]/imu.test(raw)) {
-    const firstErrorLine = raw.split(/\r?\n/u).find((line) => /^\s*\[error\]/iu.test(line)) || raw
+  if (/^\s*\[error\]|\bcode:\s*10\b/imu.test(raw)) {
+    const firstErrorLine = raw.split(/\r?\n/u).find((line) => /^\s*\[error\]|\bcode:\s*10\b/iu.test(line)) || raw
     return {
       code: 'DEVTOOLS_CLI_ERROR',
       message: `WeChat DevTools CLI reported an error: ${firstErrorLine.trim()}`,

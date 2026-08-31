@@ -21,7 +21,7 @@ npx miniprogram-browser ...
 
 - `--project` 指向当前系统可读的小程序项目根目录；当前目录或同 Git 工作树能唯一发现项目时可以省略
 - 传给微信开发者工具的项目路径由 CLI 按平台自动处理（macOS/Windows 通常可直接用；WSL 绝对路径统一交给系统 `wslpath` 转换，支持自定义 automount root；Linux 家目录转换成 UNC 后若 DevTools 不接受，再用 `--devtools-project` / `--project-map`）
-- 必须已登录微信开发者工具；登录过期时无法自动化，错误里会保留开发者工具侧的原始信息
+- 普通项目需有效的微信开发者工具登录态；游客 Demo 不以 `islogin=false` 单独判失败，实际能否操作须验证 `open → path → snapshot`；明确登录拒绝时不绕过账号校验，错误保留官方原文
 - 它不是浏览器 DOM 自动化，部分自定义组件在运行时里可能不透明
 
 不要用它做上传、预览、发布、CI 打包；那属于 `miniprogram-ci`。
@@ -212,7 +212,7 @@ miniprogram-browser wait 1200 --session feat-a
 - `stable` 只表示 route/page-stack 暂时安静，不代表业务请求、数据渲染或渲染侧 automation 已完成；视图能力单独看 `viewReady` / `viewError`
 - automation 启用后立即探测 live 状态，未就绪才轮询；`doctor --wait` 限制的是状态轮询时长，`--wait 0` 表示单次探测
 - `goto` 直接发起路由动作并等待目标路由稳定，不依赖 SDK 内置固定 sleep
-- `RUNTIME_UNSTABLE` 时不要先重启；优先 `await stable`，再用 `doctor` / `devtools logs`
+- `RUNTIME_UNSTABLE` 时不要先重启；优先 `await stable`，再用 `doctor` 和本次返回的原始错误
 - fresh 失败但人已看到页面：直接**无** `--fresh` 重开，再按状态 `await`
 - 信任确认框：人确认后再 `open` / `await app-ready`
 - 若日志里已出现 AppID 相关成功线索，但 automation 仍连不上，更可能是开发者工具自身服务/编译未就绪，而不是路径写错
@@ -329,13 +329,15 @@ miniprogram-browser open --session agent-task-a --fresh
 
 不要假设一定有固定错误码字段；以可读说明 + 原始日志为准。
 
+DevTools 的 `code: 10` 可能是“AppID 不存在”或“需要重新登录”，不是固定的登录过期码。`islogin=false` 也不能单独证明游客自动化不可用；以本次 CLI 原文和 App/view 的实际响应为准，不改用生产 AppID 绕过公开 Demo 验收。
+
 **冷启动 vs 热启动（体验心智）**：
 
 - 热启动：已有 live automation → 直接连（快）
 - 冷启动：Windows/WSL 可直接消费的盘符路径会自动执行 `open → auto`；macOS、WSL UNC 等路径走平台适用的 `auto`，随后等端口 live 再连接
 - 冷启动超时：CLI 会**自动**在「本 port 已 live / 同项目其它 live」时自愈重连，多数情况**不必**人再 open 一次
 - 自动救援只使用本次申请的端口或 runtime 池中明确属于同项目的端口；不会因为本机另一个 automation 端口可连就跨项目附着
-- 仍失败时再：加大 `--timeout` 重试同一 open；**不要立刻 `--fresh`**；最后才 `devtools logs` / 重启开发者工具
+- 仍失败时再：加大 `--timeout` 重试同一 open；**不要立刻 `--fresh`**；用 `doctor` 和本次原始错误判断阻塞原因
 
 若 `snapshot` 返回 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE`，表示 WebSocket 和 `App.*` 已连通，但 DevTools 的 `Page.*` / `Element.*` 渲染侧接口没有响应。保留 `raw` 后先重启或升级 DevTools；这不是把公开 Demo 的 `touristappid` 换成生产 AppID 就能解决的问题。
 
@@ -345,7 +347,6 @@ miniprogram-browser open --session agent-task-a --fresh
 
 - `app inspect`：应用结构摘要
 - `doctor`：区分开发者工具、自动化连接、小程序 App 是否就绪；**已 live 时只 probe，不会再跑一轮 `auto`**
-- `devtools logs`：显式读取开发者工具共享日志，不按项目隔离；可能混入其他项目的内容。涉及生产项目时不要采集、引用或提交。`open` / `await` / `doctor` 不会自动读取共享日志。
 - `timeline`：路由变化
 - `logs` / `exceptions`：console 与异常（优先用来理解数据加载、点击后发生了什么）
 - `system-info` / `page-stack`：设备与页面栈
@@ -356,7 +357,6 @@ miniprogram-browser doctor --session feat-a --json
 miniprogram-browser logs --session feat-a --limit 20
 miniprogram-browser exceptions --session feat-a
 miniprogram-browser timeline --session feat-a
-miniprogram-browser devtools logs --session feat-a --limit 40 --grep "appservice|simulator|error"
 ```
 
 建议：
@@ -370,6 +370,7 @@ miniprogram-browser devtools logs --session feat-a --limit 40 --grep "appservice
 
 ### 底层与辅助命令
 
+- `devtools logs`：显式读取共享日志，`--session` **不会**限制到当前项目。只有确认共享日志不含其他项目敏感信息时才使用；不得作为默认诊断步骤，也不得将生产信息采集、引用或提交。`open` / `await` / `doctor` 不会自动读取它。
 - `protocol <method> [json]`：自动化底层调用（如排查用）；**非**日常入口
 - `eval` / `eval --stdin`：小程序运行时脚本（不是浏览器 DOM）
 - `native <method> [...]`：开发者工具原生控制通道
@@ -463,7 +464,7 @@ miniprogram-browser app inspect --all
 | 优先 | 用途 | 示例 |
 |------|------|------|
 | 主路径 | 日常操作 | `open` `snapshot` `click` `fill` `back` `scroll` `swipe` `longpress` `get` `goto` `await` `close` `session` `path` |
-| 诊断 | 搞不清状态时 | `doctor` `logs` `exceptions` `timeline` `devtools logs` `app inspect` |
+| 诊断 | 搞不清状态时 | `doctor` `logs` `exceptions` `timeline` `app inspect` |
 | 逃逸 | 标准命令不够时 | `protocol` `eval` `native` `call` `query` `within` 及高级截图 |
 
 成功时优先看：`session`、`path`、`mode`、`project`，以及回显的连接端口信息。  
@@ -501,7 +502,7 @@ miniprogram-browser app inspect --all
 - 误以为 `open` 成功就等于已在目标页；应 `path` / `app inspect` / `snapshot` 确认
 - 误以为总能猜中项目目录；发现失败时要显式 `--project`
 - 误以为 WSL 里 `--project` 可以写 `P:\...`；应写 Linux 可读路径，必要时用 `--devtools-project` / `--project-map`
-- 误以为登录过期仍能自动化；需在开发者工具重新登录
+- 本次 raw 明确报告登录拒绝时，应在开发者工具重新登录；不要仅凭 `islogin=false` 或 `code: 10` 推断
 - 误以为 `Page.getElements` 超时必须换真实 AppID；先看 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE` 与原始协议错误，公开 Demo 继续使用 `touristappid`
 - 误以为必须每次手写端口；日常不用管，成功输出里的端口仅供确认与排障
 - 误以为 `@eN` 永久有效或跨页/跨 session 仍可用

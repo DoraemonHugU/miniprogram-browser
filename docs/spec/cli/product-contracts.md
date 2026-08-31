@@ -80,7 +80,8 @@ Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 
 
 - DevTools 成功 `auto` 也会打印 `Fetching AppID () permissions`，随后才有 `Using AppID: wx…` / `✔ auto`。
 - **禁止**仅凭 `Fetching AppID () permissions` 判定 AppID 缺失。
-- 真失败须有明确信号：`errcode=41002` / `appid missing` 等，且无成功 `Using AppID`。
+- 真失败须有明确信号：`errcode=41002` / `appid missing` 等；即使较早出现 `Using AppID`，明确失败也优先。
+- `code: 10` 本身不是登录过期证据；按本次原文区分 `不存在此 AppID`、`需要重新登录` 与 `INVALID_LOGIN/access_token expired`。明确错误不得被较早的 `✔ auto` 掩盖；中文原因须保留在文本摘要及完整 raw 中。单独 `islogin=false` 不是游客 automation 失败信号，仍须实际验证 App 与渲染接口。
 - 实现：`hasAutomationCliSuccessSignal` / `explainDevtoolsFailureRaw` / `parseAutomationCliFailure`（`runtime-cli-shared.ts`）。
 - automation WebSocket 和 `App.*` 成功、但 `Page.getElements` / `Element.getWXML` 超时，必须在有限时间内返回 `DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE` 并保留原始协议超时；不得返回空 snapshot 或要求改用生产 AppID。
 
@@ -183,6 +184,7 @@ autoPort 不落 session 文件；成功可回显
 - 冷启动/失败分类：`tests/runtime.test.cjs`
   - 成功 raw（Fetching + Using AppID + ✔ auto）→ `parseAutomationCliFailure` null
   - 真 41002 → 仍人话 AppID + raw
+  - code 10 的 AppID/登录/未知原因分别处理；游客 `islogin=false` 不直接判失败，明确错误优先于较早的成功文本
   - `summarizeDevtoolsCliRaw` 保留 error 行且有行数上界
   - `connectOrEnable({ allowEnable: false })` 非 live → 提示先 open
 - 若未来对输出字段做代码 enforcement，另开任务

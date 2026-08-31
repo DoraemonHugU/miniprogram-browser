@@ -201,11 +201,11 @@ function readText(selector, label) {
   caseResult(id, true, `clicked ${target.ref} kind=${target.kind}`)
 }
 
-// 12) logs command does not crash (branch: L1 soft)
+// 12) logs returns a valid event list; an empty list is allowed.
 {
   const id = 'logs.list'
   const r = runJson(['logs', '--session', sessionA, '--project', project, '--limit', '5', '--json'], id)
-  h.assertOk(r.result.status === 0 || r.ok, id, { status: r.result.status, payload: r.payload })
+  h.assertOk(r.ok && Array.isArray(r.payload.events), id, { status: r.result.status, payload: r.payload })
   caseResult(id, true, 'ok')
 }
 
@@ -213,7 +213,7 @@ function readText(selector, label) {
 {
   const id = 'page-stack'
   const r = runJson(['page-stack', '--session', sessionA, '--project', project, '--json'], id)
-  h.assertOk(r.result.status === 0 || r.ok, id, r.payload)
+  h.assertOk(r.ok && Array.isArray(r.payload.pages) && r.payload.pages.length > 0, id, r.payload)
   caseResult(id, true, 'ok')
 }
 

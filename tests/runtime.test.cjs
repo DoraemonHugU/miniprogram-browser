@@ -1353,6 +1353,48 @@ test('parseAutomationCliFailure explains INVALID_LOGIN from CLI output with raw 
   assert.match(String(failure.hint || ''), /INVALID_LOGIN|access_token|code:\s*10/i)
 })
 
+test('DevTools code 10 describes the actual AppID or login error instead of assuming token expiry', () => {
+  for (const prefix of ['', '✔ auto\n']) {
+    for (const detail of ['不存在此 AppID 请检查后重新输入', '需要重新登录']) {
+      const raw = `${prefix}[error] {\n  code: 10,\n  message: '${detail}'\n}`
+      const failure = parseAutomationCliFailure({ status: 0, raw }, {})
+      assert.ok(failure)
+      assert.equal(failure.raw, raw)
+      if (detail.includes('AppID')) {
+        assert.match(failure.message, /AppID/u)
+        assert.doesNotMatch(failure.message, /登录态失效|access_token|重新登录/u)
+      } else {
+        assert.match(failure.message, /登录/u)
+        assert.doesNotMatch(failure.message, /access_token|INVALID_LOGIN/u)
+      }
+    }
+  }
+})
+
+test('unknown DevTools code 10 preserves its raw failure without inventing a login cause', () => {
+  for (const status of [0, 1]) {
+    for (const prefix of ['[error] ', '✔ auto\n']) {
+      const raw = `${prefix}code: 10\nsynthetic unknown failure`
+      const failure = parseAutomationCliFailure({ status, raw }, {})
+      assert.ok(failure)
+      assert.equal(failure.raw, raw)
+      assert.doesNotMatch(failure.message, /登录|access_token|INVALID_LOGIN/u)
+    }
+  }
+})
+
+test('islogin false alone is not proof that tourist automation cannot work', () => {
+  const raw = '{"islogin":false}'
+  assert.equal(explainDevtoolsFailureRaw(raw), null)
+  assert.equal(parseAutomationCliFailure({ status: 0, raw }, {}), null)
+  assert.equal(parseAutomationCliFailure({ status: 0, raw: `${raw}\n✔ Using AppID: touristappid\n✔ auto` }, {}), null)
+})
+
+test('DevTools raw summary retains the Chinese code 10 cause among long debug output', () => {
+  const raw = [...Array.from({ length: 30 }, (_, i) => `padding ${i}`), '[error] {', 'code: 10,', "message: '不存在此 AppID 请检查后重新输入'", '}', ...Array.from({ length: 30 }, (_, i) => `tail ${i}`)].join('\n')
+  assert.match(summarizeDevtoolsCliRaw(raw, { maxLines: 8 }), /不存在此 AppID/u)
+})
+
 test('parseAutomationCliFailure does not treat successful auto log with Fetching AppID as AppID failure', () => {
   const raw = [
     '- Fetching AppID () permissions',
