@@ -1,0 +1,27 @@
+.list {
+  margin-top: 28rpx;
+}
+
+.list-item {
+  align-items: center;
+  background: #ffffff;
+  border: 1rpx solid #e5e7eb;
+  border-radius: 12rpx;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+  padding: 20rpx;
+}
+
+.item-label {
+  flex: 1;
+}
+
+.item-actions {
+  display: flex;
+  gap: 12rpx;
+}
+
+.item-button {
+  margin: 0;
+}

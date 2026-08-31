@@ -1,0 +1,22 @@
+{
+  "name": "miniprogram-browser-uni-app-demo",
+  "appid": "touristappid",
+  "description": "Synthetic public demo only",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "uniStatistics": {
+    "enable": false
+  },
+  "mp-weixin": {
+    "appid": "touristappid",
+    "uniStatistics": {
+      "enable": false
+    },
+    "setting": {
+      "urlCheck": false
+    },
+    "usingComponents": true
+  },
+  "vueVersion": "3"
+}

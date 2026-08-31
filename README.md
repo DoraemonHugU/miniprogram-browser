@@ -1,11 +1,13 @@
 # miniprogram-browser
 
-面向微信小程序的 `agent-browser` 风格自动化 CLI。配套 skills 分别放在 `skills/miniprogram-browser/` 和 `skills/image-processing/`。
+面向微信小程序的 `agent-browser` 风格自动化 CLI。配套 skills 分别放在 `skills/miniprogram-browser/`、`skills/image-processing/` 和 `skills/miniprogram-browser-release/`。
 
 当前状态：**beta / preview**。
 
 - GitHub: https://github.com/DoraemonHugU/miniprogram-browser
 - npm: https://www.npmjs.com/package/miniprogram-browser
+- Roadmap: [ROADMAP.md](ROADMAP.md)
+- 维护规范：[docs/spec/index.md](docs/spec/index.md)
 
 ## 安装
 
@@ -30,11 +32,25 @@ npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/ski
 
 这个 skill 目录现在只包含 `SKILL.md`，不会再把 `tests/` 或 CLI 源码一起装进去。
 
+发布边界要分清：
+
+- npm 包只分发 CLI 运行时
+- GitHub 仓库负责同步 `skills/miniprogram-browser/`、`skills/image-processing/` 和 `skills/miniprogram-browser-release/`
+- 因此发布新版本时，`npm publish` 之外还需要把仓库推到 GitHub，skill 安装端才会看到最新 `SKILL.md`
+
 如果要安装离线图片处理 skill，可使用：
 
 ```bash
 npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/image-processing
 ```
+
+维护者需要规划版本、校验发布物或执行 npm / GitHub Release 时，可安装仓库专用 Release skill：
+
+```bash
+npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/skills/miniprogram-browser-release
+```
+
+它不会把“准备版本”自动扩大成 commit、tag、push 或 `npm publish`，也不负责上传或发布微信小程序。
 
 如果只想给特定 agent 安装，可继续使用 `skills` CLI 的 `--agent` / `--global` 等参数。
 
@@ -42,22 +58,34 @@ npx skills add https://github.com/DoraemonHugU/miniprogram-browser/tree/main/ski
 
 ```bash
 npm install
+npm run build
 npm test
-node scripts/miniprogram-browser.cjs help
+
+# 可选：真机 open 门禁（需本机 DevTools；缺环境 exit 2）
+# export WECHAT_DEVTOOLS_CLI=...
+# export MINIPROGRAM_BROWSER_GATE_PROJECT=...
+npm run test:real-open-gate
+npm run test:l0-e2e           # L0 旅程+交互（session/goto/swipe/scroll/back…）
+node dist/miniprogram-browser.js help
 ```
 
-本地跑完整测试前，还需要系统里有可用的 `python` 命令（用于图片处理 skill 的隔离虚拟环境和测试）。
+CLI 源码位于 `src/**/*.ts`，发布和本地执行入口由 TypeScript 编译到 `dist/**/*.js`。本地跑完整测试前，还需要系统里有可用的 `python` 命令（用于图片处理 skill 的隔离虚拟环境和测试）。
+
+仓库的 GitHub Actions 在 macOS、Windows 和 Ubuntu 托管 runner 上运行 Node CLI 构建、严格类型检查、Node 测试和 tarball 全新安装门禁；框架 Demo 与图像处理在独立 Linux job 验证。托管 CI 不包含微信登录态，因此真实 DevTools gate 仍需在已登录的 macOS/Windows 机器上单独执行；Ubuntu runner 也不等于 WSL 联动验证。
 
 ## 前置条件
 
 使用前请确保：
 
-1. 已安装并登录微信开发者工具
-2. 已在开发者工具中开启 **服务端口**
-3. `--project` 指向的是 **开发者工具实际打开的小程序项目根目录**
-4. CLI 路径配置正确：
-   - 标准安装路径下，工具会优先尝试自动探测
-   - 非标准安装路径 / WSL 场景下，建议设置环境变量 `WECHAT_DEVTOOLS_CLI`
+1. 已安装 Node.js 22 或 24 LTS
+2. 已安装微信开发者工具；普通项目需有效登录态，游客 Demo 的自动化可用性须以实际门禁为准
+3. 已在开发者工具中开启 **服务端口**；升级开发者工具后请重新确认该开关
+4. 首次使用需要能确定小程序项目根目录；可以显式传 `--project`，也可以从当前目录 / Git 工作树唯一发现
+5. CLI 路径配置正确：
+   - 工具提供平台默认值；安装目录不同或使用 WSL 时，设置 `WECHAT_DEVTOOLS_CLI`
+   - Windows / WSL 当前推荐指向官方 `cli.bat`；旧安装布局的 `cli.js` 仅在同目录存在 `node.exe` 时自动兼容
+   - 也可指向 CLI 安装目录；同时存在新旧入口时优先使用 `cli.bat`
+6. WSL 场景下，`--project` 仍然填写 Linux 侧可读的小程序根目录；CLI 会按平台自动把可识别路径传给 DevTools
 
 例如：
 
@@ -65,8 +93,69 @@ node scripts/miniprogram-browser.cjs help
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 ```
 
+macOS 默认安装位置通常是：
+
+```bash
+export WECHAT_DEVTOOLS_CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
+```
+
+Windows 下请使用实际安装目录内的 `cli.bat`；WSL 中传入对应的 Linux 挂载路径，例如：
+
+```bash
+export WECHAT_DEVTOOLS_CLI=/mnt/c/path/to/wechat-devtools/cli.bat
+```
+
+`miniprogram-browser` 会通过 `cmd.exe` 运行 `cli.bat`，不会再将它强制改写为 `cli.js`。对于旧版安装目录，仍可显式指向 `cli.js`，但其旁边必须有配套的 `node.exe`。
+
 如果你的 shell 已经设置了 `WECHAT_DEVTOOLS_CLI`，就不需要重复 `export`。
 
+### Windows 游客模式的已知限制
+
+2026-08-31 的 Windows/WSL 复验中，DevTools `2.02.2608060` 对公开 `touristappid` Demo 的官方 `open` 返回 `code: 10`、`不存在此 AppID 请检查后重新输入`。单独调用官方 `auto` 虽显示成功，但只有 Tool endpoint 可连，App runtime 调用仍超时；该环境的真实启动门禁及 L0 验收尚未通过。
+
+因此不能把跳过 `open` 直接 `auto` 当作可靠兜底，也不能用端口连通代替 `open → path → 非空 snapshot` 的验证。这是上述版本与游客状态下的已知结果，不代表所有 Windows 环境都不可用；正式登录后是否可用尚未验证。
+
+### 跨平台项目路径
+
+`miniprogram-browser` 会按当前平台自动处理传给微信开发者工具 CLI 的项目路径。正常情况下只传当前 shell 可读的 `--project`；如果当前目录或同 Git 工作树能唯一发现小程序项目，也可以省略：
+
+- macOS / Windows：直接使用项目根目录（`projectStrategy=direct`）
+- WSL + Windows 盘挂载：`/mnt/d/...` 会自动转成 `D:\...`（`projectStrategy=wsl-mounted-drive`）
+- 显式指定 DevTools 侧路径：`--devtools-project`（`projectStrategy=explicit`）
+- 显式前缀映射：`--project-map` / `WECHAT_DEVTOOLS_PROJECT_MAP`（`projectStrategy=project-map`）
+
+```bash
+miniprogram-browser open \
+  --session demo \
+  --project /mnt/d/work/demo/apps/miniprogram
+
+miniprogram-browser open --session demo
+```
+
+**推荐**：WSL 下把小程序项目放在 `/mnt/<drive>/...`（Windows 盘），路径转换最稳。  
+`/home/...` 等 Linux 侧路径不再走受控镜像复制；若 DevTools 无法直接消费该路径，请改用 Windows 盘项目，或：
+
+```bash
+# 高级兜底：显式指定 DevTools 侧 Windows 路径
+miniprogram-browser open \
+  --session demo \
+  --project /home/developer/work/demo/apps/miniprogram \
+  --devtools-project 'P:\work\demo\apps\miniprogram'
+
+# 高级兜底：前缀映射（只做字符串替换，不复制项目）
+miniprogram-browser open \
+  --session demo \
+  --project /home/developer/work/demo/apps/miniprogram \
+  --project-map '/home/developer/work=P:\work'
+```
+
+也可以用环境变量固定多个映射，分号分隔，最长前缀优先：
+
+```bash
+export WECHAT_DEVTOOLS_PROJECT_MAP='/home/developer/work=P:\work;/home/developer/tmp=T:\tmp'
+```
+
+`open/doctor` 成功时会回显 `project` / `devtoolsProject` / `strategy` / `autoPort` 等必要信息，便于确认实际连上的实例。
 ## 最短可运行示例
 
 ```bash
@@ -74,18 +163,79 @@ export WECHAT_DEVTOOLS_CLI=/path/to/cli
 export WECHAT_DEVTOOLS_CLI=/path/to/cli
 
 # 已安装时
-miniprogram-browser open --session demo --project /path/to/miniprogram-root
-miniprogram-browser app inspect --session demo
-miniprogram-browser goto /pages/dashboard/index --session demo
-miniprogram-browser snapshot -i --session demo
-miniprogram-browser click @e1 --session demo
-miniprogram-browser timeline --session demo
-miniprogram-browser screenshot --session demo --mode annotate
-miniprogram-browser screenshot --session demo --mode annotate --focus @e16,@e17
+# 在小程序项目目录或同 Git 工作树里，通常可以省略 --project 与 --session
+# 省略 --session 时优先沿用最近成功 open/connect 的活动 session；没有活动 session 时才自动生成/复用 {project}-xN（如 sample-store-x1）
+miniprogram-browser open
+miniprogram-browser open --project /path/to/miniprogram-root
+miniprogram-browser snapshot
+miniprogram-browser click @e1
+miniprogram-browser open --session work   # 需要并行工作台时再显式命名
+# 也可以为当前 Agent/shell 设置默认 session
+export MINIPROGRAM_BROWSER_SESSION=work
+miniprogram-browser doctor --json
+miniprogram-browser goto /pages/dashboard/index
+miniprogram-browser timeline
+miniprogram-browser logs --limit 40
+miniprogram-browser screenshot --mode annotate
 
 # 未安装时
 npx miniprogram-browser help
 ```
+
+仓库内提供三套只含合成数据、使用 `touristappid` 的公开回归项目。它们都提供 Catalog、Controls、Lists、Navigation、Detail 和 Interaction 六条相同路由，CLI 不区分其上游框架。真机门禁会在调用 DevTools 前核验 `project.config.json`，只接受 `appid` 为 `touristappid` 的合成项目：
+
+- `demo/public-demo`：微信原生源码，可直接打开。
+- `demo/taro-demo`：Taro React + TypeScript；先执行 `npm ci --prefix demo/taro-demo` 和 `npm run build:weapp --prefix demo/taro-demo`。
+- `demo/uni-app-demo`：uni-app Vue 3 + Vite；先执行 `npm ci --prefix demo/uni-app-demo` 和 `npm run build:mp-weixin --prefix demo/uni-app-demo`。
+
+Taro/uni-app 的 `dist/` 是本地可再生构建产物，不提交到仓库。构建后仍把对应框架工程根目录传给 CLI，其 `project.config.json` 会将微信开发者工具指向原生编译输出。以下旅程对三套项目相同：
+
+```bash
+miniprogram-browser open --project <demo-project> --session <demo-session>
+miniprogram-browser app inspect --project <demo-project> --session <demo-session>
+miniprogram-browser snapshot --session <demo-session>
+miniprogram-browser goto pages/lists/index --session <demo-session> --follow
+miniprogram-browser goto pages/interaction/index --session <demo-session> --follow
+miniprogram-browser swipe <swiper-ref> left --session <demo-session> --await change --follow
+miniprogram-browser longpress <longpress-ref> --session <demo-session> --await change --follow
+miniprogram-browser screenshot --session <demo-session>
+miniprogram-browser close --session <demo-session>
+```
+
+`screenshot` 默认产出真实页面 PNG；结构布局图需显式传 `--mode layout`。不传输出路径时会写入系统临时目录，自动命名为 `mpb-<project>-<page>-<mode>.png`，冲突时追加 `-1`、`-2`……。显式路径支持相对/绝对文件路径，也支持已有目录或以目录分隔符结尾的新目录；相对路径以执行命令时的工作目录为基准，缺失目录由 CLI 创建。若把显式输出位置放进小程序项目目录，DevTools 文件监听可能触发重新编译并重置页面状态，CLI 会返回 warning；日常建议省略路径或写到项目目录外。
+
+```bash
+# 自动写入系统临时目录并生成文件名
+miniprogram-browser screenshot --mode page
+
+# 指定项目外目录；已有目录可省略最后的 /
+miniprogram-browser screenshot ../mpb-captures/ --mode page
+
+# 指定相对或绝对文件路径
+miniprogram-browser screenshot ../mpb-captures/page.png --mode page
+miniprogram-browser screenshot /tmp/mpb-captures/page.png --mode page
+```
+
+## 推荐启动策略
+
+日常优先这样理解 `open`：
+
+- `open` 已经默认等待通用 `stable` 条件
+- 常规链路不要在 `open` 后立刻再补一条 `await stable`
+- 如果 fresh 启动时人类已经**看到页面显示出来**，但 `open` 仍失败，不要立刻继续 `--fresh` 循环
+
+更稳的处理顺序：
+
+```bash
+miniprogram-browser open --session demo --project /path/to/miniprogram-root --fresh
+
+# 如果页面已经显示，但 open 仍失败
+miniprogram-browser open --session demo --project /path/to/miniprogram-root
+miniprogram-browser await app-ready --session demo
+miniprogram-browser await stable --session demo
+```
+
+原因很简单：当前微信开发者工具有一类场景是**页面已经起来了，但 automation cli server 还没完全 ready**。这时复用现有 runtime 并等待可观察状态，比反复 `--fresh` 更稳定。
 
 ## 这是什么
 
@@ -93,11 +243,12 @@ npx miniprogram-browser help
 
 - `open / goto / snapshot / click / fill / get`
 - `app inspect / timeline / logs / exceptions`
+- `doctor / devtools logs / protocol`
 - `eval / native / call wx / call page`
 - `screenshot --mode page|visual|annotate`
 - `screenshot --focus @e1,@e2`
 - `screenshot --no-ref`
-- `snapshot -i --layout`
+- `snapshot`
 - `screenshot --mode layout`
 
 它不是浏览器 DOM 自动化，而是基于 `miniprogram-automator` 的运行时元素能力重建语义树。
@@ -116,66 +267,109 @@ npx miniprogram-browser help
 ## 当前能力
 
 - 运行时语义快照与 `@eNN` refs
-- 多 session 并发；同一 session 串行；通常复用当前 live DevTools HTTP 端口，只隔离 autoPort
+- 多 session 并发；同一 session 串行；默认沿用活动 session 或 attach 同项目唯一 live runtime；多个不同 live runtime 且没有活动目标时要求 `--session`，不会按最新记录猜测；`--fresh` 是显式新 runtime 逃逸点
+- Agent 连续操作可在 action 后加 `--follow` 获取一次新的 refs 摘要；默认保持低噪声，不自动输出完整 Snapshot
+- 必要真实交互：`back`、页面/容器 `scroll`、`swipe`、`longpress`；普通元素的 `swipe` 使用 touch，原生 `swiper` 必要时使用 automator 的组件动作，均不用 `eval/setData` 冒充结果
+- 未知同页结果可用 action 专属 `--await change`；它观察编译后 WXML/route/page-stack 的第一次变化，不依赖原生、Taro 或 uni-app 生命周期
+- **session 与 runtime 解耦**：session 存 route/refs 等用户上下文，不固化 `autoPort`；连接端口由 runtime 池管理，后续命令自动回绑
+- 默认项目级 session 管理；`session list --all` 是显式全局查看入口
+- 共享同一 `autoPort` 的命令通过 runtime lock 串行执行；attached session 默认 `close` 只解绑，不关闭 owner runtime
+- `open` 默认等待通用 `stable` 条件；底层启动/连接失败会自动收尾，已连接但稳定超时会保留 session 便于继续等待
+- automation 启用后立即探测 live 状态，未就绪才轮询；`doctor` 同样按 Tool/App 状态返回，不先固定 sleep
+- `session prune` 可清理当前项目 stale sessions 与 orphan runtime launch 记录
 - 应用结构摘要（`app inspect`）
 - 路由时间线、console、exception
+- 分层诊断（`doctor`）：区分 DevTools CLI、automation WebSocket 和 App runtime
+- DevTools 底层日志（`devtools logs`）：显式读取共享 `WeappLog`，不按项目隔离。可能含其他项目的信息，涉及生产项目时不要采集或提交；`open` / `await` / `doctor` 不会自动读取它。
 - 页面截图、视觉截图、标注截图
-- 低层逃逸点：`eval / native / get attr|prop|get rect`
+- 低层逃逸点：`protocol / eval / native / get attr|prop|get rect`
 
 ## 已知边界
 
-- fresh `open` 后，DevTools 模拟器首帧有时还没稳定；建议先 `path` / `app inspect`，必要时再 `goto` 当前页一次
-- 如果真实 `screenshot` 偶发超时，优先切到 `screenshot --mode layout`，其次再看 `snapshot -i --layout`；不要把 `close/open` 或重启 DevTools 当默认修复手段
+- `islogin=false` 只说明没有正式账号登录，不能单独判定游客 Demo 不支持自动化；`code: 10` 也不等于登录过期。CLI 按本次错误原文区分“AppID 不存在”“需要重新登录”和 token 过期，保留 raw；明确登录拒绝时不绕过账号校验。游客模式仍须通过 `open → path → snapshot` 才算可用
+- fresh `open` 后，如果返回 `RUNTIME_UNSTABLE`，通常表示 runtime 已经部分可连接但页面仍在编译/刷新；优先继续 `await stable --session <name>`，再用 `doctor` 和本次返回的原始错误判断是否真的失败
+- 如果 fresh 启动阶段已经看到页面显示，但 `open` 仍未成功，重跑同一个不带 `--fresh` 的 `open`，再按需要 `await app-ready` / `await stable`；不要立刻再次 `--fresh`
+- `--fresh` 仍受微信开发者工具当前自动化服务状态影响；日常让新 agent attach 到唯一 live runtime 更稳；若同时存在多个 live runtime，先用 `session list` 再显式传 `--session <name>`
+- 仅知道 `devtoolsPort` 只代表 DevTools HTTP 服务活着，不代表当前小程序 runtime 已可 attach；手工已打开的实例建议先 `doctor --project <path> --devtools-port <port>`
+- 如果 fresh 启动已经显示 `Using AppID: ...`，但后续仍连不上 automation，这通常不是路径或 AppID 问题，而是 DevTools 自身的 `cli server` / 编译链路仍未起来
+- 如果真实 `screenshot` 偶发超时，优先切到 `screenshot --mode layout` 或默认 `snapshot` 的 ASCII 图；不要把 `close/open` 或重启 DevTools 当默认修复手段
 - 某些自定义组件在 automator 运行时里不透明，语义增强不能 100% 覆盖
 - 当前更适合定位为 **beta**，不建议直接宣称为稳定版 `1.0`
 
 ## 已知问题（当前重点）
 
-### 1. WSL 项目路径下，截图可能偶发超时
+### 1. WSL 项目路径：优先 Windows 盘
 
-目前在 `//wsl.localhost/...` 这类 WSL 路径下，微信开发者工具偶尔会进入异常文档状态；表现为：
+在 `//wsl.localhost/...` / `\\wsl.localhost\...` 这类 WSL UNC 路径下，微信开发者工具 CLI 可能拒绝项目路径，并给出和二维码输出相关的误导性错误。
+
+推荐做法：
+
+- 把项目放在 `/mnt/<drive>/...`，让 CLI 自动转成盘符路径
+- 或使用 `--devtools-project` / `--project-map` 显式给出 Windows 路径
+
+如果已经绕过 open 阶段，真实截图通道仍可能在 WSL 路径下偶发超时，表现为：
 
 - `snapshot/path/timeline` 仍然可用
 - 但 `screenshot --mode page` 可能卡住，最后报 `screenshot timeout`
 
-这更像是 DevTools / `miniprogram-automator` 底层截图通道没有返回，而不是本工具在上层做了错误转换。
+这更像是 DevTools / `miniprogram-automator` 底层截图通道没有返回，不应继续回退到 Windows GUI 截图或 OCR。
 
 当前建议：
 
-- 优先避免在 WSL 路径上做高频截图
-- 鼓励在每次 `goto / click / fill / call / native` 之后适度 `wait`，避免操作链过快
-- 截图前先 `path` / `snapshot -i` 确认页面已经稳定，再执行 `screenshot`
+- WSL 优先使用 `/mnt/<drive>/...` 项目路径；必要时再用 `--devtools-project` / `--project-map`
+- 对能观察的目标直接使用 `--await route:...`、`--await visible:...` 或显式 `await stable`，不要先猜固定毫秒
+- 截图前先 `path` / `snapshot` 确认页面已经稳定，再执行 `screenshot`
 - 尽量不要把很多跳转、点击、截图压成一条过快的链式命令
 - 如果已经出现过 `screenshot timeout`，不要在同一个节奏里连续硬试很多次；先停一下，再人工决定是否 `close/open`
 
-### 2. `wait 800` 只是固定 sleep，但仍然值得显式使用
+### 2. 固定 `wait` 只作为最后兜底
 
 例如：
 
 ```bash
-miniprogram-browser goto /pages/preferences/index --session demo
-miniprogram-browser wait 800 --session demo
-miniprogram-browser screenshot --session demo
+miniprogram-browser goto /pages/preferences/index --session demo \
+  --await route:/pages/preferences/index
+miniprogram-browser screenshot --session demo --await visible:.page-root
 ```
 
-这里的 `wait 800` 只是额外等 800ms，不会检查页面是否真的完成异步渲染；但在当前 DevTools / automator 截图链路下，显式 `wait` 仍然有现实价值，因为它能减少“操作刚发生就立刻截图”的失败率。
+action 不再默认插入固定 sleep；能描述目标时直接等待 `route:` / `visible:` / `hidden:`，无法预知 selector 的同页更新使用 `--await change`。只有没有可观察状态、且 DevTools 确实需要缓冲时，才显式使用 `wait <ms>`。
+
+```bash
+# 完整暂停 1500ms
+miniprogram-browser wait 1500 --session demo
+
+# click 完成后固定缓冲 500ms，再继续执行
+miniprogram-browser click @e1 --session demo --wait 500
+```
+
+`--timeout <ms>` 只是 `await / --await` 的最长等待时间，条件满足会提前返回；它不是固定 sleep。
+
+`--await change` 必须挂在 `click/fill/scroll/swipe/longpress` 等动作上，因为它需要动作前基线；独立 `await change` 会明确报错。`stable` 只表示 route/page-stack 暂时安静，不代表业务数据或渲染已完成；视图能力单独看 `viewReady` / `viewError`。
+
+### 系统弹窗的当前边界
+
+`wx.showModal` 不在 WXML 树中。2026-08-31 在 Mac DevTools `2.02.2608040` 的公开 Demo 上复核：真实点击能够打开弹窗、截图可见，但官方 automator 的 `native.confirmModal()` / `native.cancelModal()` 调用后弹窗仍未关闭。专用确认/取消操作不属于 CLI 的可靠主路径；智能体触发这类弹窗后应截图并请用户处理，再继续调试。
+
+`change` 能在采样时捕捉第一次 WXML 变化，但不会把动作期间的 Toast、loading 等连续状态自动留档；动作级变化证据仍是研究候选，边界与验收标准见 [Roadmap](ROADMAP.md#research-candidate动作级瞬时变化证据)。
 
 更稳妥的方式是：
 
-- 每次页面操作后都适度 `wait`，不要让命令链跑得太快
+- 导航用 `route:<path>`，元素渲染用 `visible:<selector>`，通用编译/刷新用 `stable`
 - 先 `path` / `app inspect` 确认状态
-- 或先 `snapshot -i` 确认关键节点已经出现、结构已经稳定
+- 或先 `snapshot` 确认关键节点已经出现、结构已经稳定
 - 再执行截图
 
 ## 布局分析
 
-如果希望模型通过文字理解页面布局，可以在语义快照里附加比例布局信息：
+`snapshot` 不需要参数：默认返回紧凑语义树，并用同一组 `@eN` 在末尾生成压缩 ASCII 空间图。文本行不会重复坐标；需要精确比例位置时再加 `--layout`：
+
+每次完整 snapshot 都从 `@e1` 按当前语义树顺序重新生成并替换上一轮 refs；页面和顺序不变时编号会自然一致，结构变化后则必须使用新一轮输出，不能把编号当永久 ID。
 
 ```bash
-miniprogram-browser snapshot -i --layout --session demo
+miniprogram-browser snapshot --layout --session demo
 ```
 
-开启后，每个 ref 会附带相对窗口的比例位置/尺寸：
+开启后，每个 ref 会额外附带相对窗口的比例位置/尺寸：
 
 ```text
 @e20 [button] 工具箱 {x:10.4,y:82.1,w:24.5,h:6.8}
@@ -187,6 +381,8 @@ miniprogram-browser snapshot -i --layout --session demo
 - `w` / `h`: 相对窗口的百分比宽高
 
 这比绝对像素更适合给模型做跨设备布局分析。
+
+只想看语义树时可用 `--no-map`；默认 JSON 只返回 `route`、`count` 和紧凑 `records`，不重复文本 `lines` 或每条记录的 route。`-i` 与 `-c` 仍兼容旧脚本，但默认调用已经具备交互 refs 和 compact 语义。
 
 如果希望在截图失败时生成一张可读的结构替代图，也可以直接用：
 
@@ -211,6 +407,9 @@ miniprogram-browser screenshot out.png --session demo --mode layout -c
 - 可继续叠加 `--focus` 高亮
 - `--no-ref` 时隐藏图片里的 `@eN` 标签，但不影响 focus 框
 - 可选 `--capsule` 叠加右上角微信胶囊
+- 未指定输出路径时写入系统临时目录（Linux 默认 `/tmp/miniprogram-browser`），使用 `mpb-<project>-<page>-<mode>.png`；冲突自动追加 `-1`、`-2`……
+- 显式路径支持当前系统的相对/绝对文件路径；相对路径从当前工作目录解析，缺失的父目录会自动创建
+- 显式路径指向已有目录，或以 `/`（Windows 也支持 `\\`）结尾时，会在目录内生成同样的短文件名并避免覆盖
 
 ## Skill 集成
 
@@ -219,6 +418,7 @@ miniprogram-browser screenshot out.png --session demo --mode layout -c
 - npm / npx 负责 CLI 运行时
 - `skills/miniprogram-browser/` 负责 agent skill 安装
 - `skills/image-processing/` 负责离线图片处理 skill 安装
+- `skills/miniprogram-browser-release/` 负责版本规划、发布门禁和 npm / GitHub 双分发
 
 如果你要作为 OpenCode / `.opencode` skill 使用，安装这个目录即可：
 
@@ -241,7 +441,7 @@ miniprogram-browser ...
 npx miniprogram-browser ...
 ```
 
-`tests/` 和 `scripts/` 都保留在仓库根目录，只用于源码、npm 包和开发验证，不会随 skill 子目录一起安装。
+`src/` 和 `tests/` 都保留在仓库根目录，`src/` 是 CLI 的 TypeScript 源码（编译到 `dist/`），`tests/` 为行为测试，二者不会随 skill 子目录一起安装。
 
 也可以直接通过 `skills` CLI 从 GitHub 安装：
 
@@ -280,10 +480,12 @@ npm test
 ## 仓库结构
 
 ```text
-scripts/                     CLI 与运行时实现
+src/                         CLI 与运行时实现（TypeScript，编译产物在 dist/）
+demo/                        原生、Taro、uni-app 三套公开合成小程序
 skills/miniprogram-browser/  可安装的标准 skill 目录（仅 SKILL.md）
 skills/image-processing/     可安装的离线图片处理 skill
 tests/                       行为测试
+docs/spec/                   自维护的产品与实现契约
 README.md                    面向人类开发者的开源说明
 ```
 

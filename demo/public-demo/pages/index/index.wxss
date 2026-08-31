@@ -1,0 +1,30 @@
+.card {
+  background: #ffffff;
+  border: 1rpx solid #e5e7eb;
+  border-radius: 16rpx;
+  margin-bottom: 20rpx;
+  padding: 28rpx;
+}
+
+.card-title,
+.card-description,
+.card-link {
+  display: block;
+}
+
+.card-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  margin-bottom: 10rpx;
+}
+
+.card-description {
+  color: #6b7280;
+  line-height: 1.5;
+  margin-bottom: 18rpx;
+}
+
+.card-link {
+  color: #2563eb;
+  font-size: 28rpx;
+}

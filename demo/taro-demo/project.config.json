@@ -1,0 +1,12 @@
+{
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "dist/",
+  "projectname": "taro-public-demo",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "urlCheck": false,
+    "compileHotReLoad": true
+  }
+}

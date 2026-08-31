@@ -9,21 +9,25 @@ const {
   buildTreeSnapshotRecords,
   buildFallbackSnapshotRecords,
   formatSnapshotLines,
-} = require('../scripts/lib/core.cjs')
+} = require('../dist/lib/core.js')
 
 const {
   acquireSessionLock,
   assertProjectPath,
+  discoverMiniProgramProjectFromCwd,
   assertBindingConsistency,
   assertNoDevtoolsConflict,
   clearSessionState,
   listSessionStates,
+  loadOtherSessionConfigs,
   loadSessionState,
   mergeConfigOverrides,
   prepareSessionStateForSave,
   createDefaultConfig,
   createEmptySessionState,
   assignPorts,
+  isAutomationPortAvailable,
+  selectUnprobedWslAutomationPort,
   ensureSessionPorts,
   saveSessionState,
   resolveSessionConfig,
@@ -31,7 +35,175 @@ const {
   sessionLockRoot,
   validateSessionPortConflicts,
   releaseSessionLock,
-} = require('../scripts/lib/session-store.cjs')
+  runtimeLockName,
+  selectAttachableRuntimeSession,
+  selectRuntimeLaunchForSession,
+  shouldShutdownRuntimeOnClose,
+  projectSessionSlug,
+  isAutoProjectSessionName,
+  pickAutoProjectSessionName,
+  nextAutoProjectSessionName,
+  listRuntimeLaunches,
+  reconcileRuntimeLaunches,
+  isEphemeralNoiseSessionName,
+  getActiveSession,
+  setActiveSession,
+  clearActiveSession,
+} = require('../dist/lib/session-store.js')
+
+const {
+  ensureImplicitSessionName,
+  buildSessionStatusEntries,
+} = require('../dist/miniprogram-browser.js')
+
+test('projectSessionSlug prefers parent when leaf is miniprogram/weapp', () => {
+  assert.equal(projectSessionSlug('/mnt/d/work/sample-store/apps/miniprogram'), 'sample-store')
+  assert.equal(projectSessionSlug('/work/my-shop/weapp'), 'my-shop')
+  assert.equal(projectSessionSlug('/work/CoolApp'), 'coolapp')
+  assert.equal(projectSessionSlug('/work/My App!!'), 'my-app')
+  assert.equal(projectSessionSlug(''), 'project')
+})
+
+test('isAutoProjectSessionName matches slug-xN only', () => {
+  assert.equal(isAutoProjectSessionName('sample-store-x1', 'sample-store'), true)
+  assert.equal(isAutoProjectSessionName('sample-store-x12', 'sample-store'), true)
+  assert.equal(isAutoProjectSessionName('sample-store-x0', 'sample-store'), false)
+  assert.equal(isAutoProjectSessionName('sample-store', 'sample-store'), false)
+  assert.equal(isAutoProjectSessionName('work', 'sample-store'), false)
+  assert.equal(isAutoProjectSessionName('sample-store-x1', 'other'), false)
+})
+
+test('pickAutoProjectSessionName reuses highest existing auto index else x1', () => {
+  assert.equal(pickAutoProjectSessionName([], '/work/sample-store/apps/miniprogram'), 'sample-store-x1')
+  assert.equal(pickAutoProjectSessionName(['work', 'debug'], '/work/sample-store/apps/miniprogram'), 'sample-store-x1')
+  assert.equal(
+    pickAutoProjectSessionName(['sample-store-x1', 'work', 'sample-store-x3'], '/work/sample-store/apps/miniprogram'),
+    'sample-store-x3',
+  )
+})
+
+test('nextAutoProjectSessionName allocates next free index', () => {
+  assert.equal(nextAutoProjectSessionName([], '/work/sample-store/apps/miniprogram'), 'sample-store-x1')
+  assert.equal(nextAutoProjectSessionName(['sample-store-x1'], '/work/sample-store/apps/miniprogram'), 'sample-store-x2')
+  assert.equal(
+    nextAutoProjectSessionName(['sample-store-x1', 'sample-store-x2', 'work'], '/work/sample-store/apps/miniprogram'),
+    'sample-store-x3',
+  )
+})
+
+test('project active session is persistent, project-scoped, and clearable', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-active-project-'))
+    const config = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+
+    assert.equal(await getActiveSession(config), null)
+    await setActiveSession('work', config)
+    const active = await getActiveSession(config)
+    assert.equal(active.sessionName, 'work')
+    assert.match(active.updatedAt, /^\d{4}-\d{2}-\d{2}T/u)
+    assert.equal(await clearActiveSession('other', config), false)
+    assert.equal(await clearActiveSession('work', config), true)
+    assert.equal(await getActiveSession(config), null)
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
+})
+
+test('implicit session resolution prefers the project active session and env override', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  const previousDefault = process.env.MINIPROGRAM_BROWSER_SESSION
+  process.env.HOME = homeDir
+  delete process.env.MINIPROGRAM_BROWSER_SESSION
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-active-project-'))
+    const config = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+    await setActiveSession('work', config)
+
+    const active = await ensureImplicitSessionName({ project: projectPath }, 'snapshot')
+    assert.equal(active.session, 'work')
+    assert.equal(active.sessionSelectionSource, 'active')
+
+    process.env.MINIPROGRAM_BROWSER_SESSION = 'env-default'
+    const fromEnv = await ensureImplicitSessionName({ project: projectPath }, 'snapshot')
+    assert.equal(fromEnv.session, 'env-default')
+    assert.equal(fromEnv.sessionSelectionSource, 'env')
+
+    const explicit = await ensureImplicitSessionName({
+      project: projectPath,
+      session: 'explicit',
+      sessionProvided: true,
+    }, 'snapshot')
+    assert.equal(explicit.session, 'explicit')
+    assert.equal(explicit.sessionSelectionSource, undefined)
+
+    const fresh = await ensureImplicitSessionName({ project: projectPath, fresh: true }, 'open')
+    assert.match(fresh.session, /-x1$/u)
+    assert.equal(fresh.sessionSelectionSource, 'auto')
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+    if (previousDefault === undefined) {
+      delete process.env.MINIPROGRAM_BROWSER_SESSION
+    } else {
+      process.env.MINIPROGRAM_BROWSER_SESSION = previousDefault
+    }
+  }
+})
+
+test('session status projection is read-only and exposes active runtime context', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-status-project-'))
+    fs.mkdirSync(path.join(projectPath, 'miniprogram'), { recursive: true })
+    fs.writeFileSync(path.join(projectPath, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'miniprogram' }))
+    fs.writeFileSync(path.join(projectPath, 'miniprogram', 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
+    const config = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+    const state = createEmptySessionState({ sessionName: 'work', config })
+    state.route = '/pages/index/index'
+    await saveSessionState(state)
+    await setActiveSession('work', config)
+
+    const before = await getActiveSession(config)
+    const result = await buildSessionStatusEntries({ project: projectPath })
+    const after = await getActiveSession(config)
+
+    assert.equal(result.entries.length, 1)
+    assert.deepEqual(result.entries[0], {
+      session: 'work',
+      active: true,
+      status: 'stale',
+      projectPath,
+      route: '/pages/index/index',
+      autoPort: '',
+      devtoolsPort: '',
+      runtime: 'none',
+      runtimeOwnerSession: '',
+      attachedTo: '',
+      createdAt: result.entries[0].createdAt,
+      updatedAt: result.entries[0].updatedAt,
+    })
+    assert.deepEqual(after, before)
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
+})
 
 test('nextRefName generates agent-browser style refs', () => {
   assert.equal(nextRefName(1), '@e1')
@@ -223,11 +395,62 @@ test('formatSnapshotLines appends proportional layout info when enabled', () => 
 test('createDefaultConfig uses apps/miniprogram root projectPath', () => {
   const config = createDefaultConfig('/repo')
   assert.equal(config.projectPath, '')
+  assert.equal(config.devtoolsProjectPath, '')
+  assert.equal(config.devtoolsProjectMap, '')
+  assert.equal(config.trustProject, true)
   assert.equal(config.devtoolsPort, '')
   assert.equal(config.autoPort, '')
-   assert.equal(config.legacySessionDir, '')
-   assert.equal(config.sessionDir, '')
+  assert.equal(config.legacySessionDir, '')
+  assert.equal(config.sessionDir, '')
   assert.equal(typeof config.cliPath, 'string')
+})
+
+test('createDefaultConfig allows disabling DevTools trust-project flag from environment', () => {
+  const previous = process.env.WECHAT_DEVTOOLS_TRUST_PROJECT
+  process.env.WECHAT_DEVTOOLS_TRUST_PROJECT = '0'
+
+  try {
+    const config = createDefaultConfig('/repo')
+    assert.equal(config.trustProject, false)
+  } finally {
+    if (previous === undefined) {
+      delete process.env.WECHAT_DEVTOOLS_TRUST_PROJECT
+    } else {
+      process.env.WECHAT_DEVTOOLS_TRUST_PROJECT = previous
+    }
+  }
+})
+
+test('createDefaultConfig reads DevTools project path override from environment', () => {
+  const previous = process.env.WECHAT_DEVTOOLS_PROJECT
+  process.env.WECHAT_DEVTOOLS_PROJECT = 'P:\\demo\\apps\\miniprogram'
+
+  try {
+    const config = createDefaultConfig('/repo')
+    assert.equal(config.devtoolsProjectPath, 'P:\\demo\\apps\\miniprogram')
+  } finally {
+    if (previous === undefined) {
+      delete process.env.WECHAT_DEVTOOLS_PROJECT
+    } else {
+      process.env.WECHAT_DEVTOOLS_PROJECT = previous
+    }
+  }
+})
+
+test('createDefaultConfig reads DevTools project prefix map from environment', () => {
+  const previous = process.env.WECHAT_DEVTOOLS_PROJECT_MAP
+  process.env.WECHAT_DEVTOOLS_PROJECT_MAP = '/home/developer/work=P:\\work'
+
+  try {
+    const config = createDefaultConfig('/repo')
+    assert.equal(config.devtoolsProjectMap, '/home/developer/work=P:\\work')
+  } finally {
+    if (previous === undefined) {
+      delete process.env.WECHAT_DEVTOOLS_PROJECT_MAP
+    } else {
+      process.env.WECHAT_DEVTOOLS_PROJECT_MAP = previous
+    }
+  }
 })
 
 test('assertProjectPath requires explicit mini-program root path', () => {
@@ -236,9 +459,72 @@ test('assertProjectPath requires explicit mini-program root path', () => {
     /--project/i,
   )
 
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-browser-project-'))
+  const miniprogramRoot = path.join(projectDir, 'miniprogram')
+  fs.mkdirSync(miniprogramRoot, { recursive: true })
+  fs.writeFileSync(path.join(projectDir, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'miniprogram/' }))
+  fs.writeFileSync(path.join(miniprogramRoot, 'app.json'), JSON.stringify({ pages: [] }))
+
   assert.doesNotThrow(() => {
-    assertProjectPath({ projectPath: '/worktree-a/apps/miniprogram' })
+    assertProjectPath({ projectPath: projectDir })
   })
+})
+
+test('discoverMiniProgramProjectFromCwd finds monorepo apps/miniprogram from repo root', async () => {
+  const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-monorepo-'))
+  const projectDir = path.join(repoDir, 'apps', 'miniprogram')
+  const miniprogramRoot = path.join(projectDir, 'dist')
+
+  try {
+    await fs.promises.mkdir(miniprogramRoot, { recursive: true })
+    await fs.promises.writeFile(path.join(projectDir, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'dist/' }))
+    await fs.promises.writeFile(path.join(miniprogramRoot, 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
+
+    const found = discoverMiniProgramProjectFromCwd(repoDir)
+    assert.equal(found.projectPath, projectDir)
+  } finally {
+    await fs.promises.rm(repoDir, { recursive: true, force: true })
+  }
+})
+
+test('discoverMiniProgramProjectFromCwd finds same-git-repo mini program from sibling apps', async () => {
+  const repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-monorepo-git-'))
+  const projectDir = path.join(repoDir, 'apps', 'miniprogram')
+  const backendDir = path.join(repoDir, 'apps', 'backend', 'src')
+  const miniprogramRoot = path.join(projectDir, 'dist')
+
+  try {
+    await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+    await fs.promises.mkdir(backendDir, { recursive: true })
+    await fs.promises.mkdir(miniprogramRoot, { recursive: true })
+    await fs.promises.writeFile(path.join(projectDir, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'dist/' }))
+    await fs.promises.writeFile(path.join(miniprogramRoot, 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
+
+    const found = discoverMiniProgramProjectFromCwd(backendDir)
+    assert.equal(found.projectPath, projectDir)
+  } finally {
+    await fs.promises.rm(repoDir, { recursive: true, force: true })
+  }
+})
+
+test('discoverMiniProgramProjectFromCwd does not cross out of a git repo to an unrelated parent project', async () => {
+  const parentDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-parent-'))
+  const parentProjectDir = path.join(parentDir, 'apps', 'miniprogram')
+  const repoDir = path.join(parentDir, 'repo')
+  const cwd = path.join(repoDir, 'apps', 'backend')
+
+  try {
+    await fs.promises.mkdir(path.join(parentProjectDir, 'dist'), { recursive: true })
+    await fs.promises.writeFile(path.join(parentProjectDir, 'project.config.json'), JSON.stringify({ miniprogramRoot: 'dist/' }))
+    await fs.promises.writeFile(path.join(parentProjectDir, 'dist', 'app.json'), JSON.stringify({ pages: ['pages/index/index'] }))
+    await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+    await fs.promises.mkdir(cwd, { recursive: true })
+
+    const found = discoverMiniProgramProjectFromCwd(cwd)
+    assert.equal(found, null)
+  } finally {
+    await fs.promises.rm(parentDir, { recursive: true, force: true })
+  }
 })
 
 test('mergeConfigOverrides keeps stored projectPath when caller omits it', () => {
@@ -272,8 +558,9 @@ test('assertBindingConsistency rejects changing a bound session', () => {
     /already bound/i,
   )
 
-  assert.throws(
-    () => assertBindingConsistency(
+  // autoPort 不参与 session 身份绑定，override 时允许不同值
+  assert.doesNotThrow(() => {
+    assertBindingConsistency(
       {
         projectPath: '/worktree-a/apps/miniprogram',
         autoPort: '9422',
@@ -281,9 +568,8 @@ test('assertBindingConsistency rejects changing a bound session', () => {
       {
         autoPort: '9423',
       },
-    ),
-    /already bound/i,
-  )
+    )
+  })
 
   assert.doesNotThrow(() => {
     assertBindingConsistency(
@@ -295,6 +581,18 @@ test('assertBindingConsistency rejects changing a bound session', () => {
       {
         devtoolsPort: '39090',
       },
+    )
+  })
+})
+
+test('assertBindingConsistency treats equivalent relative and absolute project paths as the same binding', () => {
+  const absoluteProject = path.resolve('demo/public-demo')
+  const relativeProject = path.relative(process.cwd(), absoluteProject)
+
+  assert.doesNotThrow(() => {
+    assertBindingConsistency(
+      { projectPath: absoluteProject },
+      { projectPath: relativeProject },
     )
   })
 })
@@ -344,6 +642,68 @@ test('validateSessionPortConflicts rejects reusing an autoPort from another sess
   )
 })
 
+test('loadOtherSessionConfigs skips the current session in its project legacy directory', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-other-sessions-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-other-sessions.json`)
+  try {
+    await fs.promises.writeFile(path.join(tempDir, 'demo.json'), JSON.stringify({
+      name: 'demo',
+      config: {
+        projectPath: '/worktree-a/apps/miniprogram',
+        sessionDir: tempDir,
+        legacySessionDir: tempDir,
+        sessionRegistryFile: registryFile,
+        autoPort: '9497',
+      },
+    }))
+
+    const configs = await loadOtherSessionConfigs({
+      projectPath: '/worktree-a/apps/miniprogram',
+      sessionDir: tempDir,
+      legacySessionDir: tempDir,
+      sessionRegistryFile: registryFile,
+      autoPort: '9497',
+    }, 'demo')
+
+    assert.equal(configs.length, 0)
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
+})
+
+test('loadOtherSessionConfigs does not copy current runtime ports into another session', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-other-runtime-'))
+  const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-other-runtime.json`)
+  try {
+    await fs.promises.writeFile(path.join(tempDir, 'other.json'), JSON.stringify({
+      name: 'other',
+      config: {
+        projectPath: '/worktree-a/apps/miniprogram',
+        sessionDir: tempDir,
+        legacySessionDir: tempDir,
+        sessionRegistryFile: registryFile,
+      },
+    }))
+
+    const configs = await loadOtherSessionConfigs({
+      projectPath: '/worktree-a/apps/miniprogram',
+      sessionDir: tempDir,
+      legacySessionDir: tempDir,
+      sessionRegistryFile: registryFile,
+      autoPort: '9530',
+      devtoolsPort: '11636',
+    }, 'demo')
+
+    assert.equal(configs.length, 1)
+    assert.equal(configs[0].config.autoPort, undefined)
+    assert.equal(configs[0].config.devtoolsPort, undefined)
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true })
+    await fs.promises.rm(registryFile, { force: true })
+  }
+})
+
 test('assignPorts rejects caller-specified autoPort already used by another session', async () => {
   await assert.rejects(
     assignPorts(
@@ -368,7 +728,7 @@ test('assignPorts rejects caller-specified autoPort already used by another sess
   )
 })
 
-test('ensureSessionPorts assigns missing autoPort for a fresh session', async () => {
+test('ensureSessionPorts assigns only automation port for a fresh session', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-fresh-'))
   const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-fresh.json`)
   try {
@@ -385,16 +745,16 @@ test('ensureSessionPorts assigns missing autoPort for a fresh session', async ()
 
     const result = await ensureSessionPorts(state, async () => true)
     assert.equal(result.config.devtoolsPort, '')
-    assert.equal(result.config.autoPort, '9421')
-      assert.equal(result.portResolution.devtoolsPortAssigned, false)
-      assert.equal(result.portResolution.autoPortAssigned, true)
+    assert.equal(result.config.autoPort, '9515')
+    assert.equal(result.portResolution.devtoolsPortAssigned, false)
+    assert.equal(result.portResolution.autoPortAssigned, true)
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
     await fs.promises.rm(registryFile, { force: true })
   }
 })
 
-test('ensureSessionPorts avoids reserved auto ports for fresh session', async () => {
+test('ensureSessionPorts ignores legacy runtime ports persisted in another session file', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-fresh-reserved-'))
   const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-reserved.json`)
   try {
@@ -402,7 +762,7 @@ test('ensureSessionPorts avoids reserved auto ports for fresh session', async ()
       config: {
         projectPath: '/worktree-b/apps/miniprogram',
         devtoolsPort: '39085',
-        autoPort: '9421',
+        autoPort: '9515',
       },
     }))
 
@@ -418,7 +778,8 @@ test('ensureSessionPorts avoids reserved auto ports for fresh session', async ()
     }
 
     const result = await ensureSessionPorts(state, async () => true)
-    assert.equal(result.config.autoPort, '9422')
+    assert.equal(result.config.devtoolsPort, '')
+    assert.equal(result.config.autoPort, '9515')
   } finally {
     await fs.promises.rm(tempDir, { recursive: true, force: true })
     await fs.promises.rm(registryFile, { force: true })
@@ -455,12 +816,12 @@ test('assignPorts auto-selects free ports away from reserved ones', async () => 
     devtoolsPort: '39086',
     autoPort: '',
   }, [
-    { devtoolsPort: '39085', autoPort: '9421' },
-    { devtoolsPort: '39085', autoPort: '9422' },
-  ], async (port) => ![39087, 9423].includes(port))
+    { devtoolsPort: '39085', autoPort: '9515' },
+    { devtoolsPort: '39085', autoPort: '9516' },
+  ], async (port) => ![39087, 9517].includes(port))
 
   assert.equal(assigned.devtoolsPort, '39086')
-  assert.equal(assigned.autoPort, '9424')
+  assert.equal(assigned.autoPort, '9518')
 })
 
 test('prepareSessionStateForSave prunes oldest inactive refs', () => {
@@ -611,6 +972,159 @@ test('same session name can lock concurrently across different projects', async 
   }
 })
 
+test('runtimeLockName serializes sessions attached to the same automation port', () => {
+  assert.equal(runtimeLockName({ autoPort: '9527' }), '__runtime_auto_9527')
+  assert.equal(runtimeLockName({ autoPort: '' }), '')
+})
+
+test('selectAttachableRuntimeSession requires an explicit session when live runtimes are ambiguous', () => {
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'owner-a', status: 'live', autoPort: '9527' },
+  ]), {
+    mode: 'attach',
+    session: { name: 'owner-a', status: 'live', autoPort: '9527' },
+  })
+  // 多不同 live port：不按 updatedAt 猜测目标，返回候选 runtime
+  const multiPort = selectAttachableRuntimeSession([
+    { name: 'owner-a', status: 'live', autoPort: '9527', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { name: 'owner-b', status: 'live', autoPort: '9530', updatedAt: '2026-06-01T00:00:00.000Z' },
+  ])
+  assert.equal(multiPort.mode, 'ambiguous')
+  assert.deepEqual(multiPort.sessions.map((item) => item.name), ['owner-a', 'owner-b'])
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'stale-a', status: 'stale', autoPort: '9527' },
+  ]), {
+    mode: 'none',
+    sessions: [],
+  })
+})
+
+test('selectAttachableRuntimeSession treats multiple live rows on same autoPort as one runtime', () => {
+  // 多 session 附着同一 automation 端口：不应 SESSION_CONFLICT
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
+    { name: 'work-now', status: 'live', autoPort: '9566' },
+  ]), {
+    mode: 'attach',
+    session: { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
+  })
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
+    { name: 'work-now', status: 'live', autoPort: '9566' },
+  ], 'agent-b'), {
+    mode: 'attach',
+    session: { name: 'sample-store-x1', status: 'live', autoPort: '9566' },
+  })
+})
+
+test('isEphemeralNoiseSessionName matches gate/e2e/test prefixes only', () => {
+  assert.equal(isEphemeralNoiseSessionName('gate-mrrt6mif'), true)
+  assert.equal(isEphemeralNoiseSessionName('e2e-a-abc'), true)
+  assert.equal(isEphemeralNoiseSessionName('test-fresh'), true)
+  assert.equal(isEphemeralNoiseSessionName('work'), false)
+  assert.equal(isEphemeralNoiseSessionName('sample-store-x1'), false)
+  assert.equal(isEphemeralNoiseSessionName('feat-a'), false)
+})
+
+test('reconcileRuntimeLaunches marks expired starting rows as stale', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-home-'))
+  const previousHome = process.env.HOME
+  process.env.HOME = homeDir
+  try {
+    const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-proj-'))
+    fs.writeFileSync(path.join(projectPath, 'project.config.json'), JSON.stringify({ miniprogramRoot: './' }))
+    const cfg = mergeConfigOverrides(createDefaultConfig(), { projectPath })
+    // record 会刷新 updatedAt；直接写 runtime-launches.json 才能模拟「很久以前的 starting」
+    const lockRoot = sessionLockRoot(cfg)
+    const registryPath = path.join(path.dirname(lockRoot), 'runtime-launches.json')
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
+    const old = '2020-01-01T00:00:00.000Z'
+    const nowIso = new Date().toISOString()
+    fs.writeFileSync(registryPath, JSON.stringify({
+      launches: [
+        {
+          id: 'zombie-1',
+          sessionName: 'zombie',
+          projectPath,
+          autoPort: '19590',
+          status: 'starting',
+          createdAt: old,
+          updatedAt: old,
+        },
+        {
+          id: 'fresh-1',
+          sessionName: 'fresh',
+          projectPath,
+          autoPort: '19591',
+          status: 'starting',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+      ],
+    }, null, 2))
+    const result = await reconcileRuntimeLaunches(cfg, { startingMaxAgeMs: 60_000 })
+    assert.equal(result.markedStale, 1)
+    const after = await listRuntimeLaunches(cfg)
+    const byId = Object.fromEntries(after.map((l) => [l.id, l]))
+    assert.equal(byId['zombie-1'].status, 'stale')
+    assert.equal(byId['fresh-1'].status, 'starting')
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = previousHome
+    }
+  }
+})
+
+test('selectAttachableRuntimeSession prefers matching session name among multiple live runtimes', () => {
+  assert.deepEqual(selectAttachableRuntimeSession([
+    { name: 'owner-a', status: 'live', autoPort: '9527' },
+    { name: 'work', status: 'live', autoPort: '9530' },
+  ], 'work'), {
+    mode: 'attach',
+    session: { name: 'work', status: 'live', autoPort: '9530' },
+  })
+})
+
+test('selectRuntimeLaunchForSession prefers same sessionName then unique live project runtime', () => {
+  const projectA = '/tmp/project-a'
+  const projectB = '/tmp/project-b'
+  const launches = [
+    { id: '1', sessionName: 'debug', projectPath: projectA, status: 'live', autoPort: '9516' },
+    { id: '2', sessionName: 'work', projectPath: projectA, status: 'live', autoPort: '9521' },
+    { id: '3', sessionName: 'other', projectPath: projectB, status: 'live', autoPort: '9530' },
+  ]
+
+  assert.equal(selectRuntimeLaunchForSession(launches, 'work', projectA).autoPort, '9521')
+  assert.equal(selectRuntimeLaunchForSession(launches, 'missing', projectB).autoPort, '9530')
+  // 同 port 多 launch 视为唯一 runtime
+  const shared = [
+    { id: 'a', sessionName: 'owner', projectPath: projectA, status: 'live', autoPort: '9566' },
+    { id: 'b', sessionName: 'attached', projectPath: projectA, status: 'live', autoPort: '9566' },
+  ]
+  assert.equal(selectRuntimeLaunchForSession(shared, 'new-session', projectA).autoPort, '9566')
+  assert.equal(selectRuntimeLaunchForSession(launches, 'missing', projectA), null)
+  assert.equal(selectRuntimeLaunchForSession(launches, 'work', ''), null)
+})
+
+test('shouldShutdownRuntimeOnClose keeps attached sessions from closing owner runtime by default', () => {
+  assert.equal(shouldShutdownRuntimeOnClose({
+    name: 'agent-task',
+    runtimeAttached: true,
+    runtimeOwnerSession: 'owner',
+  }, {}), false)
+  assert.equal(shouldShutdownRuntimeOnClose({
+    name: 'agent-task',
+    runtimeAttached: true,
+    runtimeOwnerSession: 'owner',
+  }, { runtime: true }), true)
+  assert.equal(shouldShutdownRuntimeOnClose({
+    name: 'owner',
+    runtimeAttached: false,
+  }, {}), true)
+})
+
 test('sessionLockRoot falls back to OS tmp dir when projectPath is unknown', () => {
   const config = createDefaultConfig('/repo')
   const root = sessionLockRoot(config)
@@ -713,7 +1227,7 @@ test('saveSessionState makes a fresh bound session resolvable before runtime wor
   }
 })
 
-test('ensureSessionPorts avoids autoPort used by another project-scoped session', async () => {
+test('ensureSessionPorts assigns ports without session-file port conflict', async () => {
   const projectA = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-a-'))
   const projectB = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mpb-project-b-'))
   const registryFile = path.join(os.tmpdir(), `mpb-registry-${Date.now()}-ports.json`)
@@ -728,7 +1242,7 @@ test('ensureSessionPorts avoids autoPort used by another project-scoped session'
         ...createDefaultConfig('/repo'),
         projectPath: projectB,
         sessionRegistryFile: registryFile,
-        autoPort: '9421',
+        autoPort: '9515',
       },
     })
     await saveSessionState(existing)
@@ -745,7 +1259,10 @@ test('ensureSessionPorts avoids autoPort used by another project-scoped session'
     }
 
     const result = await ensureSessionPorts(state, async () => true)
-    assert.equal(result.config.autoPort, '9422')
+    assert.equal(result.config.devtoolsPort, '')
+    // session 不再固化 autoPort，其他 session 的端口不保留到磁盘竞争
+    // fresh-project 分配的第一个可用端口是 9515
+    assert.equal(result.config.autoPort, '9515')
   } finally {
     await fs.promises.rm(projectA, { recursive: true, force: true })
     await fs.promises.rm(projectB, { recursive: true, force: true })
@@ -802,4 +1319,86 @@ test('acquireSessionLock timeout reports owner pid and command', async () => {
   )
 
   await fs.promises.rm(lockPath, { recursive: true, force: true })
+})
+
+const {
+  enrichOpenFailure,
+  tryHealOpenAfterStartFailure,
+  cleanupStartedOpenRuntime,
+  resolveOpenAttemptBudget,
+} = require('../dist/miniprogram-browser.js')
+
+test('resolveOpenAttemptBudget keeps the full budget for live runtime attachment', () => {
+  assert.equal(resolveOpenAttemptBudget('connected', 120000), 120000)
+  assert.equal(resolveOpenAttemptBudget('attached', 60000), 60000)
+  assert.equal(resolveOpenAttemptBudget('started', 120000), 45000)
+})
+
+test('isAutomationPortAvailable does not pre-bind the candidate from WSL', async () => {
+  let localChecks = 0
+  let wslChecks = 0
+  const options = {
+    runtime: 'linux',
+    readProcVersion: '5.15.0-microsoft-standard-WSL2',
+    wslDistroName: 'ubuntu-test',
+    async localChecker() {
+      localChecks += 1
+      return false
+    },
+    async wslChecker() {
+      wslChecks += 1
+      return true
+    },
+  }
+
+  assert.equal(await isAutomationPortAvailable(9515, {}, options), true)
+  assert.equal(localChecks, 0)
+  assert.equal(wslChecks, 1)
+})
+
+test('selectUnprobedWslAutomationPort skips reserved and listening ports without binding them', async () => {
+  assert.equal(await selectUnprobedWslAutomationPort(new Set(), async (port) => port !== 9530), '9531')
+  assert.equal(await selectUnprobedWslAutomationPort(new Set([9530, 9531]), async () => true), '9532')
+})
+
+test('enrichOpenFailure preserves OPEN_TIMEOUT', async () => {
+  const error = {
+    message: 'open timed out after 200ms',
+    code: 'OPEN_TIMEOUT',
+    hint: 'phase=open; timeoutMs=200',
+  }
+  const state = {
+    name: 't',
+    config: {
+      projectPath: '/tmp/mpb-no-project',
+      cliPath: '',
+    },
+  }
+  const enriched = await enrichOpenFailure(error, state, { timeout: 200 })
+  assert.equal(enriched.code, 'OPEN_TIMEOUT')
+  assert.match(String(enriched.message || ''), /timed out|timeout/i)
+})
+
+test('enrichOpenFailure maps wait-live message to OPEN_TIMEOUT when code missing', async () => {
+  const error = {
+    message: 'DevTools automation 在超时前未在 autoPort=9517 就绪（enable 已返回但 WebSocket 仍不可连）。可加大 --timeout 后重试 open',
+  }
+  const state = {
+    name: 't',
+    config: { projectPath: '/tmp/mpb-no-project', cliPath: '' },
+  }
+  const enriched = await enrichOpenFailure(error, state, { timeout: 5000 })
+  assert.equal(enriched.code, 'OPEN_TIMEOUT')
+})
+
+test('enrichOpenFailure maps cold-start not-ready message to OPEN_TIMEOUT', async () => {
+  const error = {
+    message: '冷启动未完成：automation 端口 autoPort=9517 在超时前仍未就绪（devtools auto 已返回，但 WebSocket 尚不可连',
+  }
+  const state = {
+    name: 't',
+    config: { projectPath: '/tmp/mpb-no-project', cliPath: '' },
+  }
+  const enriched = await enrichOpenFailure(error, state, { timeout: 5000 })
+  assert.equal(enriched.code, 'OPEN_TIMEOUT')
 })

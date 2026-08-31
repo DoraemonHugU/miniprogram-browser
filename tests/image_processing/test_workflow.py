@@ -49,7 +49,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertIn(f"拼图已保存 {montage_path}", montage.stdout)
+            self.assertIn(f"拼图已保存 {montage_path.resolve()}", montage.stdout)
             self.assertTrue(montage_path.exists())
 
             diff = subprocess.run(
@@ -65,7 +65,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertIn(f"差异图已保存 {diff_path}", diff.stdout)
+            self.assertIn(f"差异图已保存 {diff_path.resolve()}", diff.stdout)
             self.assertIn("box1:", diff.stdout)
             self.assertTrue(diff_path.exists())
 
@@ -82,7 +82,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertIn(f"叠加图已保存 {overlay_path}", overlay.stdout)
+            self.assertIn(f"叠加图已保存 {overlay_path.resolve()}", overlay.stdout)
             self.assertTrue(overlay_path.exists())
 
             focus = subprocess.run(
@@ -99,7 +99,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertIn(f"裁剪图已保存 {focus_path}", focus.stdout)
+            self.assertIn(f"裁剪图已保存 {focus_path.resolve()}", focus.stdout)
             self.assertTrue(focus_path.exists())
 
             with Image.open(focus_path) as focus_img:
@@ -121,7 +121,7 @@ class WorkflowCliTests(unittest.TestCase):
                 text=True,
                 check=True,
             )
-            self.assertIn(f"拼图已保存 {review_sheet_path}", review.stdout)
+            self.assertIn(f"拼图已保存 {review_sheet_path.resolve()}", review.stdout)
             self.assertTrue(review_sheet_path.exists())
 
     def test_default_outputs_work_for_jpeg_inputs(self):
@@ -167,7 +167,7 @@ class WorkflowCliTests(unittest.TestCase):
                     check=True,
                 )
                 diff_path = temp_path / f"diff{suffix}"
-                self.assertIn(f"差异图已保存 {diff_path}", diff.stdout)
+                self.assertIn(f"差异图已保存 {diff_path.resolve()}", diff.stdout)
                 self.assertIn("box1:", diff.stdout)
                 self.assertTrue(diff_path.exists())
 

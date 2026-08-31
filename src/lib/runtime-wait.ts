@@ -1,0 +1,539 @@
+/**
+ * runtime-wait.ts — 等待/条件/超时相关函数
+ *
+ * 本模块包含 miniprogram-browser 的等待机制：
+ * - 条件解析（normalizeAwaitCondition）
+ * - 超时计算（resolveAwaitTimeoutMs）
+ * - 等待稳定/条件满足轮询
+ * - native 诊断消息构造
+ */
+
+const {
+  normalizeRuntimeRoute,
+  resolveRuntimeStableText,
+  formatRouteTimelineLine,
+} = require('./runtime-core')
+const {
+  buildPageStackSignature,
+} = require('./runtime-state')
+const {
+  probeRuntimeViewReady,
+  readRuntimeTree,
+  buildRuntimeViewSignature,
+} = require('./runtime-snapshot')
+const {
+  getCurrentPage,
+  getPageStack,
+} = require('./runtime-bridge')
+const {
+  resolveTarget,
+} = require('./runtime-resolve')
+const { performance } = require('node:perf_hooks')
+
+import type { MiniProgram } from 'miniprogram-automator'
+import type { SessionState } from '../types/core'
+
+type AnyRecord = Record<string, unknown>
+type ErrorWithMeta = Error & AnyRecord
+
+/** await 条件对象（由 normalizeAwaitCondition 解析） */
+interface AwaitCondition {
+  kind: string
+  value: string
+  raw: string
+}
+
+/** 稳定采样结果 */
+interface StableSample {
+  page: unknown
+  path: string
+  pageStackDepth: number
+  signature: string
+}
+
+/** 等待结果（waitForMiniProgramStable / waitForMiniProgramCondition 共用） */
+interface WaitResult {
+  ok: boolean
+  condition: AwaitCondition | string
+  path: string
+  elapsedMs: number
+  count?: number
+  pageStackDepth?: number
+  stableMs?: number
+  viewReady?: boolean
+  viewNodeCount?: number
+  viewError?: string
+  changed?: boolean
+}
+
+/** 可见性检查的元素（仅需 size 方法） */
+interface VisibleElement {
+  size?: (...args: unknown[]) => Promise<unknown>
+}
+
+/** 睡眠函数签名 */
+type SleepFn = (ms: number) => Promise<void>
+
+// ---- 常量 ----
+
+const ROUTE_TIMELINE_LIMIT = 200
+const DEFAULT_AWAIT_TIMEOUTS: Record<string, number> = {
+  'tool-ready': 30000,
+  'app-ready': 90000,
+  stable: 15000,
+  route: 8000,
+  'route-change': 8000,
+  'route-settled': 8000,
+  selector: 12000,
+  visible: 12000,
+  hidden: 12000,
+  ref: 12000,
+  change: 8000,
+}
+
+// ---- 条件解析 ----
+
+/**
+ * 解析 await 条件字符串为标准化的条件对象。
+ *
+ * 支持格式：
+ * - 内置类型：tool-ready, app-ready, stable, route-change, route-settled, change, auto
+ * - route:/pages/xxx、selector:.xxx、visible:.xxx、hidden:.xxx
+ * - @e1（ref 引用）
+ * - /pages/xxx（直接路由）
+ */
+function normalizeAwaitCondition(rawValue: unknown): AwaitCondition {
+  const raw = String(rawValue || '').trim()
+  if (!raw) {
+    const error = new Error('await requires a condition, e.g. app-ready or route:/pages/index/index') as ErrorWithMeta
+    error.code = 'CLI_USAGE_ERROR'
+    throw error
+  }
+
+  const builtInKinds = new Set(['tool-ready', 'app-ready', 'stable', 'route-change', 'route-settled', 'change', 'auto'])
+  if (builtInKinds.has(raw)) {
+    return {
+      kind: raw,
+      value: '',
+      raw,
+    }
+  }
+
+  const colonIndex = raw.indexOf(':')
+  if (colonIndex > 0) {
+    const kind = raw.slice(0, colonIndex).trim()
+    const nextValue = raw.slice(colonIndex + 1).trim()
+    if (['route', 'selector', 'visible', 'hidden', 'ref'].includes(kind) && nextValue) {
+      return {
+        kind,
+        value: kind === 'route' ? normalizeRuntimeRoute(nextValue) : nextValue,
+        raw,
+      }
+    }
+  }
+
+  if (raw.startsWith('@')) {
+    return { kind: 'ref', value: raw, raw }
+  }
+
+  if (raw.startsWith('/') || raw.startsWith('pages/')) {
+    return { kind: 'route', value: normalizeRuntimeRoute(raw), raw }
+  }
+
+  const error = new Error(`Unsupported await condition: ${raw}`) as ErrorWithMeta
+  error.code = 'CLI_USAGE_ERROR'
+  throw error
+}
+
+// ---- 超时计算 ----
+
+/** 从条件和显式超时计算实际超时毫秒数 */
+function resolveAwaitTimeoutMs(condition: AwaitCondition, explicitTimeout: unknown): number {
+  const numericTimeout = Number(explicitTimeout)
+  if (Number.isFinite(numericTimeout) && numericTimeout > 0) {
+    return numericTimeout
+  }
+
+  const kind = condition && condition.kind ? String(condition.kind) : ''
+  return DEFAULT_AWAIT_TIMEOUTS[kind] || 12000
+}
+
+/**
+ * 构造超时错误，附加 hint 和可选的 log/next 信息。
+ * 用于 await 超时后的用户友好错误提示。
+ */
+function buildAwaitTimeoutError(condition: AwaitCondition, timeoutMs: number, hint: unknown, details: AnyRecord = {}): ErrorWithMeta {
+  const error = new Error(`await ${condition.raw} timed out after ${timeoutMs}ms`) as ErrorWithMeta
+  error.code = 'AWAIT_TIMEOUT'
+  if (hint) {
+    error.hint = hint
+  }
+  if (details.log) {
+    error.log = details.log
+  }
+  if (details.next) {
+    error.next = details.next
+  }
+  return error
+}
+
+/** 构造运行时不稳定的超时错误 */
+function buildRuntimeStableTimeoutError(timeoutMs: number, hint: unknown, details: AnyRecord = {}): ErrorWithMeta {
+  const error = new Error(`runtime stable timed out after ${timeoutMs}ms`) as ErrorWithMeta
+  error.code = 'RUNTIME_UNSTABLE'
+  error.runtimeMayContinue = true
+  error.hint = hint || 'phase=stable'
+  error.diagnostics = details
+  error.next = 'await stable'
+  return error
+}
+
+// ---- 等待条件轮询 ----
+
+/**
+ * 执行 await 条件轮询，支持多种条件类型。
+ *
+ * 条件处理：
+ * - tool-ready / app-ready：立即返回成功
+ * - route：等待 path 匹配
+ * - route-change：等待 path 变化
+ * - route-settled：等待 path 连续 2 次不变
+ * - selector / visible / hidden：通过 $$ 查询
+ * - ref：通过 resolveTarget 检查 ref 可解析
+ * - change：对比动作前后的 route、页面栈和编译后 WXML 签名
+ */
+async function waitForMiniProgramCondition(miniProgram: MiniProgram, state: SessionState, condition: AwaitCondition, options: AnyRecord = {}): Promise<WaitResult> {
+  if (condition.kind === 'stable') {
+    return await waitForMiniProgramStable(miniProgram, {
+      timeoutMs: options.timeoutMs || options.timeout,
+      pollMs: options.pollMs,
+      sleepFn: options.sleepFn,
+    })
+  }
+
+  if (condition.kind === 'change' && !String(options.signatureBefore || '')) {
+    const error = new Error('await change 只能用于动作的 --await change，因为独立等待没有动作前基线。') as ErrorWithMeta
+    error.code = 'CLI_USAGE_ERROR'
+    throw error
+  }
+
+  const timeoutMs = resolveAwaitTimeoutMs(condition, options.timeoutMs || options.timeout)
+  const pollMs = Math.max(1, Number(options.pollMs || 200))
+  const sleepFn = (options.sleepFn as SleepFn) || sleep
+  const initialRoute = normalizeRuntimeRoute(options.pathBefore || state.route || '')
+  const startedAt = Date.now()
+  let lastHint = `kind=${condition.kind}`
+  let lastPath = initialRoute
+  let stablePath = ''
+  let stableCount = 0
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const page = await getCurrentPage(miniProgram)
+    const currentPath = normalizeRuntimeRoute(page && page.path ? page.path : '')
+    lastPath = currentPath
+
+    if (condition.kind === 'tool-ready' || condition.kind === 'app-ready') {
+      return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt }
+    } else if (condition.kind === 'route') {
+      if (currentPath === condition.value) {
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt }
+      }
+      lastHint = `kind=route; current=${currentPath || '(empty)'}`
+    } else if (condition.kind === 'route-change') {
+      if (initialRoute && currentPath && currentPath !== initialRoute) {
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt }
+      }
+      lastHint = `kind=route-change; current=${currentPath || '(empty)'}`
+    } else if (condition.kind === 'route-settled') {
+      if (currentPath && currentPath === stablePath) {
+        stableCount += 1
+      } else {
+        stablePath = currentPath
+        stableCount = currentPath ? 1 : 0
+      }
+      if (stableCount >= 2) {
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt }
+      }
+      lastHint = `kind=route-settled; current=${currentPath || '(empty)'}`
+    } else if (condition.kind === 'selector' || condition.kind === 'visible' || condition.kind === 'hidden') {
+      const matches = await page.$$(condition.value)
+      const visibleCount = await countVisibleElements(matches)
+      if (condition.kind === 'selector' && matches.length > 0) {
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt, count: matches.length }
+      }
+      if (condition.kind === 'visible' && visibleCount > 0) {
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt, count: visibleCount }
+      }
+      if (condition.kind === 'hidden' && visibleCount === 0) {
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt, count: 0 }
+      }
+      lastHint = `kind=${condition.kind}; matches=${condition.kind === 'selector' ? matches.length : visibleCount}`
+    } else if (condition.kind === 'ref') {
+      try {
+        await resolveTarget(page, state, condition.value, options.scopeRef || null)
+        return { ok: true, condition, path: currentPath, elapsedMs: Date.now() - startedAt }
+      } catch (_error: unknown) {
+        lastHint = `kind=ref; target=${condition.value}`
+      }
+    } else if (condition.kind === 'change') {
+      const sample = await readRuntimeChangeSignature(miniProgram, page)
+      if (sample.signature !== String(options.signatureBefore)) {
+        return {
+          ok: true,
+          condition,
+          path: String(sample.path || ''),
+          elapsedMs: Date.now() - startedAt,
+          changed: true,
+        }
+      }
+      lastHint = `kind=change; current=${currentPath || '(empty)'}`
+    } else {
+      const error = new Error(`Unsupported await condition kind: ${condition.kind}`) as ErrorWithMeta
+      error.code = 'CLI_USAGE_ERROR'
+      throw error
+    }
+
+    await sleepFn(pollMs)
+  }
+
+  throw buildAwaitTimeoutError(condition, timeoutMs, lastHint, {
+    path: lastPath,
+  })
+}
+
+/** 读取 route、页面栈和编译后语义 WXML 的统一签名。 */
+async function readRuntimeChangeSignature(miniProgram: MiniProgram, currentPage: unknown = null): Promise<AnyRecord> {
+  const page = (currentPage || await getCurrentPage(miniProgram)) as AnyRecord
+  const path = normalizeRuntimeRoute(page && page.path ? page.path : '')
+  let stack: { path?: string; query?: Record<string, unknown> }[] = []
+  try {
+    stack = await getPageStack(miniProgram)
+  } catch (_error: unknown) {
+    stack = path ? [{ path, query: {} }] : []
+  }
+  // 使用 raw tree 只生成内存签名，确保普通 view 中的临时状态也能被观察到；不会扩大 snapshot 输出。
+  const tree = await readRuntimeTree(page, { raw: true })
+  const signature = [
+    path,
+    buildPageStackSignature(stack),
+    buildRuntimeViewSignature(tree.nodes || []),
+  ].join('\n---\n')
+  return { path, signature }
+}
+
+/** 统计元素列表中可见元素数量（通过 size 检测） */
+async function countVisibleElements(elements: VisibleElement[]): Promise<number> {
+  let visibleCount = 0
+  for (const element of elements || []) {
+    try {
+      if (typeof element.size === 'function') {
+        const size = (await element.size()) as { width?: unknown; height?: unknown }
+        if (Number(size && size.width) > 0 || Number(size && size.height) > 0) {
+          visibleCount += 1
+          continue
+        }
+      } else {
+        visibleCount += 1
+        continue
+      }
+    } catch (_error: unknown) {
+      visibleCount += 1
+      continue
+    }
+  }
+  return visibleCount
+}
+
+// ---- 稳定等待 ----
+
+async function withStableProbeTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout`)), Math.max(1, timeoutMs))
+      }),
+    ])
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
+}
+
+/** 采集当前页面栈的稳定快照样本 */
+async function readStableRuntimeSample(miniProgram: MiniProgram, timeoutMs = 2000): Promise<StableSample> {
+  const page = await withStableProbeTimeout(getCurrentPage(miniProgram), timeoutMs, 'stable currentPage') as AnyRecord
+  const pathValue = normalizeRuntimeRoute(page && page.path ? page.path : '')
+  let stack: { path?: string; query?: Record<string, unknown> }[] = []
+  try {
+    stack = await withStableProbeTimeout(getPageStack(miniProgram), timeoutMs, 'stable pageStack')
+  } catch (_error: unknown) {
+    stack = pathValue ? [{ path: pathValue, query: {} }] : []
+  }
+
+  const stackSignature = buildPageStackSignature(stack)
+  return {
+    page,
+    path: pathValue,
+    pageStackDepth: stack.length,
+    signature: `${pathValue}|${stackSignature}`,
+  }
+}
+
+/**
+ * 等待小程序运行稳定（路由不再变化）。
+ *
+ * 轮询页面栈签名，在 quietMs 毫秒内无变化则视为稳定。
+ * 可选进行视图预制探针检查。
+ */
+async function waitForMiniProgramStable(miniProgram: MiniProgram, options: AnyRecord = {}): Promise<WaitResult> {
+  const timeoutMs = Math.max(1, Number(options.timeoutMs ?? options.timeout ?? DEFAULT_AWAIT_TIMEOUTS.stable))
+  const quietMs = Math.max(0, Number(options.quietMs ?? 1200))
+  const pollMs = Math.max(1, Number(options.pollMs ?? 300))
+  const sampleTimeoutMs = Math.max(1, Number(options.sampleTimeoutMs ?? 2000))
+  const viewProbeTimeoutMs = Math.max(1, Number(options.viewProbeTimeoutMs ?? 3000))
+  const sleepFn = (options.sleepFn as SleepFn) || sleep
+  const now = (options.now as (() => number) | undefined) || (() => performance.now())
+  const startedAt = now()
+  let lastSignature = ''
+  let stableSince = 0
+  let lastSample: StableSample | null = null
+  let lastHint = 'phase=stable'
+
+  while (now() - startedAt <= timeoutMs) {
+    try {
+      const sample = await readStableRuntimeSample(miniProgram, sampleTimeoutMs)
+      lastSample = sample
+
+      if (!sample.path) {
+        lastHint = 'phase=stable; current=(empty)'
+        lastSignature = ''
+        stableSince = 0
+      } else if (sample.signature !== lastSignature) {
+        lastSignature = sample.signature
+        stableSince = now()
+        lastHint = `phase=stable; current=${sample.path}`
+        if (quietMs === 0) {
+          break
+        }
+      } else {
+        const stableMs = now() - stableSince
+        lastHint = `phase=stable; current=${sample.path}; stableMs=${stableMs}`
+        if (stableMs >= quietMs) {
+          break
+        }
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      lastHint = `phase=stable; error=${message}`
+      lastSignature = ''
+      stableSince = 0
+    }
+
+    await sleepFn(pollMs)
+  }
+
+  if (!lastSample || !lastSample.path || (quietMs > 0 && now() - stableSince < quietMs)) {
+    throw buildRuntimeStableTimeoutError(timeoutMs, lastHint, {
+      path: lastSample && lastSample.path ? lastSample.path : '',
+      elapsedMs: now() - startedAt,
+    })
+  }
+
+  let viewProbe: AnyRecord = { viewReady: false, viewNodeCount: 0 }
+  if (!options.skipViewProbe) {
+    try {
+      viewProbe = await withStableProbeTimeout(
+        probeRuntimeViewReady(lastSample.page),
+        viewProbeTimeoutMs,
+        'stable view probe',
+      )
+    } catch (error: unknown) {
+      viewProbe = {
+        viewReady: false,
+        viewNodeCount: 0,
+        viewError: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    condition: 'stable',
+    path: lastSample.path,
+    elapsedMs: now() - startedAt,
+    stableMs: now() - stableSince,
+    pageStackDepth: lastSample.pageStackDepth,
+    viewReady: Boolean(viewProbe.viewReady),
+    viewNodeCount: Number(viewProbe.viewNodeCount || 0),
+    viewError: viewProbe.viewError ? String(viewProbe.viewError) : undefined,
+  }
+}
+
+// ---- native 诊断 ----
+
+/**
+ * 为 callNativeMethod 的返回值构建诊断消息。
+ * 根据具体方法提供可操作 hint。
+ */
+function buildNativeDiagnostic(method: string, result: unknown, context: AnyRecord = {}): AnyRecord {
+  const resultRecord = (result && typeof result === 'object' ? result : null) as { error?: { message?: unknown } } | null
+  const errorMessage = resultRecord && resultRecord.error ? resultRecord.error.message : undefined
+  const routeNotices = ((context.routeEvents as { message?: string }[] | undefined) || []).map(formatRouteTimelineLine)
+  const diagnostic: AnyRecord = {
+    result,
+    path: context.pathAfter || context.pathBefore || '',
+    notices: routeNotices,
+  }
+
+  if (errorMessage) {
+    let hint = '请检查当前宿主 UI 场景是否满足该 native 动作。'
+    if (method === 'navigateLeft') {
+      hint = '当前页面可能没有可用的原生返回栈；先确认是通过真实 navigateTo 进入，或改用 relaunch/goto。'
+    } else if (method === 'switchTab') {
+      hint = '当前项目可能没有原生 tabBar，或目标页面不是原生 tab 页；优先改用 click/ref 或 relaunch。'
+    } else if (method === 'goHome') {
+      hint = 'DevTools 当前宿主环境可能不支持 goHome，或当前并非可回首页场景；可改用 relaunch 到首页。'
+    } else if (method === 'confirmModal' || method === 'cancelModal') {
+      hint = '请先截图确认弹窗，再核验业务回调结果；当前 DevTools 的原生控制通道可能不可用。'
+    }
+
+    diagnostic.message = `${method} failed`
+    diagnostic.error = errorMessage
+    diagnostic.hint = hint
+    return diagnostic
+  }
+
+  if (method === 'confirmModal' || method === 'cancelModal') {
+    diagnostic.message = `已调用 native ${method}；弹窗结果未验证`
+    diagnostic.hint = '原生接口的空返回不证明弹窗已处理；请通过截图或业务回调结果核验，不能仅依据路由判断。'
+    return diagnostic
+  }
+
+  diagnostic.message = `已执行 native ${method}`
+  if (context.pathAfter && context.pathBefore && context.pathAfter !== context.pathBefore) {
+    diagnostic.path = context.pathAfter
+  }
+  return diagnostic
+}
+
+// make sleep accessible
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+module.exports = {
+  normalizeAwaitCondition,
+  resolveAwaitTimeoutMs,
+  buildAwaitTimeoutError,
+  buildRuntimeStableTimeoutError,
+  waitForMiniProgramCondition,
+  readRuntimeChangeSignature,
+  waitForMiniProgramStable,
+  countVisibleElements,
+  readStableRuntimeSample,
+  buildNativeDiagnostic,
+  sleep,
+}

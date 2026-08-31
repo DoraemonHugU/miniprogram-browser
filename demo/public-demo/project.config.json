@@ -1,0 +1,11 @@
+{
+  "description": "Public synthetic mini program demo",
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "libVersion": "3.8.8",
+  "setting": {
+    "es6": true,
+    "minified": false,
+    "urlCheck": false
+  }
+}

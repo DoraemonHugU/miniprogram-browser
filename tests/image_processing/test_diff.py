@@ -94,7 +94,7 @@ class DiffCliTests(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn(f"差异图已保存 {diff_path}", result.stdout)
+            self.assertIn(f"差异图已保存 {diff_path.resolve()}", result.stdout)
             self.assertIn("box1:", result.stdout)
             self.assertTrue(diff_path.exists())
 
@@ -129,7 +129,7 @@ class DiffCliTests(unittest.TestCase):
                 check=True,
             )
 
-            self.assertIn(f"差异图已保存 {diff_path}", result.stdout)
+            self.assertIn(f"差异图已保存 {diff_path.resolve()}", result.stdout)
             self.assertIn("box1:", result.stdout)
             self.assertTrue(diff_path.exists())
 

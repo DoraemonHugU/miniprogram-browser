@@ -1,5 +1,8 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 
 const {
   captureScreenshotToPath,
@@ -10,6 +13,7 @@ const {
   snapshotInteractive,
   queryRecords,
   resolveTarget,
+  resolveActionTarget,
   applySnapshotOptions,
   getStoredRuntimeEvents,
   clearStoredRuntimeEvents,
@@ -30,12 +34,32 @@ const {
   buildClickNotices,
   confirmRouteAfterAction,
   formatAutomationCliError,
+  parseAutomationCliFailure,
+  explainDevtoolsFailureRaw,
+  summarizeDevtoolsCliRaw,
+  detectAutomationCliProgressTimeout,
+  validateAutomationCliConfig,
   parseResolvedIdePort,
+  enableAutomation,
+  shouldOpenProjectBeforeAutomation,
+  closeDevtoolsProject,
   callWxMethod,
+  changeMiniProgramRoute,
   callPageMethod,
   buildAutomationArgs,
+  connectWithRetry,
+  // buildConnectRetryOptions removed in simplification
   connectOrEnable,
-} = require('../scripts/lib/runtime.cjs')
+  withMiniProgram,
+  probeAutomationRuntime,
+  sendAutomationProtocol,
+  collectDevtoolsLogs,
+  normalizeAwaitCondition,
+  resolveAwaitTimeoutMs,
+  waitForMiniProgramCondition,
+  waitForMiniProgramStable,
+} = require('../dist/lib/runtime.js')
+const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
 
 function createState() {
   return {
@@ -44,6 +68,20 @@ function createState() {
     refs: {},
     config: {},
   }
+}
+
+const WSL_TEST_OPTIONS = {
+  runtime: 'linux',
+  readProcVersion: '5.15.0-microsoft-standard-WSL2',
+  wslDistroName: 'ubuntu-test',
+  toWindowsPath(inputPath) {
+    const match = String(inputPath).match(/^\/mnt\/([a-z])(?:\/(.*))?$/iu)
+    if (!match) {
+      throw new Error(`Unexpected WSL test path: ${inputPath}`)
+    }
+    const [, driveLetter, rest = ''] = match
+    return `${driveLetter.toUpperCase()}:\\${rest.replace(/\//gu, '\\')}`
+  },
 }
 
 function createInteractivePage(labels) {
@@ -143,6 +181,26 @@ test('snapshotInteractive rebuilds semantic refs from runtime tree', async () =>
   assert.equal(result.lines[0], '@e1 [button] 保存')
 })
 
+test('snapshotInteractive rebuilds deterministic refs for every full snapshot', async () => {
+  const firstPage = createInteractivePage(['Alpha', 'Beta'])
+  const secondPage = {
+    ...createInteractivePage(['Gamma']),
+    path: 'pages/other/index',
+  }
+
+  const first = await snapshotInteractive(firstPage, createState())
+  const second = await snapshotInteractive(secondPage, first.state)
+  const firstAgain = await snapshotInteractive(firstPage, second.state)
+
+  assert.deepEqual(
+    firstAgain.records.map((record) => [record.ref, record.text]),
+    first.records.map((record) => [record.ref, record.text]),
+  )
+  assert.equal(second.records[0].ref, '@e1')
+  assert.equal(Object.keys(second.state.refs).length, second.records.length)
+  assert.equal(second.state.nextRefIndex, second.records.length + 1)
+})
+
 test('resolveTarget re-resolves reordered view refs by semantic identity', async () => {
   const state = createState()
   const initialPage = createInteractivePage(['Alpha', 'Beta'])
@@ -153,6 +211,51 @@ test('resolveTarget re-resolves reordered view refs by semantic identity', async
   const element = await resolveTarget(reorderedPage, snapshotResult.state, betaRecord.ref)
 
   assert.equal(await element.text(), 'Beta')
+})
+
+test('resolveActionTarget prefers the containing label for checkbox and radio refs', async () => {
+  const checkbox = {
+    tagName: 'checkbox',
+    async outerWxml() { return '<checkbox value="alpha" checked="false"></checkbox>' },
+  }
+  const label = {
+    tagName: 'label',
+    async outerWxml() { return '<label><checkbox value="alpha" checked="false"></checkbox>Alpha</label>' },
+  }
+  const page = {
+    path: 'pages/controls/index',
+    async $$(selector) {
+      if (selector === 'checkbox') return [checkbox]
+      if (selector === 'label') return [label]
+      return []
+    },
+  }
+  const state = createState()
+  state.refs['@e1'] = {
+    ref: '@e1',
+    route: page.path,
+    kind: 'checkbox',
+    strategy: { kind: 'selector', selector: 'checkbox', index: 0 },
+  }
+
+  const resolved = await resolveActionTarget(page, state, '@e1')
+
+  assert.equal(resolved.element, label)
+  assert.equal(resolved.originalElement, checkbox)
+  assert.equal(resolved.via, 'label')
+})
+
+test('resolveActionTarget keeps non-control targets unchanged', async () => {
+  const button = { tagName: 'button' }
+  const page = {
+    async $(selector) { return selector === '#save' ? button : null },
+  }
+
+  const resolved = await resolveActionTarget(page, createState(), '#save')
+
+  assert.equal(resolved.element, button)
+  assert.equal(resolved.originalElement, button)
+  assert.equal(resolved.via, 'target')
 })
 
 test('subtreeForScope respects pageKey with query params', async () => {
@@ -204,7 +307,7 @@ test('confirmRouteAfterAction waits for route change evidence', async () => {
 
   const result = await confirmRouteAfterAction(miniProgram, state, {
     pathBefore: 'pages/settings/index',
-    timeoutMs: 50,
+    timeoutMs: 500,
     pollMs: 1,
   })
 
@@ -231,6 +334,111 @@ test('confirmRouteAfterAction prefers route event target when currentPage lags',
 
   assert.equal(result.path, 'pages/preferences/index')
   assert.equal(state.route, 'pages/preferences/index')
+})
+
+test('confirmRouteAfterAction does not trust route events for an explicit expected route', async () => {
+  const miniProgram = {
+    async evaluate() {
+      return [{ seq: 1, ts: Date.now(), from: 'pages/settings/index', to: 'pages/preferences/index', openType: 'reLaunch' }]
+    },
+    async currentPage() {
+      return { path: 'pages/settings/index' }
+    },
+  }
+  const state = { routeEvents: [], lastRouteEventSeq: 0, route: 'pages/settings/index' }
+
+  const result = await confirmRouteAfterAction(miniProgram, state, {
+    pathBefore: 'pages/settings/index',
+    expectedPath: 'pages/preferences/index',
+    timeoutMs: 20,
+    pollMs: 1,
+  })
+
+  assert.equal(result.path, 'pages/settings/index')
+  assert.equal(result.expectedMatched, false)
+  assert.equal(state.route, 'pages/settings/index')
+})
+
+test('confirmRouteAfterAction requires stable expected route matches when requested', async () => {
+  const pages = [
+    'pages/settings/index',
+    'pages/preferences/index',
+    'pages/settings/index',
+    'pages/preferences/index',
+    'pages/preferences/index',
+  ]
+  let currentPageCalls = 0
+  const miniProgram = {
+    async evaluate() {
+      return []
+    },
+    async currentPage() {
+      currentPageCalls += 1
+      return { path: pages.shift() || 'pages/settings/index' }
+    },
+  }
+  const state = { routeEvents: [], lastRouteEventSeq: 0, route: 'pages/settings/index' }
+
+  const result = await confirmRouteAfterAction(miniProgram, state, {
+    pathBefore: 'pages/settings/index',
+    expectedPath: 'pages/preferences/index',
+    expectedStableMatches: 2,
+    timeoutMs: 500,
+    pollMs: 1,
+  })
+
+  assert.equal(result.path, 'pages/preferences/index')
+  assert.equal(result.expectedMatched, true)
+  assert.equal(currentPageCalls, 5)
+})
+
+test('readRuntimeTree reports an unavailable render automation channel instead of hanging', async () => {
+  const page = {
+    path: 'pages/index/index',
+    async $$() {
+      return await new Promise(() => {})
+    },
+  }
+
+  await assert.rejects(
+    readRuntimeTree(page, { queryTimeoutMs: 5 }),
+    (error) => {
+      assert.equal(error.code, 'DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE')
+      assert.match(error.message, /页面元素接口没有响应/u)
+      assert.match(error.raw, /Page\.getElements\(view\).*timed out/u)
+      assert.match(error.hint, /无需替换为生产 AppID/u)
+      return true
+    },
+  )
+})
+
+test('readRuntimeTree reports a hanging Element.getWXML channel', async () => {
+  const page = {
+    path: 'pages/index/index',
+    async $$(selector) {
+      if (selector !== 'view') {
+        return []
+      }
+      return [{
+        tagName: 'view',
+        async outerWxml() {
+          return await new Promise(() => {})
+        },
+        async text() {
+          return 'Ready'
+        },
+      }]
+    },
+  }
+
+  await assert.rejects(
+    readRuntimeTree(page, { elementTimeoutMs: 5 }),
+    (error) => {
+      assert.equal(error.code, 'DEVTOOLS_RENDER_AUTOMATION_UNAVAILABLE')
+      assert.match(error.raw, /Element\.getWXML\(view:0\).*timed out/u)
+      return true
+    },
+  )
 })
 
 test('readRuntimeTree rebuilds nested structure from runtime outerWxml', async () => {
@@ -361,6 +569,59 @@ test('readRuntimeTree raw mode uses selector index zero for unique selectors', a
   assert.equal(tree.nodes[1].strategy.index, 0)
 })
 
+test('snapshotInteractive preserves selector indexes for duplicate controls', async () => {
+  const page = {
+    path: 'pages/dashboard/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'button') return []
+      return [
+        {
+          tagName: 'button',
+          async text() { return '提交' },
+          async outerWxml() { return '<button>提交</button>' },
+        },
+        {
+          tagName: 'button',
+          async text() { return '重置' },
+          async outerWxml() { return '<button>重置</button>' },
+        },
+      ]
+    },
+  }
+
+  const result = await snapshotInteractive(page, createState())
+  assert.deepEqual(result.records.map((record) => record.strategy.index), [0, 1])
+})
+
+test('resolveTarget preserves structural occurrence when duplicate controls share text', async () => {
+  const controls = [
+    { marker: 'add', text: 'Add', outerWxml: '<button id="list-add">Add</button>' },
+    { marker: 'first-select', text: 'Select' },
+    { marker: 'first-remove', text: 'Remove' },
+    { marker: 'second-select', text: 'Select' },
+    { marker: 'second-remove', text: 'Remove' },
+  ].map(({ marker, text, outerWxml }) => ({
+    marker,
+    tagName: 'button',
+    async text() { return text },
+    async outerWxml() { return outerWxml || `<button>${text}</button>` },
+  }))
+  const page = {
+    path: 'pages/lists/index',
+    query: {},
+    async $$(selector) {
+      return selector === 'button' ? controls : []
+    },
+  }
+
+  const result = await snapshotInteractive(page, createState())
+  const secondSelect = result.records.filter((record) => record.text === 'Select')[1]
+  const element = await resolveTarget(page, result.state, secondSelect.ref)
+
+  assert.equal(element.marker, 'second-select')
+})
+
 test('readRuntimeTree keeps clickable wrapper as button with combined text', async () => {
   const page = {
     path: 'pages/settings/index',
@@ -404,7 +665,105 @@ test('readRuntimeTree keeps clickable wrapper as button with combined text', asy
   assert.equal(tree.nodes[0].text, '反馈建议 把想法告诉我们 ›')
 })
 
-test('snapshotInteractive adds contextual labels for list items under section titles', async () => {
+test('readRuntimeTree keeps structural gesture targets even when descendants have no text nodes', async () => {
+  const scrollWxml = '<scroll-view id="feed" scroll-y><view>Row 1</view></scroll-view>'
+  const swiperWxml = '<swiper id="carousel"><swiper-item><view>Slide 1</view></swiper-item></swiper>'
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector === 'view') {
+        return [
+          { tagName: 'view', async text() { return 'Row 1 Slide 1' }, async outerWxml() { return `<view>${scrollWxml}${swiperWxml}</view>` } },
+          { tagName: 'view', async text() { return 'Row 1' }, async outerWxml() { return '<view>Row 1</view>' } },
+          { tagName: 'view', async text() { return 'Slide 1' }, async outerWxml() { return '<view>Slide 1</view>' } },
+        ]
+      }
+      if (selector === 'scroll-view') {
+        return [{ tagName: 'scroll-view', async text() { return 'Row 1' }, async outerWxml() { return scrollWxml } }]
+      }
+      if (selector === 'swiper') {
+        return [{ tagName: 'swiper', async text() { return 'Slide 1' }, async outerWxml() { return swiperWxml } }]
+      }
+      if (selector === 'swiper-item') {
+        return [{ tagName: 'swiper-item', async text() { return 'Slide 1' }, async outerWxml() { return '<swiper-item><view>Slide 1</view></swiper-item>' } }]
+      }
+      return []
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.deepEqual(tree.nodes.map((node) => node.kind), ['scroll-view', 'swiper'])
+  assert.deepEqual(tree.nodes[1].children, [])
+})
+
+test('readRuntimeTree exposes longpress wrappers as labeled buttons', async () => {
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'view') return []
+      return [{
+        tagName: 'view',
+        async text() { return 'Long press target' },
+        async outerWxml() { return '<view id="hold" bindlongpress="onHold">Long press target</view>' },
+      }]
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.equal(tree.nodes[0].kind, 'button')
+  assert.equal(tree.nodes[0].text, 'Long press target')
+})
+
+test('readRuntimeTree keeps explicitly identified direct-text views when compiled WXML strips events', async () => {
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'view') return []
+      return [{
+        tagName: 'view',
+        async text() { return 'Long press target' },
+        async outerWxml() { return '<view id="hold">Long press target</view>' },
+      }]
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.equal(tree.nodes[0].kind, 'view')
+  assert.equal(tree.nodes[0].text, 'Long press target')
+})
+
+test('readRuntimeTree ignores compiler-generated matching id and data-sid wrappers', async () => {
+  const page = {
+    path: 'pages/interaction/index',
+    query: {},
+    async $$(selector) {
+      if (selector !== 'view') return []
+      return [{
+        tagName: 'view',
+        async text() { return 'Generated row' },
+        async outerWxml() { return '<view id="_Ay" data-sid="_Ay">Generated row</view>' },
+      }, {
+        tagName: 'view',
+        async text() { return 'Explicit action' },
+        async outerWxml() { return '<view id="interaction-action" data-sid="_Az">Explicit action</view>' },
+      }]
+    },
+  }
+
+  const tree = await readRuntimeTree(page)
+
+  assert.equal(tree.nodes.length, 1)
+  assert.equal(tree.nodes[0].businessKey, 'id:interaction-action')
+  assert.equal(tree.nodes[0].text, 'Explicit action')
+})
+
+test('snapshotInteractive keeps meaningful button labels free from unrelated section suffixes', async () => {
   const page = {
     path: 'pages/dashboard/index',
     async $$(selector) {
@@ -450,9 +809,52 @@ test('snapshotInteractive adds contextual labels for list items under section ti
   }
 
   const result = await snapshotInteractive(page, createState())
-  assert.equal(result.records.length, 1)
-  assert.equal(result.records[0].kind, 'button')
-  assert.equal(result.records[0].text, '冒烟测试待办 今天 19:00 <今日待办>')
+  assert.deepEqual(result.records.map((record) => [record.kind, record.text]), [
+    ['text', '今日待办'],
+    ['button', '冒烟测试待办 今天 19:00'],
+  ])
+})
+
+test('snapshotInteractive uses a concise navigator label and removes descendant text noise', async () => {
+  const navigatorWxml = '<navigator url="/pages/controls/index"><view><text>Controls</text><text>Open page →</text></view></navigator>'
+  const page = {
+    path: 'pages/index/index',
+    query: {},
+    async $$(selector) {
+      if (selector === 'view') {
+        return [{
+          tagName: 'view',
+          async text() { return 'Controls Open page →' },
+          async outerWxml() { return `<view>${navigatorWxml}</view>` },
+        }, {
+          tagName: 'view',
+          async text() { return 'Controls Open page →' },
+          async outerWxml() { return '<view><text>Controls</text><text>Open page →</text></view>' },
+        }]
+      }
+      if (selector === 'navigator') {
+        return [{
+          tagName: 'navigator',
+          async text() { return 'Controls Open page →' },
+          async outerWxml() { return navigatorWxml },
+        }]
+      }
+      if (selector === 'text') {
+        return ['Controls', 'Open page →'].map((value) => ({
+          tagName: 'text',
+          async text() { return value },
+          async outerWxml() { return `<text>${value}</text>` },
+        }))
+      }
+      return []
+    },
+  }
+
+  const result = await snapshotInteractive(page, createState())
+
+  assert.deepEqual(result.records.map((record) => [record.kind, record.text]), [
+    ['navigator', 'Controls'],
+  ])
 })
 
 test('queryRecords rejects unsupported query modes', async () => {
@@ -489,9 +891,9 @@ test('queryRecords business mode uses rebuilt runtime tree', async () => {
     },
   }
 
-  const result = await queryRecords(page, createState(), 'business', 'data-sid:save-btn')
+  const result = await queryRecords(page, createState(), 'business', 'id:save-btn')
   assert.equal(result.records.length, 1)
-  assert.equal(result.records[0].businessKey, 'data-sid:save-btn')
+  assert.equal(result.records[0].businessKey, 'id:save-btn')
   assert.equal(result.records[0].strategy.selector, '[id="save-btn"]')
 })
 
@@ -510,6 +912,19 @@ test('applySnapshotOptions compact flattens empty view containers', () => {
 
   const result = applySnapshotOptions(nodes, { compact: true })
   assert.deepEqual(result.map((item) => item.kind), ['text', 'button'])
+})
+
+test('applySnapshotOptions compact keeps structural gesture containers', () => {
+  const nodes = [{
+    kind: 'swiper',
+    text: '',
+    children: [{ kind: 'swiper-item', tagName: 'swiper-item', text: '', children: [] }],
+  }]
+
+  const result = applySnapshotOptions(nodes, { compact: true })
+
+  assert.equal(result[0].kind, 'swiper')
+  assert.equal(result[0].children[0].kind, 'swiper-item')
 })
 
 test('snapshotInteractive applies depth limit before ref allocation', async () => {
@@ -679,6 +1094,44 @@ test('callWxMethod parses JSON-like arguments', async () => {
   assert.deepEqual(result, { ok: true })
 })
 
+test('changeMiniProgramRoute calls wx directly without the automator route sleep', async () => {
+  const calls = []
+  const miniProgram = {
+    async currentPage() {
+      return { path: 'pages/index/index' }
+    },
+    async callWxMethod(method, options) {
+      calls.push([method, options])
+      return { ok: true }
+    },
+    async reLaunch() {
+      throw new Error('must not use miniprogram-automator changeRoute')
+    },
+  }
+
+  const result = await changeMiniProgramRoute(miniProgram, 'reLaunch', '/pages/detail/index')
+
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls, [['reLaunch', { url: '/pages/detail/index' }]])
+})
+
+test('changeMiniProgramRoute preserves plugin route dispatch', async () => {
+  const calls = []
+  const miniProgram = {
+    async currentPage() {
+      return { path: 'plugin-private://demo-plugin/pages/index' }
+    },
+    async callPluginWxMethod(pluginId, method, options) {
+      calls.push([pluginId, method, options])
+      return { ok: true }
+    },
+  }
+
+  await changeMiniProgramRoute(miniProgram, 'switchTab', '/pages/tools/index')
+
+  assert.deepEqual(calls, [['demo-plugin', 'switchTab', { url: '/pages/tools/index' }]])
+})
+
 test('callPageMethod parses JSON-like arguments', async () => {
   const page = {
     async callMethod(method, ...args) {
@@ -827,7 +1280,7 @@ test('buildNativeDiagnostic explains failed native switchTab', () => {
   assert.match(diagnostic.hint, /tabBar|原生 tab/i)
 })
 
-test('buildNativeDiagnostic reports route change after confirmModal', () => {
+test('buildNativeDiagnostic preserves observed routes without claiming modal completion', () => {
   const diagnostic = buildNativeDiagnostic('confirmModal', {}, {
     pathBefore: 'pages/dashboard/index',
     pathAfter: 'pages/account-profile/index',
@@ -837,30 +1290,153 @@ test('buildNativeDiagnostic reports route change after confirmModal', () => {
   })
 
   assert.equal(diagnostic.path, 'pages/account-profile/index')
-  assert.match(diagnostic.message, /已执行 native confirmModal/)
+  assert.match(diagnostic.message, /confirmModal.*弹窗结果未验证/u)
   assert.deepEqual(diagnostic.notices, ['navigateTo pages/dashboard/index -> pages/account-profile/index'])
 })
 
-test('buildNativeDiagnostic warns when confirmModal has no visible effect', () => {
-  const diagnostic = buildNativeDiagnostic('confirmModal', {}, {
-    pathBefore: 'pages/dashboard/index',
-    pathAfter: 'pages/dashboard/index',
-    routeEvents: [],
-  })
+test('buildNativeDiagnostic does not infer modal state from an unchanged route', () => {
+  for (const method of ['confirmModal', 'cancelModal']) {
+    const diagnostic = buildNativeDiagnostic(method, {}, {
+      pathBefore: 'pages/dashboard/index',
+      pathAfter: 'pages/dashboard/index',
+      routeEvents: [],
+    })
 
-  assert.match(diagnostic.message, /confirmModal 未观察到明显变化/)
-  assert.match(diagnostic.hint, /当前可能没有系统 modal|logs|timeline/i)
+    assert.match(diagnostic.message, /弹窗结果未验证/u)
+    assert.match(diagnostic.hint, /截图|业务回调/u)
+    assert.doesNotMatch(diagnostic.hint, /当前可能没有系统 modal/u)
+  }
 })
 
-test('buildClickNotices suggests checking modal when path stays unchanged', () => {
+test('buildClickNotices keeps successful same-page clicks free of speculative navigation warnings', () => {
   const notices = buildClickNotices({
     pathBefore: 'pages/dashboard/index',
     pathAfter: 'pages/dashboard/index',
     routeEvents: [],
   })
 
-  assert.equal(notices.length, 1)
-  assert.match(notices[0], /登录弹窗|confirmModal|timeline/i)
+  assert.deepEqual(notices, [])
+})
+
+test('buildClickNotices keeps observed route events visible', () => {
+  const notices = buildClickNotices({
+    pathBefore: 'pages/dashboard/index',
+    pathAfter: 'pages/detail/index',
+    routeEvents: [{ message: 'navigateTo pages/dashboard/index -> pages/detail/index' }],
+  })
+
+  assert.deepEqual(notices, ['navigateTo pages/dashboard/index -> pages/detail/index'])
+})
+
+test('formatAutomationCliError explains login token expiry and keeps raw', () => {
+  const raw = [
+    '[error] {',
+    "  code: 10,",
+    "  message: 'Error: × Error: INVALID_LOGIN,access_token expired [20260719 10:56:55][] (code 10)'",
+    '}',
+  ].join('\n')
+  const error = formatAutomationCliError(raw)
+  assert.match(error.message, /登录态失效|access_token|INVALID_LOGIN/i)
+  assert.match(error.raw, /INVALID_LOGIN,access_token expired/)
+})
+
+test('parseAutomationCliFailure explains INVALID_LOGIN from CLI output with raw preserved', () => {
+  const raw = [
+    '√ IDE server started successfully, listening on http://127.0.0.1:63870',
+    '- preparing',
+    '[error] {',
+    "  code: 10,",
+    "  message: 'Error: INVALID_LOGIN,access_token expired'",
+    '}',
+  ].join('\n')
+  const failure = parseAutomationCliFailure({ status: 1, raw }, { cliPath: '/mnt/f/tools/wechat-devtools/cli.js' })
+  assert.ok(failure)
+  assert.match(failure.message, /登录态失效|INVALID_LOGIN|access_token/i)
+  assert.match(failure.raw, /INVALID_LOGIN,access_token expired/)
+  assert.match(String(failure.hint || ''), /INVALID_LOGIN|access_token|code:\s*10/i)
+})
+
+test('DevTools code 10 describes the actual AppID or login error instead of assuming token expiry', () => {
+  for (const prefix of ['', '✔ auto\n']) {
+    for (const detail of ['不存在此 AppID 请检查后重新输入', '需要重新登录']) {
+      const raw = `${prefix}[error] {\n  code: 10,\n  message: '${detail}'\n}`
+      const failure = parseAutomationCliFailure({ status: 0, raw }, {})
+      assert.ok(failure)
+      assert.equal(failure.raw, raw)
+      if (detail.includes('AppID')) {
+        assert.match(failure.message, /AppID/u)
+        assert.doesNotMatch(failure.message, /登录态失效|access_token|重新登录/u)
+      } else {
+        assert.match(failure.message, /登录/u)
+        assert.doesNotMatch(failure.message, /access_token|INVALID_LOGIN/u)
+      }
+    }
+  }
+})
+
+test('unknown DevTools code 10 preserves its raw failure without inventing a login cause', () => {
+  for (const status of [0, 1]) {
+    for (const prefix of ['[error] ', '✔ auto\n']) {
+      const raw = `${prefix}code: 10\nsynthetic unknown failure`
+      const failure = parseAutomationCliFailure({ status, raw }, {})
+      assert.ok(failure)
+      assert.equal(failure.raw, raw)
+      assert.doesNotMatch(failure.message, /登录|access_token|INVALID_LOGIN/u)
+    }
+  }
+})
+
+test('islogin false alone is not proof that tourist automation cannot work', () => {
+  const raw = '{"islogin":false}'
+  assert.equal(explainDevtoolsFailureRaw(raw), null)
+  assert.equal(parseAutomationCliFailure({ status: 0, raw }, {}), null)
+  assert.equal(parseAutomationCliFailure({ status: 0, raw: `${raw}\n✔ Using AppID: touristappid\n✔ auto` }, {}), null)
+})
+
+test('DevTools raw summary retains the Chinese code 10 cause among long debug output', () => {
+  const raw = [...Array.from({ length: 30 }, (_, i) => `padding ${i}`), '[error] {', 'code: 10,', "message: '不存在此 AppID 请检查后重新输入'", '}', ...Array.from({ length: 30 }, (_, i) => `tail ${i}`)].join('\n')
+  assert.match(summarizeDevtoolsCliRaw(raw, { maxLines: 8 }), /不存在此 AppID/u)
+})
+
+test('parseAutomationCliFailure does not treat successful auto log with Fetching AppID as AppID failure', () => {
+  const raw = [
+    '- Fetching AppID () permissions',
+    '✔ Using AppID: wx-test-appid',
+    '✔ auto',
+    '[info] long connection established',
+  ].join('\n')
+  assert.equal(parseAutomationCliFailure({ status: 0, raw }, {}), null)
+  assert.equal(parseAutomationCliFailure({ status: 1, raw }, {}), null)
+  assert.equal(explainDevtoolsFailureRaw(raw), null)
+})
+
+test('parseAutomationCliFailure still explains real AppID missing without Using AppID success', () => {
+  const raw = [
+    '- Fetching AppID () permissions',
+    '[error] errcode=41002 appid missing',
+  ].join('\n')
+  const failure = parseAutomationCliFailure({ status: 1, raw }, {})
+  assert.ok(failure)
+  assert.match(failure.message, /AppID|41002|appid missing/i)
+  assert.match(failure.raw, /41002|appid missing/i)
+})
+
+test('summarizeDevtoolsCliRaw keeps signal lines and bounds output', () => {
+  const raw = [
+    'debug fluff line 1',
+    'debug fluff line 2',
+    '[error] errcode=41002 appid missing',
+    'more fluff',
+    '✔ Using AppID: wx123',
+    'noise',
+    'start cli server error',
+    ...Array.from({ length: 40 }, (_, i) => `padding ${i}`),
+  ].join('\n')
+  const excerpt = summarizeDevtoolsCliRaw(raw, { maxLines: 8 })
+  assert.match(excerpt, /\[error\] errcode=41002/)
+  assert.match(excerpt, /Using AppID: wx123/)
+  assert.match(excerpt, /start cli server error/)
+  assert.ok(excerpt.split(/\r?\n/u).length <= 10)
 })
 
 test('formatAutomationCliError adds actionable hint for devtools port restart requirement', () => {
@@ -887,7 +1463,7 @@ test('formatAutomationCliError explains IDE initialize timeout with existing IDE
 test('formatAutomationCliError explains DevTools builder crash more clearly', () => {
   const error = formatAutomationCliError([
     'TypeError: Cannot read properties of undefined (reading \'MinTabbarCount\')',
-    'at checkTabbar (F:/Tools/wxwebtool/code/package.nw/js/common/miniprogram-builder/modules/corecompiler/original/json/app/checkAppFields.js:2:2477)',
+    'at checkTabbar (F:/tools/wechat-devtools/code/package.nw/js/common/miniprogram-builder/modules/corecompiler/original/json/app/checkAppFields.js:2:2477)',
     'TypeError: Cannot read property \'getPreCompileOptions\' of undefined',
   ].join('\n'))
 
@@ -896,20 +1472,362 @@ test('formatAutomationCliError explains DevTools builder crash more clearly', ()
   assert.match(error.message, /不是普通.*session.*port|不是普通.*端口/i)
 })
 
-test('connectOrEnable prefers enable-first for open-like calls', async () => {
+test('parseAutomationCliFailure treats DevTools code 17 output as fatal even with zero exit', () => {
+  const failure = parseAutomationCliFailure({
+    status: 0,
+    raw: [
+      '× preparing',
+      '[error] code: 17',
+      '二维码输出路径无效或不存在',
+      'QR_PATH_NOT_VALID_OR_NOT_EXIST',
+    ].join('\n'),
+  }, {
+    projectPath: '\\\\wsl.localhost\\ubuntu-22.04\\home\\wang\\demo\\apps\\miniprogram',
+  })
+
+  assert.ok(failure)
+  assert.match(failure.message, /code 17|二维码输出路径|WSL UNC|--devtools-project/i)
+  assert.match(failure.raw, /QR_PATH_NOT_VALID_OR_NOT_EXIST/)
+})
+
+test('validateAutomationCliConfig rejects missing and invalid CLI paths clearly', () => {
+  assert.throws(
+    () => validateAutomationCliConfig({ cliPath: '' }),
+    /WECHAT_DEVTOOLS_CLI|--cli-path|DevTools CLI/i,
+  )
+
+  assert.throws(
+    () => validateAutomationCliConfig({ cliPath: '/tmp/not-a-devtools-cli' }),
+    /not found|不存在|DevTools CLI/i,
+  )
+})
+
+test('enableAutomation pre-opens the project and records the resolved DevTools port without forcing auto', {
+  skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
+}, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-cli-'))
+  const callsPath = path.join(tempDir, 'calls.log')
+  const fakeCliPath = path.join(tempDir, 'cli')
+  fs.writeFileSync(fakeCliPath, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
+    'if [ "$1" = "open" ]; then',
+    '  echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
+    '  exit 0',
+    'fi',
+    'echo "✔ IDE server has started, listening on http://127.0.0.1:38596"',
+    'echo "[info] ws connect 38539 abc def"',
+  ].join('\n'))
+  fs.chmodSync(fakeCliPath, 0o755)
+
+  const config = {
+    cliPath: fakeCliPath,
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = enableAutomation(config, { openFirst: true, runtime: 'darwin' })
+  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+
+  assert.equal(result.projectOpened, true)
+  assert.equal(result.cliTimedOut, false)
+  assert.equal(result.resolvedDevtoolsPort, '38596')
+  assert.ok(!Object.prototype.hasOwnProperty.call(result, 'resolvedAutoPort'))
+  assert.ok(!Object.prototype.hasOwnProperty.call(result, 'requestedAutoPort'))
+  assert.ok(!Object.prototype.hasOwnProperty.call(result, 'autoPortOverrodeRequest'))
+  assert.equal(config.devtoolsPort, '38596')
+  assert.equal(config.autoPort, '9421')
+  assert.ok(!Object.prototype.hasOwnProperty.call(config, 'autoPortSource'))
+  assert.equal(calls.length, 2)
+  assert.match(calls[0], /^open --project /u)
+  assert.doesNotMatch(calls[0], /--debug/u)
+  assert.doesNotMatch(calls[0], /--port/u)
+  assert.match(calls[1], /^auto --project /u)
+  assert.doesNotMatch(calls[1], /--port/u)
+})
+
+test('enableAutomation skips open by default and runs auto directly', {
+  skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
+}, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-devtools-cli-'))
+  const callsPath = path.join(tempDir, 'calls.log')
+  const fakeCliPath = path.join(tempDir, 'cli')
+  fs.writeFileSync(fakeCliPath, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
+    'echo "✔ IDE server has started, listening on http://127.0.0.1:38597"',
+    'echo "[info] ws connect 38539 abc def"',
+  ].join('\n'))
+  fs.chmodSync(fakeCliPath, 0o755)
+
+  const config = {
+    cliPath: fakeCliPath,
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }
+
+  const result = enableAutomation(config, { runtime: 'darwin' })
+  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+
+  assert.equal(result.projectOpened, false)
+  assert.equal(result.cliTimedOut, false)
+  assert.equal(result.resolvedDevtoolsPort, '38597')
+  assert.equal(config.devtoolsPort, '38597')
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /^auto --project /u)
+})
+
+test('toWindowsPath delegates Linux paths to official wslpath conversion', () => {
+  const calls = []
+  const converted = toWindowsPath('/custom-root/f/work/demo', {
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options })
+      return {
+        status: 0,
+        signal: null,
+        output: [],
+        pid: 1,
+        stdout: 'F:\\work\\demo\r\n',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(converted, 'F:\\work\\demo')
+  assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [
+    { command: 'wslpath', args: ['-w', '/custom-root/f/work/demo'] },
+  ])
+})
+
+test('toWindowsPath keeps the original wslpath error signal', () => {
+  assert.throws(
+    () => toWindowsPath('/custom-root/f/work/demo', {
+      spawnSync() {
+        return {
+          status: 1,
+          signal: null,
+          output: [],
+          pid: 1,
+          stdout: '',
+          stderr: 'wslpath: /custom-root/f/work/demo: No such file or directory',
+        }
+      },
+    }),
+    /No such file or directory/i,
+  )
+})
+
+test('Windows and WSL drive paths pre-open DevTools before enabling automation', () => {
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: '/custom-root/f/work/demo',
+    autoPort: '9421',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath() {
+      return 'F:\\work\\demo'
+    },
+  }), true)
+
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: 'F:\\work\\demo',
+    autoPort: '9421',
+  }, {
+    runtime: 'win32',
+  }), true)
+})
+
+test('WSL UNC and macOS paths do not use the Windows pre-open sequence', () => {
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: '/home/developer/work/demo',
+    autoPort: '9421',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath() {
+      return '\\\\wsl.localhost\\Ubuntu\\home\\developer\\work\\demo'
+    },
+  }), false)
+
+  assert.equal(shouldOpenProjectBeforeAutomation({
+    projectPath: '/Users/developer/work/demo',
+    autoPort: '9421',
+  }, {
+    runtime: 'darwin',
+  }), false)
+})
+
+for (const runtime of ['win32', 'linux']) {
+  test(`enableAutomation invokes cli.bat from its working directory on ${runtime} without node.exe`, () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb fake devtools 中文-'))
+    const cliBatPath = path.join(tempDir, 'cli.bat')
+    fs.writeFileSync(cliBatPath, '')
+
+    const calls = []
+
+    enableAutomation({
+      cliPath: cliBatPath,
+      projectPath: '/mnt/f/demo project/中文',
+      autoPort: '9421',
+      devtoolsPort: '',
+    }, {
+      runtime,
+      readProcVersion: '5.15.0-microsoft-standard-WSL2',
+      toWindowsPath(inputPath) {
+        if (/[\\/]cli\.bat$/u.test(inputPath)) {
+          return 'F:\\tools 中文\\wechat devtools\\cli.bat'
+        }
+        return 'F:\\demo project\\中文'
+      },
+      spawnSync(command, args, options) {
+        calls.push({ command, args, options })
+        return {
+          status: 0,
+          signal: null,
+          output: [],
+          pid: 1,
+          stdout: '✔ IDE server has started, listening on http://127.0.0.1:38596\n',
+          stderr: '',
+        }
+      },
+    })
+
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].command, 'cmd.exe')
+    assert.deepEqual(calls[0].args, [
+      '/d', '/c', '.\\cli.bat', 'auto',
+      '--project', 'F:\\demo project\\中文',
+      '--auto-port', '9421', '--debug',
+    ])
+    assert.equal(calls[0].options.cwd, tempDir)
+  })
+}
+
+test('validateAutomationCliConfig prefers cli.bat and falls back to the legacy cli.js bundle', () => {
+  const currentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-current-devtools-bundle-'))
+  fs.writeFileSync(path.join(currentDir, 'cli.bat'), '')
+  fs.writeFileSync(path.join(currentDir, 'cli.js'), '')
+  fs.writeFileSync(path.join(currentDir, 'node.exe'), '')
+
+  const currentConfig = { cliPath: currentDir }
+  validateAutomationCliConfig(currentConfig, WSL_TEST_OPTIONS)
+  assert.equal(currentConfig.cliPath, path.join(currentDir, 'cli.bat'))
+
+  const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-legacy-devtools-bundle-'))
+  fs.writeFileSync(path.join(legacyDir, 'cli.js'), '')
+  fs.writeFileSync(path.join(legacyDir, 'node.exe'), '')
+
+  const legacyConfig = { cliPath: legacyDir }
+  validateAutomationCliConfig(legacyConfig, WSL_TEST_OPTIONS)
+  assert.equal(legacyConfig.cliPath, path.join(legacyDir, 'cli.js'))
+})
+
+test('enableAutomation keeps the legacy cli.js plus node.exe execution path', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-legacy-devtools-bundle-'))
+  const cliJsPath = path.join(tempDir, 'cli.js')
+  const nodeExePath = path.join(tempDir, 'node.exe')
+  fs.writeFileSync(cliJsPath, '')
+  fs.writeFileSync(nodeExePath, '')
+
+  const calls = []
+  enableAutomation({
+    cliPath: cliJsPath,
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath(inputPath) {
+      if (/[\\/]cli\.js$/u.test(inputPath)) {
+        return 'F:\\tools\\wechat-devtools\\cli.js'
+      }
+      return WSL_TEST_OPTIONS.toWindowsPath(inputPath)
+    },
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options })
+      return {
+        status: 0,
+        signal: null,
+        output: [],
+        pid: 1,
+        stdout: '✔ IDE server has started, listening on http://127.0.0.1:38596\n',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].command, nodeExePath)
+  assert.equal(calls[0].args[0], 'F:\\tools\\wechat-devtools\\cli.js')
+})
+
+test('detectAutomationCliProgressTimeout recognizes timed out auto startup after visible progress', () => {
+  const result = detectAutomationCliProgressTimeout({
+    error: new Error('spawnSync /fake/cli ETIMEDOUT'),
+    raw: [
+      '✔ IDE server has started, listening on http://127.0.0.1:38596',
+      '[info] long connection established',
+      '√ Using AppID: wx123',
+    ].join('\n'),
+  })
+
+  assert.deepEqual(result, {
+    message: 'spawnSync /fake/cli ETIMEDOUT',
+    raw: [
+      '✔ IDE server has started, listening on http://127.0.0.1:38596',
+      '[info] long connection established',
+      '√ Using AppID: wx123',
+    ].join('\n'),
+  })
+})
+
+test('closeDevtoolsProject closes the recorded DevTools project path', {
+  skip: process.platform === 'win32' ? 'POSIX direct-CLI wrapper is covered by macOS/Linux runners' : false,
+}, () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-fake-close-cli-'))
+  const callsPath = path.join(tempDir, 'calls.log')
+  const fakeCliPath = path.join(tempDir, 'cli')
+  fs.writeFileSync(fakeCliPath, [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(callsPath)}`,
+    'echo "✔ close"',
+  ].join('\n'))
+  fs.chmodSync(fakeCliPath, 0o755)
+
+  const result = closeDevtoolsProject({
+    cliPath: fakeCliPath,
+    projectPath: '/tmp/source-project',
+    devtoolsProjectPath: 'C:\\Users\\tester\\AppData\\Local\\Temp\\miniprogram-browser\\project-abc123def456',
+    devtoolsPort: '24880',
+  }, { runtime: 'darwin' })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.attempted, true)
+  const calls = fs.readFileSync(callsPath, 'utf8').trim().split(/\r?\n/u)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /^close --project /u)
+  assert.match(calls[0], /project-abc123def456/u)
+  assert.match(calls[0], /--port 24880/u)
+})
+
+test('connectOrEnable runs enable before connect', async () => {
   const calls = []
   const result = await connectOrEnable({ autoPort: 9421 }, {
-    preferEnable: true,
+    allowEnable: true,
+    forceEnable: true,
     onProgress(phase) {
       calls.push(`progress:${phase}`)
     },
   }, {
     async connect() {
       calls.push('connect')
-      return { ok: true }
+      return { ok: true, async send() { return {} } }
     },
     enable() {
       calls.push('enable')
+    },
+    async isLive() {
+      return true
     },
     async sleepFn(ms) {
       calls.push(`sleep:${ms}`)
@@ -919,23 +1837,251 @@ test('connectOrEnable prefers enable-first for open-like calls', async () => {
   assert.deepEqual(calls, [
     'progress:enable',
     'enable',
-    'sleep:5000',
+    'progress:wait-live',
     'progress:connect',
     'connect',
   ])
-  assert.deepEqual(result, { ok: true })
+  assert.ok(result.ok)
+})
+
+test('connectOrEnable passes its remaining timeout budget to enableAutomation', async () => {
+  let enableOptions = null
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    timeoutMs: 250,
+    minWaitMs: 0,
+  }, {
+    async connect() {
+      return {
+        ok: true,
+        async send() { return {} },
+      }
+    },
+    enable(_config, options) {
+      enableOptions = options
+      return {}
+    },
+    async isLive() { return true },
+    async sleepFn() {},
+  })
+
+  assert.ok(result.ok)
+  assert.ok(enableOptions)
+  assert.equal(enableOptions.openFirst, false)
+  assert.ok(enableOptions.timeoutMs > 0 && enableOptions.timeoutMs <= 250, enableOptions)
+})
+
+test('connectOrEnable applies the platform pre-open decision to enableAutomation', async () => {
+  let enableOptions = null
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    timeoutMs: 250,
+  }, {
+    async connect() {
+      return {
+        ok: true,
+        async send() { return {} },
+      }
+    },
+    enable(_config, options) {
+      enableOptions = options
+      return {}
+    },
+    shouldOpenFirst() {
+      return true
+    },
+    async isLive() { return true },
+    async sleepFn() {},
+  })
+
+  assert.ok(result.ok)
+  assert.equal(enableOptions.openFirst, true)
+})
+
+test('connectOrEnable gives WSL open-first startup a quiet window before live probes', async () => {
+  const sleeps = []
+  let liveChecks = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    ...WSL_TEST_OPTIONS,
+    allowEnable: true,
+    forceEnable: true,
+    timeoutMs: 12000,
+  }, {
+    async connect() {
+      return {
+        ok: true,
+        async send() { return {} },
+      }
+    },
+    enable() {
+      return { projectOpened: true }
+    },
+    shouldOpenFirst() {
+      return true
+    },
+    async isLive() {
+      liveChecks += 1
+      return true
+    },
+    async sleepFn(ms) {
+      sleeps.push(ms)
+    },
+  })
+
+  assert.ok(result.ok)
+  assert.deepEqual(sleeps, [6000])
+  assert.equal(liveChecks, 1)
+})
+
+test('connectOrEnable waits for automation live after enable before connect', async () => {
+  const calls = []
+  let liveChecks = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    connectTimeoutMs: 5000,
+    onProgress(phase) {
+      calls.push(`progress:${phase}`)
+    },
+  }, {
+    async connect() {
+      calls.push('connect')
+      return { ok: true, async send() { return {} } }
+    },
+    enable() {
+      calls.push('enable')
+    },
+    async isLive() {
+      liveChecks += 1
+      calls.push(`live:${liveChecks}`)
+      return liveChecks >= 2
+    },
+    async sleepFn(ms) {
+      calls.push(`sleep:${ms}`)
+    },
+  })
+
+  assert.ok(result.ok)
+  assert.ok(calls.includes('progress:enable'))
+  assert.ok(calls.includes('progress:wait-live'))
+  assert.ok(calls.includes('live:2'))
+  assert.ok(calls.indexOf('connect') > calls.indexOf('live:2'))
+})
+
+test('discoverLiveAutomationPort finds first live port in range', async () => {
+  const { discoverLiveAutomationPort } = require('../dist/lib/runtime-connect.js')
+  const probed = []
+  const port = await discoverLiveAutomationPort({ autoPort: '9517' }, {
+    rangeStart: 9515,
+    rangeEnd: 9540,
+    maxProbes: 30,
+    skipTcp: true,
+    async isLive(cfg) {
+      const p = String(cfg.autoPort || '')
+      probed.push(p)
+      return p === '9533'
+    },
+  })
+  assert.equal(port, '9533')
+  assert.ok(probed.includes('9517'))
+  assert.ok(probed.includes('9533'))
+})
+
+test('connectOrEnable does not attach an unscoped alternate live port', async () => {
+  const calls = []
+  const config = { autoPort: '9517' }
+  await assert.rejects(
+    connectOrEnable(config, {
+      allowEnable: true,
+      forceEnable: true,
+      connectTimeoutMs: 30,
+      minWaitMs: 0,
+      onProgress(phase) {
+        calls.push(`progress:${phase}`)
+      },
+    }, {
+      async connect(cfg) {
+        calls.push(`connect:${cfg.autoPort}`)
+        return { ok: true, port: cfg.autoPort, async send() { return {} } }
+      },
+      enable() {
+        calls.push('enable')
+        return {}
+      },
+      async isLive(cfg) {
+        const port = String(cfg.autoPort || '')
+        calls.push(`live:${port}`)
+        return port === '9533'
+      },
+      async sleepFn() {},
+    }),
+    /autoPort=9517/u,
+  )
+
+  assert.equal(String(config.autoPort), '9517')
+  assert.ok(!calls.includes('progress:discover-port'), `calls=${calls.join(',')}`)
+  assert.ok(!calls.includes('connect:9533'))
+})
+
+test('connectOrEnable proceeds when port becomes live on final check after wait budget', async () => {
+  const calls = []
+  let liveChecks = 0
+  const result = await connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+    connectTimeoutMs: 50,
+    onProgress(phase) { calls.push(phase) },
+  }, {
+    enable() { calls.push('enable') },
+    async isLive() {
+      liveChecks += 1
+      calls.push(`live:${liveChecks}`)
+      // 预算内一直 false，最终 late check 才 true
+      return liveChecks >= 3
+    },
+    async connect() {
+      calls.push('connect')
+      return { ok: true, async send() { return {} } }
+    },
+    async sleepFn() {},
+  })
+  assert.ok(result.ok)
+  assert.ok(calls.includes('enable'))
+  assert.ok(calls.includes('connect'))
+  assert.ok(liveChecks >= 2)
+})
+
+test('connectOrEnable refuses enable when allowEnable is false and endpoint is not live', async () => {
+  await assert.rejects(
+    connectOrEnable({ autoPort: 9421, projectPath: '/repo/apps/miniprogram' }, {
+      allowEnable: false,
+    }, {
+      async connect() {
+        throw new Error('should not connect')
+      },
+      enable() {
+        throw new Error('should not enable')
+      },
+      async sleepFn() {},
+      async isLive() {
+        return false
+      },
+    }),
+    /自动化未连接|请先 open/i,
+  )
 })
 
 test('connectOrEnable adopts resolved devtools port from enable metadata', async () => {
   const config = { autoPort: 9421, devtoolsPort: '' }
   let observedPort = ''
-  await connectOrEnable(config, {
-    preferEnable: true,
-  }, {
+  await connectOrEnable(config, { allowEnable: true, forceEnable: true }, {
     async connect(nextConfig) {
       observedPort = nextConfig.devtoolsPort
-      return { ok: true }
+      return { ok: true, async send() { return {} } }
     },
+    async isLive() { return true },
     enable() {
       return { resolvedDevtoolsPort: '38596' }
     },
@@ -946,50 +2092,133 @@ test('connectOrEnable adopts resolved devtools port from enable metadata', async
   assert.equal(observedPort, '38596')
 })
 
-test('connectOrEnable reports fallback phases after initial connect failure', async () => {
-  const calls = []
-  let attempts = 0
-  const result = await connectOrEnable({ autoPort: 9421 }, {
-    onProgress(phase) {
-      calls.push(`progress:${phase}`)
+test('connectWithRetry rejects with timeout on hanging connect', async () => {
+  const result = await connectWithRetry({ autoPort: 9421 }, {
+    maxAttempts: 1,
+    attemptTimeoutMs: 50,
+    sleepFn: async () => {},
+    automator: {
+      launcher: {
+        async connectTool() {
+          return new Promise(() => {})
+        },
+      },
     },
-  }, {
-    async connect() {
-      attempts += 1
-      calls.push(`connect:${attempts}`)
-      if (attempts === 1) {
-        throw new Error('first connect failed')
-      }
-      return { ok: true }
+  }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, message: error.message }),
+  )
+
+  assert.equal(result.ok, false)
+  assert.match(result.message, /connectTool timeout/i)
+})
+
+test('connectOrEnable passes deadlineAt to connect', async () => {
+  let observedOptions = null
+  const result = await connectOrEnable({ autoPort: 9421 }, { allowEnable: true, forceEnable: true }, {
+    async connect(_config, connectOptions) {
+      observedOptions = connectOptions
+      return { ok: true, async send() { return {} } }
     },
+    async isLive() { return true },
     enable() {
-      calls.push('enable')
+      return {}
     },
-    async sleepFn(ms) {
-      calls.push(`sleep:${ms}`)
-    },
+    async sleepFn() {},
   })
 
+  assert.ok(result.ok)
+  assert.ok(observedOptions)
+  assert.ok(typeof observedOptions.deadlineAt === 'number')
+})
+
+test('connectWithRetry bounds a hanging automation connect attempt', async () => {
+  const pending = connectWithRetry({ autoPort: 9421 }, {
+    maxAttempts: 1,
+    attemptTimeoutMs: 50,
+    sleepFn: async () => {},
+    automator: {
+      connect() {
+        return new Promise(() => {})
+      },
+    },
+  }).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error }),
+  )
+
+  const result = await Promise.race([
+    pending,
+    new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 250)),
+  ])
+
+  assert.notEqual(result.pending, true)
+  assert.equal(result.ok, false)
+  assert.match(result.error.message, /connectTool timeout/i)
+})
+
+test('connectOrEnable runs enable and connect, failure bubbles up', async () => {
+  const calls = []
+  await assert.rejects(
+    connectOrEnable({ autoPort: 9421 }, {
+    allowEnable: true,
+    forceEnable: true,
+      onProgress(phase) {
+        calls.push(`progress:${phase}`)
+      },
+    }, {
+      async connect() {
+        calls.push('connect')
+        throw new Error('Failed connecting to ws://127.0.0.1:9421')
+      },
+      async isLive() { return true },
+      enable() {
+        calls.push('enable')
+      },
+      async sleepFn(ms) {
+        calls.push(`sleep:${ms}`)
+      },
+    }),
+    /Failed connecting/,
+  )
+
   assert.deepEqual(calls, [
-    'progress:connect',
-    'connect:1',
     'progress:enable',
     'enable',
-    'sleep:5000',
+    'progress:wait-live',
     'progress:connect',
-    'connect:2',
+    'connect',
   ])
-  assert.deepEqual(result, { ok: true })
+})
+
+test('connectOrEnable always runs enable first; builder issue surfaces when ws connect fails', async () => {
+  await assert.rejects(
+    connectOrEnable({ autoPort: 9421 }, { allowEnable: true, forceEnable: true }, {
+      async connect() {
+        throw new Error('Failed connecting to ws://127.0.0.1:9421')
+      },
+      async isLive() { return true },
+      enable() {
+        return {
+          startupIssue: {
+            message: 'DevTools 已启动，但当前项目在编译阶段失败（builder/checkTabbar）；这不是普通 session/port 冲突。',
+            raw: 'TypeError: Cannot read properties of undefined (reading \'MinTabbarCount\')',
+          },
+        }
+      },
+      async sleepFn() {},
+    }),
+    /编译阶段失败|checkTabbar|不是普通.*port/i,
+  )
 })
 
 test('connectOrEnable surfaces builder issue when ws connect still fails after enable', async () => {
   await assert.rejects(
-    connectOrEnable({ autoPort: 9421 }, {
-      preferEnable: true,
-    }, {
+    connectOrEnable({ autoPort: 9421 }, { allowEnable: true, forceEnable: true }, {
       async connect() {
         throw new Error('Failed connecting to ws://127.0.0.1:9421')
       },
+      async isLive() { return true },
       enable() {
         return {
           startupIssue: {
@@ -1006,198 +2235,538 @@ test('connectOrEnable surfaces builder issue when ws connect still fails after e
 
 test('buildAutomationArgs omits HTTP port when devtoolsPort is empty', () => {
   const result = buildAutomationArgs({
-    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
-    projectPath: '/home/wang/demo/apps/miniprogram',
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/mnt/f/demo/apps/miniprogram',
     autoPort: '9421',
     devtoolsPort: '',
-  })
+  }, WSL_TEST_OPTIONS)
 
   assert.deepEqual(result.args.slice(0, 2), ['auto', '--project'])
+  assert.equal(result.args[2], 'F:\\demo\\apps\\miniprogram')
   assert.equal(result.args.includes('--port'), false)
-  assert.deepEqual(result.args.slice(-2), ['--auto-port', '9421'])
+  assert.equal(result.args.includes('--debug'), true)
+  assert.deepEqual(result.args.slice(3, 5), ['--auto-port', '9421'])
 })
 
 test('buildAutomationArgs includes explicit HTTP port when provided', () => {
   const result = buildAutomationArgs({
-    cliPath: '/mnt/f/Tools/wxwebtool/cli.bat',
-    projectPath: '/home/wang/demo/apps/miniprogram',
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/mnt/f/demo/apps/miniprogram',
     autoPort: '9421',
     devtoolsPort: '39085',
+  }, WSL_TEST_OPTIONS)
+
+  assert.deepEqual(result.args.slice(3), ['--auto-port', '9421', '--port', '39085', '--debug'])
+})
+
+test('buildAutomationArgs includes trust-project when enabled', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/mnt/f/demo/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+    trustProject: true,
+  }, WSL_TEST_OPTIONS)
+
+  assert.equal(result.args.includes('--trust-project'), true)
+})
+
+test('buildAutomationArgs prefers explicit devtoolsProjectPath for Windows CLI bundles', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/home/developer/work/sample-app/apps/miniprogram',
+    devtoolsProjectPath: 'P:\\demo\\apps\\miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath() {
+      throw new Error('local project path should not be converted when devtoolsProjectPath is set')
+    },
   })
 
-  assert.deepEqual(result.args.slice(-4), ['--auto-port', '9421', '--port', '39085'])
+  assert.equal(result.args[2], 'P:\\demo\\apps\\miniprogram')
 })
 
-test('parseResolvedIdePort extracts listening IDE port from CLI output', () => {
-  assert.equal(
-    parseResolvedIdePort('✔ IDE server has started, listening on http://127.0.0.1:38596'),
-    '38596',
+test('buildAutomationArgs applies explicit project prefix map before WSL conversion', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/home/developer/workspace/sample-suite/sample-app/apps/miniprogram',
+    devtoolsProjectMap: '/home/developer/workspace=P:\\workspace',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath() {
+      throw new Error('mapped project path should not fall back to wslpath conversion')
+    },
+  })
+
+  assert.equal(result.args[2], 'P:\\workspace\\sample-suite\\sample-app\\apps\\miniprogram')
+})
+
+test('buildAutomationArgs uses the longest matching project prefix map', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/home/developer/workspace/sample-suite/sample-app/apps/miniprogram',
+    devtoolsProjectMap: '/home/developer=P:\\broad;/home/developer/workspace/sample-suite=Q:\\suite',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, WSL_TEST_OPTIONS)
+
+  assert.equal(result.args[2], 'Q:\\suite\\sample-app\\apps\\miniprogram')
+})
+
+test('buildAutomationArgs rejects malformed project prefix maps clearly', () => {
+  assert.throws(
+    () => buildAutomationArgs({
+      cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+      projectPath: '/home/developer/work/sample-app/apps/miniprogram',
+      devtoolsProjectMap: '/home/developer/work',
+      autoPort: '9421',
+      devtoolsPort: '',
+    }, WSL_TEST_OPTIONS),
+    /project map|linux=windows|WECHAT_DEVTOOLS_PROJECT_MAP/i,
   )
-  assert.equal(parseResolvedIdePort('no port here'), '')
 })
 
-test('queryRecords selector mode still uses official selector lookup', async () => {
-  const page = {
-    path: 'pages/dashboard/index',
-    async $$(selector) {
-      assert.equal(selector, '.dashboard-add-button')
-      return [
-        {
-          tagName: 'view',
-          async text() {
-            return '+'
-          },
-          async attribute(name) {
-            assert.equal(name, 'class')
-            return 'dashboard-add-button'
-          },
-        },
-      ]
+test('buildAutomationArgs allows deterministic WSL mount conversion injection', () => {
+  const result = buildAutomationArgs({
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+    projectPath: '/mnt/z/work/apps/miniprogram',
+    autoPort: '9421',
+    devtoolsPort: '',
+  }, {
+    ...WSL_TEST_OPTIONS,
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/mnt/z/work/apps/miniprogram')
+      return 'Z:\\work\\apps\\miniprogram'
+    },
+  })
+
+  assert.equal(result.args[2], 'Z:\\work\\apps\\miniprogram')
+})
+
+test('normalizeAwaitCondition supports built-in and prefixed await conditions', () => {
+  assert.deepEqual(normalizeAwaitCondition('stable'), {
+    kind: 'stable',
+    value: '',
+    raw: 'stable',
+  })
+  assert.deepEqual(normalizeAwaitCondition('app-ready'), {
+    kind: 'app-ready',
+    value: '',
+    raw: 'app-ready',
+  })
+  assert.deepEqual(normalizeAwaitCondition('route:/pages/profile/index'), {
+    kind: 'route',
+    value: 'pages/profile/index',
+    raw: 'route:/pages/profile/index',
+  })
+  assert.deepEqual(normalizeAwaitCondition('selector:.submit-btn'), {
+    kind: 'selector',
+    value: '.submit-btn',
+    raw: 'selector:.submit-btn',
+  })
+})
+
+test('resolveAwaitTimeoutMs keeps long app-ready defaults and shorter route defaults', () => {
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('app-ready')), 90000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('stable')), 15000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('route:/pages/index/index')), 8000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('selector:.submit-btn')), 12000)
+  assert.equal(resolveAwaitTimeoutMs(normalizeAwaitCondition('selector:.submit-btn'), 3456), 3456)
+})
+
+test('waitForMiniProgramStable resolves after route and page stack stay quiet', async () => {
+  const page = createInteractivePage(['Ready'])
+  page.path = 'pages/index/index'
+  let currentPageCalls = 0
+  const miniProgram = {
+    async currentPage() {
+      currentPageCalls += 1
+      return page
+    },
+    async pageStack() {
+      return [{ path: 'pages/index/index', query: {} }]
     },
   }
 
-  const result = await queryRecords(page, createState(), 'selector', '.dashboard-add-button')
-  assert.equal(result.records.length, 1)
-  assert.equal(result.records[0].strategy.selector, '.dashboard-add-button')
-  assert.deepEqual(result.lines, ['@e1 [view] +'])
+  const result = await waitForMiniProgramStable(miniProgram, {
+    quietMs: 0,
+    timeoutMs: 200,
+    pollMs: 1,
+    sleepFn: async () => {},
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.path, 'pages/index/index')
+  assert.equal(result.pageStackDepth, 1)
+  assert.equal(result.viewReady, true)
+  assert.ok(result.viewNodeCount > 0)
+  assert.ok(currentPageCalls >= 1)
 })
 
-test('readRuntimeTree uses attribute selector for ids that are not valid CSS identifiers', async () => {
-  const page = {
-    path: 'pages/tools/index',
-    async $$(tagName) {
-      if (tagName === 'view') {
-        return [
-          {
-            tagName: 'view',
-            async outerWxml() {
-              return '<view id="79c6a90d--_Bg" bindtap="onTap">工具箱</view>'
-            },
-            async text() {
-              return '工具箱'
-            },
-          },
-        ]
+test('waitForMiniProgramStable uses a monotonic clock for its quiet window', async () => {
+  let monotonicMs = 0
+  const page = createInteractivePage(['Ready'])
+  page.path = 'pages/index/index'
+  const result = await waitForMiniProgramStable({
+    async currentPage() { return page },
+    async pageStack() { return [{ path: page.path, query: {} }] },
+  }, {
+    quietMs: 20,
+    timeoutMs: 100,
+    pollMs: 10,
+    now() { return monotonicMs },
+    async sleepFn(ms) { monotonicMs += ms },
+  })
+
+  assert.equal(result.ok, true)
+  assert.ok(result.stableMs >= 20)
+})
+
+test('waitForMiniProgramStable falls back when automator pageStack hangs', async () => {
+  const page = createInteractivePage(['Ready'])
+  page.path = 'pages/index/index'
+  const result = await waitForMiniProgramStable({
+    async currentPage() { return page },
+    async pageStack() { return await new Promise(() => {}) },
+  }, {
+    quietMs: 0,
+    timeoutMs: 100,
+    sampleTimeoutMs: 5,
+    viewProbeTimeoutMs: 20,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.path, 'pages/index/index')
+  assert.equal(result.pageStackDepth, 1)
+})
+
+test('waitForMiniProgramStable marks timeout as non-atomic when runtime keeps changing', async () => {
+  const paths = ['pages/loading/index', 'pages/bootstrap/index', 'pages/loading/index', 'pages/bootstrap/index']
+  const miniProgram = {
+    async currentPage() {
+      return {
+        path: paths.shift() || 'pages/bootstrap/index',
+        async $$() {
+          return []
+        },
       }
-      return []
     },
-  }
-
-  const tree = await readRuntimeTree(page)
-  assert.equal(tree.nodes[0].selector, '[id="79c6a90d--_Bg"]')
-})
-
-test('queryRecords selector mode keeps all official matches', async () => {
-  const page = {
-    path: 'pages/dashboard/index',
-    async $$(selector) {
-      assert.equal(selector, '.dashboard-tab')
-      return [
-        {
-          tagName: 'view',
-          async text() {
-            return '首页'
-          },
-          async attribute() {
-            return 'dashboard-tab'
-          },
-        },
-        {
-          tagName: 'view',
-          async text() {
-            return '首页'
-          },
-          async attribute() {
-            return 'dashboard-tab'
-          },
-        },
-      ]
-    },
-  }
-
-  const result = await queryRecords(page, createState(), 'selector', '.dashboard-tab')
-  assert.equal(result.records.length, 2)
-  assert.deepEqual(result.lines, ['@e1 [view] 首页', '@e2 [view] 首页'])
-})
-
-test('resolveTarget rejects stale refs from another route', async () => {
-  const page = {
-    path: 'pages/tools/index',
-    async $$() {
-      throw new Error('selector resolution should not happen')
-    },
-  }
-
-  const state = {
-    epoch: 1,
-    refs: {
-      '@e1': {
-        ref: '@e1',
-        epoch: 1,
-        route: 'pages/dashboard/index',
-        scopeRef: null,
-        strategy: {
-          kind: 'selector',
-          value: '.dashboard-add-button',
-          selector: '.dashboard-add-button',
-          index: 0,
-        },
-      },
+    async pageStack() {
+      return [{ path: paths[0] || 'pages/bootstrap/index', query: {} }]
     },
   }
 
   await assert.rejects(
-    resolveTarget(page, state, '@e1'),
-    /route/i,
+    () => waitForMiniProgramStable(miniProgram, {
+      quietMs: 50,
+      timeoutMs: 20,
+      pollMs: 1,
+    }),
+    (error) => {
+      assert.equal(error.code, 'RUNTIME_UNSTABLE')
+      assert.equal(error.runtimeMayContinue, true)
+      assert.match(error.hint, /phase=stable/i)
+      return true
+    },
   )
 })
 
-test('captureScreenshotToPath fails fast on timeout', async () => {
+test('waitForMiniProgramCondition resolves route targets after polling', async () => {
+  const seenPaths = ['pages/index/index', 'pages/profile/loading', 'pages/profile/index', 'pages/profile/index']
   const miniProgram = {
-    screenshot() {
-      return new Promise(() => {})
+    async currentPage() {
+      const pathValue = seenPaths.shift() || 'pages/profile/index'
+      return {
+        path: pathValue,
+        async $$() {
+          return []
+        },
+      }
     },
   }
 
-  await assert.rejects(async () => {
-    await captureScreenshotToPath(miniProgram, '/tmp/shot.png', 20)
-  }, (error) => {
-    assert.match(error.message, /screenshot timeout/i)
-    const screenshotLayoutIndex = error.message.indexOf('miniprogram-browser screenshot --mode layout')
-    const snapshotLayoutIndex = error.message.indexOf('snapshot -i --layout')
-    assert.notEqual(screenshotLayoutIndex, -1)
-    assert.notEqual(snapshotLayoutIndex, -1)
-    assert.ok(screenshotLayoutIndex < snapshotLayoutIndex)
-    return true
+  const result = await waitForMiniProgramCondition(miniProgram, createState(), normalizeAwaitCondition('route:/pages/profile/index'), {
+    timeoutMs: 200,
+    pollMs: 1,
+    sleepFn: async () => {},
   })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.condition.kind, 'route')
+  assert.equal(result.path, 'pages/profile/index')
 })
 
-test('cleanupMiniProgram prefers disconnect over close', async () => {
-  const calls = []
+test('waitForMiniProgramCondition resolves an existing ref through runtime-resolve', async () => {
+  const button = { tagName: 'button' }
+  const page = {
+    path: 'pages/index/index',
+    async $$(selector) { return selector === 'button' ? [button] : [] },
+  }
+  const state = createState()
+  state.refs['@e1'] = {
+    ref: '@e1',
+    route: page.path,
+    kind: 'button',
+    strategy: { kind: 'selector', selector: 'button', index: 0 },
+  }
   const miniProgram = {
-    async disconnect() {
-      calls.push('disconnect')
-    },
-    async close() {
-      calls.push('close')
+    async currentPage() { return page },
+  }
+
+  const result = await waitForMiniProgramCondition(
+    miniProgram,
+    state,
+    normalizeAwaitCondition('ref:@e1'),
+    { timeout: 20, pollMs: 1 },
+  )
+
+  assert.equal(result.ok, true)
+  assert.equal(result.path, page.path)
+})
+
+test('waitForMiniProgramCondition times out hidden checks with a short fact-style summary', async () => {
+  const miniProgram = {
+    async currentPage() {
+      return {
+        path: 'pages/index/index',
+        async $$(selector) {
+          if (selector === '.still-visible') {
+            return [{
+              async size() {
+                return { width: 20, height: 10 }
+              },
+            }]
+          }
+          return []
+        },
+      }
     },
   }
 
+  await assert.rejects(
+    waitForMiniProgramCondition(miniProgram, createState(), normalizeAwaitCondition('hidden:.still-visible'), {
+      timeoutMs: 5,
+      pollMs: 1,
+      sleepFn: async () => {},
+    }),
+    (error) => {
+      assert.equal(error.code, 'AWAIT_TIMEOUT')
+      assert.match(error.message, /hidden:\.still-visible/)
+      assert.match(error.hint, /kind=hidden|matches=1/i)
+      return true
+    },
+  )
+})
+
+test('sendAutomationProtocol exposes raw automation protocol results', async () => {
+  const result = await sendAutomationProtocol({ autoPort: '9489' }, 'Tool.getInfo', {}, {
+    timeoutMs: 20,
+    automator: {
+      launcher: {
+        async connectTool() {
+          return {
+            async send(method) {
+              assert.equal(method, 'Tool.getInfo')
+              return { version: '2.01.2510290' }
+            },
+            disconnect() {},
+          }
+        },
+      },
+    },
+  })
+
+  assert.equal(result.endpoint, 'ws://127.0.0.1:9489')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.result, { version: '2.01.2510290' })
+})
+
+test('connectWithRetry with maxAttempts fails after all attempts', async () => {
+  let attempts = 0
+  await assert.rejects(
+    connectWithRetry({ autoPort: '9498' }, {
+      maxAttempts: 2,
+      attemptTimeoutMs: 200,
+      sleepFn: async () => {},
+      automator: {
+        launcher: {
+          async connectTool() {
+            attempts += 1
+            throw new Error('connection refused')
+          },
+        },
+      },
+    }),
+    /connection refused/i,
+  )
+
+  assert.equal(attempts, 2)
+})
+
+test('connectWithRetry returns connected miniProgram', async () => {
+  let attempts = 0
+  let disconnected = false
+
+  const miniProgram = await connectWithRetry({ autoPort: '9499' }, {
+    maxAttempts: 10,
+    attemptTimeoutMs: 2000,
+    sleepFn: async () => {},
+    automator: {
+      launcher: {
+        async connectTool() {
+          attempts += 1
+          return {
+            async send(method) {
+              if (method === 'Tool.getInfo') {
+                return { version: '2.01.2510290' }
+              }
+              return new Promise(() => {})
+            },
+            async disconnect() {
+              disconnected = true
+            },
+          }
+        },
+      },
+    },
+  })
+
+  assert.equal(attempts, 1)
   await cleanupMiniProgram(miniProgram)
-  assert.deepEqual(calls, ['disconnect'])
+  assert.equal(disconnected, true)
 })
 
-test('shutdownMiniProgram prefers close for session shutdown', async () => {
-  const calls = []
-  const miniProgram = {
-    async disconnect() {
-      calls.push('disconnect')
+test('withMiniProgram forwards allowRuntimeNotReady to the runtime connection layer', async () => {
+  const observed = {}
+  let evaluateCalled = false
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-with-mini-'))
+  const state = {
+    epoch: 0,
+    nextRefIndex: 1,
+    refs: {},
+    route: '',
+    config: {
+      projectPath: '/repo/apps/miniprogram',
+      screenshotDir: path.join(tempRoot, 'shots'),
+      tempScreenshotDir: path.join(tempRoot, 'tmp-shots'),
     },
-    async close() {
-      calls.push('close')
+    portResolution: {
+      autoPortAssigned: true,
     },
   }
 
-  await shutdownMiniProgram(miniProgram)
-  assert.deepEqual(calls, ['close'])
+  const miniProgram = {
+    __mpbRuntimeReady: false,
+    on() {},
+    removeListener() {},
+    disconnect() {},
+    async evaluate() {
+      evaluateCalled = true
+      throw new Error('route monitor should be skipped while app runtime is not ready')
+    },
+    async send(method) {
+      if (method === 'Tool.getInfo') {
+        return { version: '2.01.2510290', SDKVersion: '3.15.1' }
+      }
+      if (method === 'App.enableLog') {
+        return {}
+      }
+      if (method === 'App.getPageStack') {
+        return { pageStack: [] }
+      }
+      if (method === 'App.getCurrentPage') {
+        return { pageId: 'page-1', path: 'pages/index/index', query: {} }
+      }
+      if (method === 'App.callWxMethod') {
+        return { result: {} }
+      }
+      return {}
+    },
+  }
+
+  try {
+    const result = await withMiniProgram(state, async () => 'ok', {
+      allowRuntimeNotReady: true,
+      connectOrEnable: async (_config, options) => {
+        observed.options = options
+        return miniProgram
+      },
+    })
+
+    assert.equal(result, 'ok')
+    assert.equal(observed.options.allowRuntimeNotReady, true)
+    assert.equal(evaluateCalled, false)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('collectDevtoolsLogs discovers the active WeappLog root from launch.log', async () => {
+  const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-user-data-'))
+  const defaultHash = 'f0900000000000000000000000000000'
+  const activeHash = 'c47e95d2ca97f7fdd1f0dc06a6544145'
+  const activeLogRoot = path.join(userDataRoot, activeHash, 'WeappLog')
+  fs.mkdirSync(activeLogRoot, { recursive: true })
+  fs.mkdirSync(path.join(userDataRoot, defaultHash, 'WeappLog'), { recursive: true })
+  fs.writeFileSync(path.join(activeLogRoot, 'launch.log'), 'launch from F:\\tools\\wechat-devtools\\cli.bat\n')
+  fs.writeFileSync(path.join(activeLogRoot, 'stdout.log'), 'appid missing\nappservice reload\n')
+
+  const payload = await collectDevtoolsLogs({
+    cliPath: '/mnt/f/tools/wechat-devtools/cli.bat',
+  }, {
+    runtime: 'linux',
+    readProcVersion: '5.15.0-microsoft-standard-WSL2',
+    localAppData: 'C:\\Users\\tester\\AppData\\Local',
+    files: 2,
+    limit: 5,
+    grep: 'appid|appservice',
+    toWindowsPath(inputPath) {
+      assert.equal(inputPath, '/mnt/f/tools/wechat-devtools')
+      return 'F:\\tools\\wechat-devtools'
+    },
+    windowsPathToWslPath(inputPath) {
+      const match = String(inputPath).match(/User Data\\([^\\]+)\\WeappLog$/u)
+      assert.ok(match)
+      return path.join(userDataRoot, match[1], 'WeappLog')
+    },
+  })
+
+  assert.equal(payload.productHash, activeHash)
+  assert.equal(payload.logRoot, activeLogRoot)
+  assert.equal(payload.files.some((file) => file.lines.includes('appid missing')), true)
+  assert.equal(payload.files.some((file) => file.lines.includes('appservice reload')), true)
+})
+
+test('collectDevtoolsLogs discovers the newest macOS WeappLog profile', async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpb-mac-home-'))
+  const userDataRoot = path.join(homeDir, 'Library', 'Application Support', '微信开发者工具')
+  const oldRoot = path.join(userDataRoot, 'old-profile', 'WeappLog')
+  const activeRoot = path.join(userDataRoot, 'active-profile', 'WeappLog')
+  fs.mkdirSync(oldRoot, { recursive: true })
+  fs.mkdirSync(activeRoot, { recursive: true })
+  fs.writeFileSync(path.join(oldRoot, 'stdout.log'), 'old log\n')
+  fs.writeFileSync(path.join(activeRoot, 'stdout.log'), 'active appservice log\n')
+  const oldTime = new Date(Date.now() - 60_000)
+  fs.utimesSync(path.join(oldRoot, 'stdout.log'), oldTime, oldTime)
+
+  try {
+    const payload = await collectDevtoolsLogs({
+      cliPath: '/Applications/wechatwebdevtools.app/Contents/MacOS/cli',
+    }, {
+      runtime: 'darwin',
+      homeDir,
+      files: 1,
+      limit: 5,
+    })
+
+    assert.equal(payload.productHash, 'active-profile')
+    assert.equal(payload.logRoot, activeRoot)
+    assert.equal(payload.files[0].lines.includes('active appservice log'), true)
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true })
+  }
 })

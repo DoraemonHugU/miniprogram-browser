@@ -1,0 +1,6 @@
+<view class="container">
+  <text class="title">Synthetic Detail</text>
+  <text class="hint">This target page is part of the public demo navigation journey.</text>
+  <text class="status">Opened from: {{source}}</text>
+  <button id="detail-back" type="primary" bindtap="onBack">Back to navigation</button>
+</view>

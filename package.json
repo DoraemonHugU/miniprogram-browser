@@ -1,6 +1,6 @@
 {
   "name": "miniprogram-browser",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.9",
   "description": "面向微信小程序的 agent-browser 风格自动化 CLI；配套 skill 通过 skills/miniprogram-browser 分发。",
   "keywords": [
     "wechat",
@@ -20,30 +20,53 @@
     "url": "https://github.com/DoraemonHugU/miniprogram-browser/issues"
   },
   "bin": {
-    "miniprogram-browser": "scripts/miniprogram-browser.cjs"
+    "miniprogram-browser": "dist/miniprogram-browser.js"
   },
   "files": [
     "README.md",
     "LICENSE",
-    "scripts/miniprogram-browser.cjs",
-    "scripts/lib/"
+    "dist/"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "test:node": "node --test tests/*.test.cjs",
+    "test:package-install": "node scripts/package-install-gate.cjs",
     "test:image-processing": "python scripts/run-image-processing-tests.py",
-    "test": "npm run test:node && npm run test:image-processing",
-    "pack:check": "npm pack --dry-run"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:strict": "tsc -p tsconfig.json --noEmit --strict",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "test": "npm run build && npm run test:node && npm run test:image-processing",
+    "prepack": "npm run build",
+    "pack:check": "npm pack --dry-run",
+    "test:real-open-gate": "npm run build && node scripts/real-open-gate.cjs",
+    "test:l0-e2e": "npm run build && node scripts/l0-e2e.cjs",
+    "test:e2e": "npm run test:real-open-gate && npm run test:l0-e2e"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
     "fontkit": "^2.0.4",
-    "jimp": "0.6.4",
+    "jimp": "0.22.12",
     "miniprogram-automator": "0.12.1",
     "pureimage": "^0.4.18"
+  },
+  "bundleDependencies": [
+    "miniprogram-automator"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0"
+  },
+  "overrides": {
+    "miniprogram-automator": {
+      "jimp": "0.22.12"
+    }
   }
 }
