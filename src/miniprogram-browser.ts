@@ -163,7 +163,6 @@ const {
   buildClickNotices,
   buildAutomationArgs,
   enableAutomation,
-  extractLogSummary,
   normalizeAwaitCondition,
   probeAutomationRuntime,
   resolveAwaitTimeoutMs,
@@ -843,15 +842,8 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
     }
   }
   const failureContext = await buildOpenFailureDiagnostics(state, options).catch(() => undefined)
-  // OPEN_TIMEOUT 是 open 路径的硬结果，禁止被陈旧 WeappLog（如 cli-server-start-error）盖掉
-  if (failureContext && failureContext.code && !openError.code) {
-    openError.code = failureContext.code
-  }
   if (failureContext && failureContext.diagnostics) {
     openError.diagnostics = failureContext.diagnostics
-  }
-  if (failureContext && failureContext.startupIssueCode) {
-    openError.startupIssueCode = failureContext.startupIssueCode
   }
   if (!openError.code && openError.runtimeNotReady) {
     openError.code = 'APP_NOT_READY'
@@ -866,21 +858,6 @@ async function enrichOpenFailure(error: AnyRecord, state: SessionState, options:
     )
   ) {
     openError.hint = failureContext.hint
-  }
-  if (
-    failureContext
-    && (failureContext.startupIssueCode === 'DEVTOOLS_LOGIN_REQUIRED'
-      || failureContext.startupIssueCode === 'DEVTOOLS_PLUGIN_MISSING')
-    && failureContext.message
-    && openError.code === 'OPEN_TIMEOUT'
-  ) {
-    openError.message = failureContext.message
-    openError.next = failureContext.startupIssueCode === 'DEVTOOLS_PLUGIN_MISSING'
-      ? 'repair-devtools-plugin'
-      : 're-login-devtools'
-  }
-  if (!openError.log && failureContext && failureContext.log) {
-    openError.log = failureContext.log
   }
   if (!openError.next && failureContext && failureContext.next) {
     openError.next = failureContext.next
@@ -1267,9 +1244,6 @@ function shouldRetryOpenWithAnotherAutoPort(state: SessionState, options: AnyRec
   if (code === 'WINDOWS_SOCKET_EXHAUSTED') {
     return false
   }
-  if (String(error.startupIssueCode || '') === 'DEVTOOLS_LOGIN_REQUIRED') {
-    return false
-  }
   // 冷启动：指定 port 未 live / 扫端口暂空 → 允许同一次 open 内换 port 再 auto
   if (code === 'OPEN_TIMEOUT' || code === 'AUTOMATION_CONNECT_TIMEOUT' || code === 'DEVTOOLS_AUTOMATION_SERVER_FAILED') {
     return true
@@ -1545,284 +1519,6 @@ function createMultipleLiveRuntimeError(state: SessionState, sessions: AnyRecord
   return error
 }
 
-function summarizeDevtoolsStartupHints(logPayload: AnyRecord) {
-  const rules = [
-    {
-      code: 'login-expired',
-      pattern: /INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login|code:\s*10\b/iu,
-      message: 'DevTools 日志报告登录态失效（41001/42001/42002、access_token missing 或需要重新登录）；请在微信开发者工具中重新登录后再 open。',
-    },
-    {
-      code: 'appid-missing',
-      pattern: /appid missing|41002/iu,
-      message: 'DevTools 日志报告 appid missing / 41002；请确认 DevTools 实际打开的项目配置中 AppID 被正确读取。',
-    },
-    {
-      code: 'devtools-plugin-missing',
-      pattern: /\[ideplugin\].*(?:manifest\.json|version).*not installed|ideplugin.*not installed/iu,
-      message: 'DevTools automation 插件未安装或未加载（ideplugin manifest not installed）；请确认使用同一安装目录下的 DevTools CLI，重启或修复微信开发者工具后再 open。',
-    },
-    {
-      code: 'app-launch-timeout',
-      pattern: /routeTo appLaunch timeout|triggerAppRouteDone timeout/iu,
-      message: 'DevTools 日志报告 appLaunch 超时；项目可能编译后没有进入可用 App runtime。',
-    },
-    {
-      code: 'cli-server-start-error',
-      pattern: /start cli server error/iu,
-      message: 'DevTools 日志报告 cli server 启动失败；automation 端口可能没有成功监听。',
-    },
-    {
-      code: 'windows-socket-10055',
-      pattern: /tcp_socket_win\.cc.*10055|connect failed:\s*10055/iu,
-      message: 'Windows socket 报 10055；通常表示本机网络/端口资源异常，可能影响 DevTools automation 端口启动。',
-    },
-  ]
-  const files = ((logPayload && logPayload.files) || []) as AnyRecord[]
-  const fileEntries: AnyRecord[] = files.map((item: AnyRecord) => ({
-    path: String(item && item.path ? item.path : ''),
-    lines: Array.isArray(item && item.lines) ? item.lines : [],
-  }))
-
-  const collectFileHints = (file: AnyRecord, seen: Set<string>) => {
-    const fileHints: AnyRecord[] = []
-    for (const line of (file.lines as unknown[]) || []) {
-      const text = String(line || '').trim()
-      if (!text) {
-        continue
-      }
-      for (const rule of rules) {
-        if (seen.has(rule.code) || !rule.pattern.test(text)) {
-          continue
-        }
-        seen.add(rule.code)
-        fileHints.push({
-          code: rule.code,
-          message: rule.message,
-          sample: text,
-        })
-      }
-    }
-    return fileHints
-  }
-
-  const timestampedFiles = fileEntries.filter((file: AnyRecord) => /(?:^|[\\/])logs[\\/].+\.log$/iu.test(String(file.path)))
-  const fallbackFiles = fileEntries.filter((file: AnyRecord) => !timestampedFiles.includes(file))
-  const groups = timestampedFiles.length ? [timestampedFiles] : [fallbackFiles]
-
-  for (const group of groups) {
-    const seen = new Set<string>()
-    for (const file of group) {
-      const hints = collectFileHints(file, seen)
-      if (hints.length) {
-        return hints
-      }
-    }
-  }
-
-  return []
-}
-
-function resolveStartupIssueMessage(hints: AnyRecord[] = [], code = '') {
-  if (!code) {
-    return ''
-  }
-
-  const normalizedCode = String(code)
-  const match = (hints || []).find((item) => {
-    if (!item || !item.code) {
-      return false
-    }
-    if (normalizedCode === 'APP_LAUNCH_TIMEOUT') {
-      return item.code === 'app-launch-timeout'
-    }
-    if (normalizedCode === 'WINDOWS_SOCKET_EXHAUSTED') {
-      return item.code === 'windows-socket-10055'
-    }
-    if (normalizedCode === 'DEVTOOLS_AUTOMATION_SERVER_FAILED') {
-      return item.code === 'cli-server-start-error'
-    }
-    if (normalizedCode === 'APPID_MISSING') {
-      return item.code === 'appid-missing'
-    }
-    if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
-      return item.code === 'login-expired'
-    }
-    if (normalizedCode === 'DEVTOOLS_PLUGIN_MISSING') {
-      return item.code === 'devtools-plugin-missing'
-    }
-    return false
-  })
-
-  return match && match.message ? String(match.message) : ''
-}
-
-function resolveStartupIssueRaw(hints: AnyRecord[] = [], code = '', summaryLine = '') {
-  const normalizedCode = String(code || '').trim()
-  const normalizedSummaryLine = String(summaryLine || '').trim()
-  const matchingHint = (hints || []).find((item) => {
-    if (!item || !item.code) {
-      return false
-    }
-    if (normalizedCode === 'APP_LAUNCH_TIMEOUT') {
-      return item.code === 'app-launch-timeout'
-    }
-    if (normalizedCode === 'WINDOWS_SOCKET_EXHAUSTED') {
-      return item.code === 'windows-socket-10055'
-    }
-    if (normalizedCode === 'DEVTOOLS_AUTOMATION_SERVER_FAILED') {
-      return item.code === 'cli-server-start-error'
-    }
-    if (normalizedCode === 'APPID_MISSING') {
-      return item.code === 'appid-missing'
-    }
-    if (normalizedCode === 'DEVTOOLS_LOGIN_REQUIRED') {
-      return item.code === 'login-expired'
-    }
-    if (normalizedCode === 'DEVTOOLS_PLUGIN_MISSING') {
-      return item.code === 'devtools-plugin-missing'
-    }
-    return false
-  })
-
-  if (matchingHint && matchingHint.sample) {
-    return String(matchingHint.sample)
-  }
-  return normalizedSummaryLine
-}
-
-function classifyOpenFailureFromStartupHints(hints: AnyRecord[] = [], options: AnyRecord = {}) {
-  const summaryLine = String(options.summaryLine || '').trim()
-  if (/INVALID_LOGIN|access_token\s*(?:expired|missing)|errcode\s*=\s*(?:41001|42001|42002)|需要重新登录|请先登录|not login|please login|code:\s*10\b/iu.test(summaryLine)) {
-    return {
-      code: 'DEVTOOLS_LOGIN_REQUIRED',
-      hint: 'devtoolsLog=login-expired',
-    }
-  }
-  if ((hints || []).some((item) => item && item.code === 'devtools-plugin-missing')) {
-    return {
-      code: 'DEVTOOLS_PLUGIN_MISSING',
-      hint: 'devtoolsLog=devtools-plugin-missing',
-    }
-  }
-  if (/\[ideplugin\].*(?:manifest\.json|version).*not installed|ideplugin.*not installed/iu.test(summaryLine)) {
-    return {
-      code: 'DEVTOOLS_PLUGIN_MISSING',
-      hint: 'devtoolsLog=devtools-plugin-missing',
-    }
-  }
-  if (/routeTo appLaunch timeout|triggerAppRouteDone timeout/iu.test(summaryLine)) {
-    return {
-      code: 'APP_LAUNCH_TIMEOUT',
-      hint: 'devtoolsLog=app-launch-timeout',
-    }
-  }
-  if (/tcp_socket_win\.cc.*10055|connect failed:\s*10055/iu.test(summaryLine)) {
-    return {
-      code: 'WINDOWS_SOCKET_EXHAUSTED',
-      hint: 'devtoolsLog=windows-socket-10055',
-    }
-  }
-  if (/start cli server error/iu.test(summaryLine)) {
-    return {
-      code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
-      hint: 'devtoolsLog=cli-server-start-error',
-    }
-  }
-  if (/appid missing|41002/iu.test(summaryLine)) {
-    return {
-      code: 'APPID_MISSING',
-      hint: 'devtoolsLog=appid-missing',
-    }
-  }
-
-  const codes = new Set((hints || []).map((item) => item && item.code).filter(Boolean))
-  if (codes.has('login-expired')) {
-    return {
-      code: 'DEVTOOLS_LOGIN_REQUIRED',
-      hint: 'devtoolsLog=login-expired',
-    }
-  }
-  if (codes.has('devtools-plugin-missing')) {
-    return {
-      code: 'DEVTOOLS_PLUGIN_MISSING',
-      hint: 'devtoolsLog=devtools-plugin-missing',
-    }
-  }
-  if (codes.has('app-launch-timeout')) {
-    return {
-      code: 'APP_LAUNCH_TIMEOUT',
-      hint: 'devtoolsLog=app-launch-timeout',
-    }
-  }
-  if (codes.has('windows-socket-10055')) {
-    return {
-      code: 'WINDOWS_SOCKET_EXHAUSTED',
-      hint: 'devtoolsLog=windows-socket-10055',
-    }
-  }
-  if (codes.has('cli-server-start-error')) {
-    return {
-      code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
-      hint: 'devtoolsLog=cli-server-start-error',
-    }
-  }
-  if (codes.has('appid-missing')) {
-    return {
-      code: 'APPID_MISSING',
-      hint: 'devtoolsLog=appid-missing',
-    }
-  }
-  return null
-}
-
-function compactStartupHints(hints: AnyRecord[] = []) {
-  return (hints || []).slice(0, 3).map((item: AnyRecord) => ({
-    code: item.code,
-    sample: String(item.sample || '').slice(0, 240),
-  }))
-}
-
-async function collectDevtoolsStartupHints(state: SessionState, options: AnyRecord = {}) {
-  try {
-    // 默认只看最近改动的日志文件，避免整天前的 41002 误导本次 open
-    const maxAgeMs = Number(options.maxAgeMs || 10 * 60 * 1000)
-    const now = Date.now()
-    const payload = await collectDevtoolsLogs(state.config, {
-      limit: 220,
-      files: 6,
-      grep: 'appid missing|41002|routeTo appLaunch timeout|triggerAppRouteDone timeout|start cli server error|ideplugin|manifest\.json.*not installed|10055|INVALID_LOGIN|access_token',
-    })
-    const files = Array.isArray(payload.files)
-      ? (payload.files as AnyRecord[]).filter((file: AnyRecord) => {
-        const mtimeMs = Number(file.mtimeMs || 0)
-        if (!mtimeMs) {
-          return true
-        }
-        return (now - mtimeMs) <= maxAgeMs
-      })
-      : []
-    return summarizeDevtoolsStartupHints({ ...payload, files })
-  } catch (_) {
-    return []
-  }
-}
-
-async function collectDevtoolsLogContext(state: SessionState, grep = '') {
-  try {
-    const payload = await collectDevtoolsLogs(state.config, {
-      limit: 120,
-      files: 4,
-      grep,
-    })
-    return {
-      log: extractLogSummary(payload),
-    }
-  } catch (_) {
-    return { log: '' }
-  }
-}
-
 function summarizeAutomationProbeHint(condition: AnyRecord, probe: AnyRecord) {
   if (!probe || !probe.connected) {
     return `phase=${condition.kind}; last=tool-connect`
@@ -1920,14 +1616,9 @@ async function waitForAutomationCondition(state: SessionState, condition: AnyRec
     await sleep(pollMs)
   }
 
-  const logContext = await collectDevtoolsLogContext(state, 'error|fail|timeout|errcode|appid')
   const error = new Error(`await ${condition.raw} timed out after ${timeoutMs}ms`) as unknown as AnyRecord
   error.code = 'AWAIT_TIMEOUT'
   error.hint = summarizeAutomationProbeHint(condition, lastProbe as AnyRecord)
-  if (logContext.log) {
-    error.log = logContext.log
-    error.next = 'devtools logs'
-  }
   throw error
 }
 
@@ -2004,14 +1695,10 @@ async function finishRuntimeAction(
 
 async function buildOpenFailureDiagnostics(state: SessionState, options: AnyRecord) {
   const automationArgs = buildAutomationArgs(state.config)
-  const sessions = await listSessionStates(createDefaultConfig())
+  const sessions = await listSessionStates(state.config)
   const projectPath = path.resolve(state.config.projectPath || '')
   const liveSameProjectSessions: AnyRecord[] = []
-  const logContext = await collectDevtoolsLogContext(state, 'error|fail|timeout|errcode|appid')
-  const startupHints = await collectDevtoolsStartupHints(state)
-  const startupClassification = classifyOpenFailureFromStartupHints(startupHints, {
-    summaryLine: logContext.log,
-  })
+  // WeappLog 属于共享 DevTools 配置，不能用于当前项目的自动诊断。
 
   for (const session of sessions) {
     if (session.name === state.name) {
@@ -2045,12 +1732,6 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
   if (liveSameProjectSessions.length) {
     diagnostics.liveSameProjectSessions = liveSameProjectSessions
   }
-  if (startupHints.length) {
-    diagnostics.startupHints = compactStartupHints(startupHints)
-  }
-  if (startupClassification) {
-    diagnostics.startupIssueCode = startupClassification.code
-  }
 
   const resolution = summarizeOpenResolution(options, liveSameProjectSessions)
   const adoptBootstrap = resolution === 'adopt-via-devtools-port'
@@ -2060,7 +1741,6 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
 
   // 人话 hint：只放 resolution/strategy/autoPort；live 多实例细节只在 diagnostics JSON
   const facts = [
-    startupClassification ? startupClassification.hint : '',
     adoptBootstrap ? 'mode=adopt-bootstrap' : '',
     `resolution=${resolution}`,
     `strategy=${automationArgs.projectStrategy}`,
@@ -2069,13 +1749,7 @@ async function buildOpenFailureDiagnostics(state: SessionState, options: AnyReco
 
   return {
     diagnostics,
-    startupIssueCode: startupClassification ? startupClassification.code : undefined,
-    message: startupClassification
-      ? resolveStartupIssueMessage(startupHints, startupClassification.code)
-      : undefined,
-    code: startupClassification ? startupClassification.code : undefined,
     hint: facts.join('; '),
-    log: logContext.log || undefined,
     next: resolveOpenFailureNextAction(options, liveSameProjectSessions) || undefined,
   }
 }
@@ -2173,32 +1847,12 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
       captureScreenshot: Boolean(options.captureScreenshot),
     })
 
-  // 已 live 且 probe 成功：不要再用历史 appid-missing 等日志覆盖 ok
-  const shouldCollectStartupNoise = !automationError && probe && !probe.connected && !reusedLiveEndpoint
-  const startupHints = shouldCollectStartupNoise
-    ? await collectDevtoolsStartupHints(state)
-    : []
-  const doctorLogContext = shouldCollectStartupNoise
-    ? await collectDevtoolsLogContext(state, 'error|fail|timeout|errcode|appid')
-    : { log: '' }
-  const startupClassification = shouldCollectStartupNoise
-    ? classifyOpenFailureFromStartupHints(startupHints, {
-      summaryLine: doctorLogContext.log,
-    })
-    : null
+  // 仅归因于本次 CLI 调用；共享历史日志可能来自其他项目。
   const startupIssue = automationError
     ? null
     : (probe && probe.connected)
       ? null
-      : (automationMetadata && automationMetadata.startupIssue)
-        || (startupClassification
-          ? {
-            code: startupClassification.code,
-            hint: startupClassification.hint,
-            message: resolveStartupIssueMessage(startupHints, startupClassification.code),
-            raw: resolveStartupIssueRaw(startupHints, startupClassification.code, doctorLogContext.log) || undefined,
-          }
-          : null)
+      : automationMetadata && automationMetadata.startupIssue
 
   if (persistSession && probe && probe.connected) {
     await saveSessionState(state)
@@ -2221,8 +1875,6 @@ async function handleDoctor(state: SessionState, options: AnyRecord) {
         reusedLive: reusedLiveEndpoint || undefined,
         ...automationMetadata,
         startupIssue: startupIssue || undefined,
-        startupHints: startupHints.length ? compactStartupHints(startupHints) : undefined,
-        log: doctorLogContext.log || undefined,
       },
     probe,
     next: probe && probe.connected && !probe.appReady
@@ -2426,7 +2078,6 @@ async function buildSessionStatusEntries(options: AnyRecord = {}): Promise<{
   message: string
 }> {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
-  const sessions = await listSessionStates(baseConfig)
   let projectFilter = ''
   let message = ''
   if (!options.all) {
@@ -2441,6 +2092,9 @@ async function buildSessionStatusEntries(options: AnyRecord = {}): Promise<{
     }
   }
 
+  const sessions = options.all || projectFilter
+    ? await listSessionStates({ ...baseConfig, projectPath: projectFilter })
+    : []
   const visibleSessions = projectFilter
     ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
     : (options.all ? sessions : [])
@@ -2546,7 +2200,6 @@ async function handleSessionInfo(options: AnyRecord = {}, requestedName = '') {
 
 async function handleSessionList(options: AnyRecord = {}) {
   const baseConfig = mergeConfigOverrides(createDefaultConfig(), buildExplicitOverrides(options))
-  const sessions = await listSessionStates(baseConfig)
   let projectFilter = ''
   let message = ''
   if (!options.all) {
@@ -2560,6 +2213,9 @@ async function handleSessionList(options: AnyRecord = {}) {
       message = '当前目录没有发现小程序项目；默认不显示全局 session。可传 --project <path> 或 --all 查看。'
     }
   }
+  const sessions = options.all || projectFilter
+    ? await listSessionStates({ ...baseConfig, projectPath: projectFilter })
+    : []
   const visibleSessions = projectFilter
     ? sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
     : (options.all ? sessions : [])
@@ -2721,7 +2377,7 @@ async function handleSessionPrune(options: AnyRecord) {
     throw new Error('session prune 需要当前目录能发现小程序项目，或显式传 --project <miniprogram-root>。')
   }
 
-  const sessions = await listSessionStates(baseConfig)
+  const sessions = await listSessionStates({ ...baseConfig, projectPath: projectFilter })
   const visibleSessions = sessions.filter((item: AnyRecord) => path.resolve(item.projectPath || '') === projectFilter)
   // 与 session list 同一套 binding：附着 session 无自身 launch 时回落到项目 live，避免误 prune
   const { launchIndex, projectLiveLaunches } = await buildProjectLaunchIndexes(baseConfig, [projectFilter])
@@ -4218,8 +3874,6 @@ module.exports = {
   enrichOpenFailure,
   tryHealOpenAfterStartFailure,
   cleanupStartedOpenRuntime,
-  classifyOpenFailureFromStartupHints,
-  summarizeDevtoolsStartupHints,
   summarizeOpenResolution,
   createMultipleLiveRuntimeError,
   ensureImplicitSessionName,
@@ -4238,4 +3892,6 @@ module.exports = {
   resolveActionWaitMs,
   performInputAndWait,
   waitForDoctorRuntimeProbe,
+  waitForAutomationCondition,
+  handleDoctor,
 }

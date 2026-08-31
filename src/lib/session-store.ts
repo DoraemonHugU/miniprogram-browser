@@ -846,11 +846,18 @@ async function isAutomationPortAvailable(port: number, config: AnyRecord = {}, o
     // 不从 WSL 侧 bind；但要排除已有 listener，避免误附着到其它项目的 runtime。
     return await wslChecker(port)
   }
+  // macOS 可能允许 127.0.0.1 的 bind 与已有通配地址 listener 共存；
+  // bind 成功不能证明端口空闲，先用 TCP 连接排除已在监听的 runtime。
+  const listenerChecker = (options.listenerChecker as ((value: number) => Promise<boolean>) | undefined) || isPortNotListening
+  if (!(await listenerChecker(port))) {
+    return false
+  }
   return await localChecker(port)
 }
 
 async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionName: string): Promise<OtherSessionInfo[]> {
   const currentConfig = sessionDirOrConfig
+  const currentProjectPath = normalizeProjectPath(currentConfig && currentConfig.projectPath)
   const registry = await readSessionRegistry(currentConfig)
   const configs: OtherSessionInfo[] = []
   const seen = new Set<string>()
@@ -859,6 +866,10 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
     for (const entry of Array.isArray(entries) ? entries as AnyRecord[] : []) {
       const projectPath = normalizeProjectPath(entry && entry.projectPath)
       if (!projectPath) {
+        continue
+      }
+      // 指定项目时，不能先探测或读取其它项目的 session 文件。
+      if (currentProjectPath && projectPath !== currentProjectPath) {
         continue
       }
 
@@ -901,7 +912,14 @@ async function loadOtherSessionConfigs(sessionDirOrConfig: AnyRecord, sessionNam
   }
 
   const legacySessionDir = String((currentConfig && (currentConfig.legacySessionDir || currentConfig.sessionDir)) || '').trim()
-  if (legacySessionDir && existsSync(legacySessionDir)) {
+  // 指定项目时只有 canonical project session 目录可在读取前确认属于当前项目；
+  // 任意外部 legacy 目录可能混有其它项目的 JSON，不能为兼容性读取它们。
+  const configuredSessionDir = String((currentConfig && currentConfig.sessionDir) || '').trim()
+  const canonicalSessionDir = currentProjectPath ? resolveSessionDir(currentConfig) : ''
+  const canReadLegacySessionDir = !currentProjectPath
+    || path.resolve(legacySessionDir) === path.resolve(canonicalSessionDir)
+    || (configuredSessionDir && path.resolve(legacySessionDir) === path.resolve(configuredSessionDir))
+  if (legacySessionDir && canReadLegacySessionDir && existsSync(legacySessionDir)) {
     const entries = await readdir(legacySessionDir, { withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) {

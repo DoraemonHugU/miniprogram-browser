@@ -734,7 +734,7 @@ test('doctor can probe a DevTools HTTP port without a prebound session and does 
   const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
-  assert.equal(payload.ok, false)
+  assert.equal(payload.ok, false, JSON.stringify(payload))
   assert.equal(payload.projectPath, projectDir)
   assert.equal(payload.devtoolsPort, '23986')
   assert.ok(payload.probe, JSON.stringify(payload, null, 2))
@@ -781,7 +781,7 @@ test('doctor still enables automation when bound autoPort is not live', async ()
   const calls = fake.readCalls()
 
   assert.equal(result.status, 0)
-  assert.equal(payload.ok, false)
+  assert.equal(payload.ok, false, JSON.stringify(payload))
   assert.ok(calls.some((line) => /^auto --project /u.test(line)), calls.join('\n'))
   assert.equal(payload.projectPath, projectDir)
   assert.notEqual(payload.automation && payload.automation.reusedLive, true)
@@ -812,7 +812,7 @@ test('doctor bounds a hanging DevTools CLI with its timeout budget', () => {
   const payload = parseJsonOutput(result)
 
   assert.equal(result.status, 0)
-  assert.equal(payload.ok, false)
+  assert.equal(payload.ok, false, JSON.stringify(payload))
   assert.equal(payload.probe, null)
   assert.match(payload.automation.error.message, /timed out|ETIMEDOUT|timeout/i)
   assert.ok(elapsedMs < 2000, `doctor timeout should bound the synchronous DevTools CLI, elapsed=${elapsedMs}`)

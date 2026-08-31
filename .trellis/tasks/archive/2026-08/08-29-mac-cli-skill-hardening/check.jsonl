@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/cli/product-contracts.md", "reason": "检查 CLI 行为与 Skill 文档一致"}
-{"file": ".trellis/spec/cli/platform-detection.md", "reason": "检查跨平台测试没有读取宿主机信号"}
-{"file": ".trellis/spec/cli/session-contracts.md", "reason": "检查 session/runtime 状态和关闭行为"}
-{"file": ".trellis/spec/cli/screenshot-contracts.md", "reason": "检查截图模式、输出路径和运行态副作用"}
-{"file": ".trellis/spec/cli/ascii-map-contracts.md", "reason": "检查 ref 几何与 ASCII 输出"}

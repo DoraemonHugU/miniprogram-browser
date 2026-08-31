@@ -14,13 +14,14 @@
  *   MINIPROGRAM_BROWSER_E2E_GOTO_ROUTE  默认 /pages/controls/index
  */
 
-const { createHarness } = require('./lib/e2e-harness.cjs')
+const { createHarness, isSuccessfulResult } = require('./lib/e2e-harness.cjs')
+const { randomUUID } = require('node:crypto')
 
 const h = createHarness({ tag: 'l0-e2e' })
 h.ensureEnv()
 
 const project = h.project
-const stamp = Date.now().toString(36)
+const stamp = randomUUID().slice(0, 12)
 const sessionA = `e2e-a-${stamp}`
 const sessionB = `e2e-b-${stamp}`
 const cleanup = h.installSessionCleanup([sessionA, sessionB])
@@ -46,7 +47,7 @@ function caseResult(id, ok, detail = '') {
 function runJson(args, label) {
   const result = h.runCli(args)
   const payload = h.parseJsonStdout(result)
-  if (result.status !== 0 || (payload && payload.ok === false && payload.error)) {
+  if (!isSuccessfulResult(result, payload)) {
     return { ok: false, result, payload, label }
   }
   return { ok: true, result, payload, label }
@@ -67,7 +68,7 @@ function readText(selector, label) {
     const open = h.openSession(sessionA)
     ctx.autoPortA = String(open.autoPort || '')
     ctx.modeA = String(open.mode || '')
-    h.assertOk(ctx.autoPortA || open.session, 'open missing autoPort/session', open)
+    h.assertOk(ctx.autoPortA && open.session, 'open missing autoPort/session', open)
     h.assertOk(open.path || open.appReady !== undefined, 'open missing path/appReady', open)
     caseResult(id, true, `mode=${ctx.modeA} autoPort=${ctx.autoPortA} path=${open.path || ''}`)
   } catch (e) {
@@ -108,15 +109,9 @@ function readText(selector, label) {
   const id = 'open.second-session-attach'
   const openB = h.openSession(sessionB)
   const portB = String(openB.autoPort || '')
-  // 同项目默认应 attach 同一 live；若 fresh 环境只起一个，port 应一致
-  if (ctx.autoPortA && portB && ctx.autoPortA !== portB) {
-    // 允许：若第一个已死第二个新开——记警告但不 fail 产品（环境）
-    h.log(`WARN ${id}: autoPort differs A=${ctx.autoPortA} B=${portB} (env may have started fresh)`)
-    caseResult(id, true, `mode=${openB.mode} portA=${ctx.autoPortA} portB=${portB} (differ)`)
-  } else {
-    h.assertOk(openB.mode === 'attached' || openB.mode === 'connected' || openB.mode === 'started', 'unexpected mode', openB)
-    caseResult(id, true, `mode=${openB.mode} autoPort=${portB}`)
-  }
+  h.assertOk(portB && portB === ctx.autoPortA, 'second session did not reuse the same runtime', openB)
+  h.assertOk(openB.mode === 'attached' || openB.mode === 'connected', 'second session started a new runtime', openB)
+  caseResult(id, true, `mode=${openB.mode} autoPort=${portB}`)
 }
 
 // 6) session list contains both
@@ -141,19 +136,8 @@ function readText(selector, label) {
     '--timeout', '30000',
     '--json',
   ], id)
-  // await condition format may vary — if fail try without strict await
-  if (!r.ok) {
-    const r2 = runJson([
-      'goto', gotoRoute,
-      '--session', sessionA,
-      '--project', project,
-      '--json',
-    ], id)
-    h.assertOk(r2.ok, id, r2.payload || r.payload)
-    caseResult(id, true, `fallback-no-await path=${(r2.payload && r2.payload.path) || r2.payload && r2.payload.message}`)
-  } else {
-    caseResult(id, true, `path=${r.payload.path || r.payload.message || ''}`)
-  }
+  h.assertOk(r.ok, id, r.payload || r.result)
+  caseResult(id, true, `path=${r.payload.path || r.payload.message || ''}`)
 }
 
 // 8) path after goto
@@ -283,6 +267,7 @@ function readText(selector, label) {
 
 {
   const id = 'interaction.swipe-native'
+  h.assertOk(/Swiper index:\s*0\b/iu.test(readText('#interaction-swiper-status', `${id}.before`)), 'swiper did not start at index 0')
   const r = runJson([
     'swipe', '#interaction-swiper', 'left', '180',
     '--session', sessionA,
@@ -293,7 +278,7 @@ function readText(selector, label) {
   ], id)
   h.assertOk(r.ok, id, r.payload || r.result)
   const status = readText('#interaction-swiper-status', `${id}.status`)
-  h.assertOk(/Swiper index:\s*[12]/iu.test(status), `unexpected swiper status: ${status}`)
+  h.assertOk(/Swiper index:\s*1\b/iu.test(status), `unexpected swiper status: ${status}`)
   caseResult(id, true, status)
 }
 
@@ -317,6 +302,7 @@ function readText(selector, label) {
   const id = 'interaction.transient'
   const r = runJson([
     'click', '#interaction-transient',
+    '--follow',
     '--session', sessionA,
     '--project', project,
     '--await', 'change',
@@ -324,9 +310,9 @@ function readText(selector, label) {
     '--json',
   ], id)
   h.assertOk(r.ok, id, r.payload || r.result)
-  const status = readText('#interaction-transient-status', `${id}.status`)
+  const status = ((r.payload.followup && r.payload.followup.records) || []).map((record) => record.text || '').join('\n')
   h.assertOk(/Transient visible/iu.test(status), `transient state was not captured: ${status}`)
-  caseResult(id, true, status)
+  caseResult(id, true, 'Transient visible in action follow-up snapshot')
 }
 
 {
@@ -413,24 +399,25 @@ if (String(process.env.MINIPROGRAM_BROWSER_E2E_FRESH || '').trim() === '1') {
     h.fail(id, String(e && e.message || e))
   }
 } else {
-  caseResult('open.fresh', true, 'skipped-set-E2E_FRESH=1-to-enable')
+  results.push({ id: 'open.fresh', skipped: true, detail: 'set MINIPROGRAM_BROWSER_E2E_FRESH=1 to enable' })
 }
 
 // 16) cleanup kill e2e sessions (branch: session kill)
 {
   const id = 'session.kill-cleanup'
-  cleanup.run()
+  const cleanupResults = cleanup.run()
+  h.assertOk(cleanupResults.every((result) => result.ok), id, cleanupResults)
   caseResult(id, true, 'done')
 }
 
 // summary
 h.log('--- summary ---')
 for (const row of results) {
-  h.log(`${row.ok ? 'PASS' : 'FAIL'} ${row.id} ${row.detail || ''}`)
+  h.log(`${row.skipped ? 'SKIP' : row.ok ? 'PASS' : 'FAIL'} ${row.id} ${row.detail || ''}`)
 }
-const failed = results.filter((r) => !r.ok)
+const failed = results.filter((r) => !r.ok && !r.skipped)
 if (failed.length) {
   h.fail(`${failed.length} cases failed`, failed)
 }
-h.log(`PASS: ${results.length} L0 e2e cases sessionA=${sessionA}`)
+h.log(`PASS: ${results.filter((r) => r.ok).length} L0 e2e cases; ${results.filter((r) => r.skipped).length} skipped; sessionA=${sessionA}`)
 process.exit(0)

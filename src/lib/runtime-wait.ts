@@ -4,7 +4,6 @@
  * 本模块包含 miniprogram-browser 的等待机制：
  * - 条件解析（normalizeAwaitCondition）
  * - 超时计算（resolveAwaitTimeoutMs）
- * - 日志摘要提取（辅助诊断）
  * - 等待稳定/条件满足轮询
  * - native 诊断消息构造
  */
@@ -42,16 +41,6 @@ interface AwaitCondition {
   kind: string
   value: string
   raw: string
-}
-
-/** 单个日志文件（诊断摘要输入） */
-interface LogPayloadFile {
-  lines?: unknown[]
-}
-
-/** 日志 payload（诊断摘要输入） */
-interface LogPayload {
-  files?: LogPayloadFile[]
 }
 
 /** 稳定采样结果 */
@@ -197,76 +186,6 @@ function buildRuntimeStableTimeoutError(timeoutMs: number, hint: unknown, detail
   error.diagnostics = details
   error.next = 'await stable'
   return error
-}
-
-// ---- 日志摘要提取 ----
-
-/**
- * 从 log payload 中提取最有用的一行摘要。
- * 优先匹配已知的 DevTools 错误模式，否则取首行。
- */
-function extractLogSummary(logPayload: LogPayload, options: AnyRecord = {}): string {
-  const maxLength = Math.max(40, Number(options.maxLength || 200))
-  let fallback = ''
-  for (const file of (logPayload.files || [])) {
-    const lines: string[] = []
-    for (const line of (file.lines || [])) {
-      const text = String(line || '').trim()
-      if (text) {
-        lines.push(text)
-      }
-    }
-    if (!fallback && lines.length) {
-      fallback = lines[0]
-    }
-    const preferred = selectLogSummaryLine(lines)
-    if (preferred) {
-      return truncateLogSummaryLine(preferred, maxLength)
-    }
-  }
-
-  if (!fallback) {
-    return ''
-  }
-  return truncateLogSummaryLine(fallback, maxLength)
-}
-
-/** 从日志行列表中按优先级选择最佳摘要行 */
-function selectLogSummaryLine(lines: unknown[]): string {
-  const ranked = lines
-    .map((line: unknown, index: number) => ({ line, index, score: scoreLogSummaryLine(line) }))
-    .filter((item: { line: unknown; index: number; score: number }) => item.score > 0)
-    .sort((left: { line: unknown; index: number; score: number }, right: { line: unknown; index: number; score: number }) => right.score - left.score || left.index - right.index)
-  return ranked.length ? (ranked[0].line as string) : ''
-}
-
-/** 截断过长的日志行 */
-function truncateLogSummaryLine(line: string, maxLength: number): string {
-  if (line.length <= maxLength) {
-    return line
-  }
-  return `${line.slice(0, maxLength - 3)}...`
-}
-
-/** 为日志行打分（高优先级匹配已知错误模式） */
-function scoreLogSummaryLine(line: unknown): number {
-  const text = String(line || '')
-  if (/simulator launch catch error|MinTabbarCount|checkTabbar|checkAppJSON/iu.test(text)) {
-    return 110
-  }
-  if (/start cli server error/iu.test(text)) {
-    return 100
-  }
-  if (/routeTo appLaunch timeout|triggerAppRouteDone timeout/iu.test(text)) {
-    return 90
-  }
-  if (/tcp_socket_win\.cc.*10055|connect failed:\s*10055/iu.test(text)) {
-    return 85
-  }
-  if (/error|fail|timeout|errcode|exception/iu.test(text)) {
-    return 10
-  }
-  return 0
 }
 
 // ---- 等待条件轮询 ----
@@ -612,10 +531,6 @@ module.exports = {
   resolveAwaitTimeoutMs,
   buildAwaitTimeoutError,
   buildRuntimeStableTimeoutError,
-  extractLogSummary,
-  selectLogSummaryLine,
-  truncateLogSummaryLine,
-  scoreLogSummaryLine,
   waitForMiniProgramCondition,
   readRuntimeChangeSignature,
   waitForMiniProgramStable,

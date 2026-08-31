@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/cli/product-contracts.md", "reason": "失败路径：raw 摘录 vs JSON 全文；AppID 假阳性禁止；非 open 先 open"}
-{"file": ".trellis/spec/cli/session-contracts.md", "reason": "connectOrEnable allowEnable 默认 false；hints 时间窗"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层：CLI 失败输出与 runtime 分类边界"}

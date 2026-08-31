@@ -44,6 +44,10 @@ function resolveCliPath() {
   return ''
 }
 
+function isSuccessfulResult(result, payload) {
+  return Boolean(result.status === 0 && payload && !payload._parseError && payload.ok !== false && !payload.error)
+}
+
 function createHarness(options = {}) {
   const tag = options.tag || 'e2e'
   const openTimeout = Number(process.env.MINIPROGRAM_BROWSER_GATE_TIMEOUT || options.openTimeout || 120000)
@@ -59,6 +63,11 @@ function createHarness(options = {}) {
         ...process.env,
         WECHAT_DEVTOOLS_CLI: devtoolsCli,
         ...extraEnv,
+        // 门禁只允许已核验的 Demo；不得继承机器上的项目映射或已有端口。
+        WECHAT_DEVTOOLS_PROJECT: '',
+        WECHAT_DEVTOOLS_PROJECT_MAP: '',
+        WECHAT_DEVTOOLS_PORT: '',
+        WECHAT_AUTO_PORT: '',
       },
       timeout: killMs,
       maxBuffer: 8 * 1024 * 1024,
@@ -140,7 +149,7 @@ function createHarness(options = {}) {
     }
     const payload = parseJsonStdout(result)
     assertOk(
-      result.status === 0 && payload && payload.ok !== false && !payload.error,
+      isSuccessfulResult(result, payload),
       'open failed',
       { status: result.status, payload },
     )
@@ -161,8 +170,12 @@ function createHarness(options = {}) {
       const results = []
       for (const sessionName of sessions) {
         const result = runCli(['session', 'kill', sessionName, '--project', project, '--json'], {}, { killMs: 30000 })
-        results.push({ sessionName, status: result.status })
-        log(tag, `cleanup ${sessionName} status=${result.status}`)
+        const payload = parseJsonStdout(result)
+        const ok = isSuccessfulResult(result, payload)
+          && (payload.runtimeShutdown === false || payload.cleanup?.closeVerified === true)
+        results.push({ sessionName, status: result.status, ok })
+        log(tag, `cleanup ${sessionName} status=${result.status} ok=${ok}`)
+        if (!ok) log(tag, JSON.stringify(payload))
       }
       return results
     }
@@ -196,4 +209,5 @@ module.exports = {
   createHarness,
   resolveProject,
   resolveCliPath,
+  isSuccessfulResult,
 }

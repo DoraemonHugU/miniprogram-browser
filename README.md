@@ -7,6 +7,7 @@
 - GitHub: https://github.com/DoraemonHugU/miniprogram-browser
 - npm: https://www.npmjs.com/package/miniprogram-browser
 - Roadmap: [ROADMAP.md](ROADMAP.md)
+- 维护规范：[docs/spec/index.md](docs/spec/index.md)
 
 ## 安装
 
@@ -168,7 +169,7 @@ export MINIPROGRAM_BROWSER_SESSION=work
 miniprogram-browser doctor --json
 miniprogram-browser goto /pages/dashboard/index
 miniprogram-browser timeline
-miniprogram-browser devtools logs --limit 40 --grep "appservice|simulator|error"
+miniprogram-browser logs --limit 40
 miniprogram-browser screenshot --mode annotate
 
 # 未安装时
@@ -273,7 +274,7 @@ miniprogram-browser await stable --session demo
 - 应用结构摘要（`app inspect`）
 - 路由时间线、console、exception
 - 分层诊断（`doctor`）：区分 DevTools CLI、automation WebSocket 和 App runtime
-- DevTools 底层日志（`devtools logs`）：普通运行时日志拿不到时查看 `WeappLog`
+- DevTools 底层日志（`devtools logs`）：显式读取共享 `WeappLog`，不按项目隔离。可能含其他项目的信息，涉及生产项目时不要采集或提交；`open` / `await` / `doctor` 不会自动读取它。
 - 页面截图、视觉截图、标注截图
 - 低层逃逸点：`protocol / eval / native / get attr|prop|get rect`
 
@@ -337,11 +338,11 @@ miniprogram-browser click @e1 --session demo --wait 500
 
 `--timeout <ms>` 只是 `await / --await` 的最长等待时间，条件满足会提前返回；它不是固定 sleep。
 
-`--await change` 必须挂在 `click/fill/scroll/swipe/longpress` 等动作上，因为它需要动作前基线；独立 `await change` 会明确报错。`stable` 只表示 route/page-stack 暂时安静且视图可读取，不代表业务数据一定完成。
+`--await change` 必须挂在 `click/fill/scroll/swipe/longpress` 等动作上，因为它需要动作前基线；独立 `await change` 会明确报错。`stable` 只表示 route/page-stack 暂时安静，不代表业务数据或渲染已完成；视图能力单独看 `viewReady` / `viewError`。
 
 ### 系统弹窗的当前边界
 
-当前已验证的微信开发者工具 `2.02.2608060` 上，`miniprogram-automator` 的 `native.confirmModal()` / `native.cancelModal()` 会返回空结果，但不会关闭可见的 `wx.showModal` 弹窗。因此 CLI 不把它们伪装成已可靠的主路径；智能体触发这类弹窗后应截图并请用户处理，再继续调试。
+`wx.showModal` 不在 WXML 树中。2026-08-31 在 Mac DevTools `2.02.2608040` 的公开 Demo 上复核：真实点击能够打开弹窗、截图可见，但官方 automator 的 `native.confirmModal()` / `native.cancelModal()` 调用后弹窗仍未关闭。专用确认/取消操作不属于 CLI 的可靠主路径；智能体触发这类弹窗后应截图并请用户处理，再继续调试。
 
 `change` 能在采样时捕捉第一次 WXML 变化，但不会把动作期间的 Toast、loading 等连续状态自动留档；动作级变化证据仍是研究候选，边界与验收标准见 [Roadmap](ROADMAP.md#research-candidate动作级瞬时变化证据)。
 
@@ -478,6 +479,7 @@ demo/                        原生、Taro、uni-app 三套公开合成小程序
 skills/miniprogram-browser/  可安装的标准 skill 目录（仅 SKILL.md）
 skills/image-processing/     可安装的离线图片处理 skill
 tests/                       行为测试
+docs/spec/                   自维护的产品与实现契约
 README.md                    面向人类开发者的开源说明
 ```
 

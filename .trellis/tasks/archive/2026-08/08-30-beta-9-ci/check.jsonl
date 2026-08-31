@@ -1,3 +1,0 @@
-{"file":".trellis/tasks/archive/2026-08/08-30-beta-9-ci/prd.md","reason":"按发布候选接受标准验收"}
-{"file":".trellis/tasks/archive/2026-08/08-30-beta-9-ci/research/cross-platform-ci.md","reason":"确认 CI 不越界声称真实 Windows/WSL DevTools 验证"}
-{"file":".trellis/spec/cli/product-contracts.md","reason":"检查版本与公共命令说明一致"}

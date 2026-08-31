@@ -294,7 +294,8 @@ function buildCommandHelpText(command: unknown): string {
   miniprogram-browser devtools logs --session <name> [--limit <n>] [--files <n>] [--grep <pattern>] [--json]
 
 作用:
-  读取微信开发者工具 WeappLog 底层日志；用于 App runtime 不响应、普通 logs/exceptions 拿不到信息时排障。
+  显式读取微信开发者工具共享 WeappLog，不按项目隔离，可能含其他项目的信息。
+  open / await / doctor 不会自动读取它；涉及生产信息时不要采集或提交。
 `
     case 'protocol':
       return `protocol

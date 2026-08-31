@@ -10,7 +10,7 @@
  * - Label 智能避让：多候选评分；失败才 *
  * - 几何只用百分比，禁止 × devicePixelRatio
  *
- * 契约：.trellis/spec/cli/ascii-map-contracts.md
+ * 契约：docs/spec/cli/ascii-map-contracts.md
  */
 
 type AnyRecord = Record<string, unknown>

@@ -204,7 +204,7 @@ miniprogram-browser wait 1200 --session feat-a
 
 普通按钮、switch、checkbox 等点击后停留当前页是正常行为，CLI 不会猜测它应该跳转。只有任务明确要求导航时才加 `--await route-change` 或 `--await route:<path>`；未满足时由 await 给出准确失败。
 
-业务页 `wx.showModal` 不在 WXML 树中。当前已验证的 DevTools `2.02.2608060` 上，官方 automator 的 `confirmModal` / `cancelModal` 返回空结果但不关闭可见弹窗。触发后先截图请用户处理，不要用 `eval/setData`、OCR 或 GUI 驱动伪造点击结果。
+业务页 `wx.showModal` 不在 WXML 树中，官方 automator 的 `confirmModal` / `cancelModal` 返回空结果不能证明弹窗已关闭。专用确认/取消操作尚未通过当前版本的完整验收；触发后先截图请用户处理，不要用 `eval/setData`、OCR 或 GUI 驱动伪造点击结果。
 
 建议：
 
@@ -345,7 +345,7 @@ miniprogram-browser open --session agent-task-a --fresh
 
 - `app inspect`：应用结构摘要
 - `doctor`：区分开发者工具、自动化连接、小程序 App 是否就绪；**已 live 时只 probe，不会再跑一轮 `auto`**
-- `devtools logs`：开发者工具底层日志（App 不响应、普通 logs 不够时）
+- `devtools logs`：显式读取开发者工具共享日志，不按项目隔离；可能混入其他项目的内容。涉及生产项目时不要采集、引用或提交。`open` / `await` / `doctor` 不会自动读取共享日志。
 - `timeline`：路由变化
 - `logs` / `exceptions`：console 与异常（优先用来理解数据加载、点击后发生了什么）
 - `system-info` / `page-stack`：设备与页面栈
@@ -363,7 +363,7 @@ miniprogram-browser devtools logs --session feat-a --limit 40 --grep "appservice
 
 - 「页面没反应」不要只盯截图；先看 `logs` / `exceptions`
 - `doctor --json` 只有 Tool endpoint 与 App runtime 都就绪时才返回 `ok: true`；`probe.connected: true`、`probe.appReady: false` 表示开发者工具可连，但小程序仍未编译或 AppService 未就绪
-- Tool 层通但 App 不通时，优先 `devtools logs`，不要 GUI/OCR
+- Tool 层通但 App 不通时，先检查 `doctor` 的本次调用错误；仅在共享日志不涉及其他项目敏感信息时使用 `devtools logs`，不要 GUI/OCR
 - macOS 的 `devtools logs` 会从开发者工具用户目录里选择最近有日志活动的 `WeappLog` profile，不依赖安装路径 hash
 - 判断某次 `open --fresh` 为何失败，以**同一次** open 返回的说明和日志为准
 - 数据页/表单页 console 往往比截图更早暴露问题

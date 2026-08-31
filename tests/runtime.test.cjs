@@ -58,7 +58,6 @@ const {
   resolveAwaitTimeoutMs,
   waitForMiniProgramCondition,
   waitForMiniProgramStable,
-  extractLogSummary,
 } = require('../dist/lib/runtime.js')
 const { toWindowsPath } = require('../dist/lib/runtime-windows.js')
 
@@ -2516,76 +2515,6 @@ test('waitForMiniProgramCondition times out hidden checks with a short fact-styl
       return true
     },
   )
-})
-
-test('extractLogSummary returns one compact log line without hardcoded diagnosis text', () => {
-  const summary = extractLogSummary({
-    files: [
-      {
-        lines: [
-          '',
-          '[2026-05-02 19:44:23.107][ERROR][unknow] routeTo appLaunch timeout',
-          '[2026-05-02 19:44:26.700][ERROR][unknow] !!! triggerAppRouteDone timeout {',
-        ],
-      },
-    ],
-  })
-
-  assert.equal(summary, '[2026-05-02 19:44:23.107][ERROR][unknow] routeTo appLaunch timeout')
-})
-
-test('extractLogSummary prefers automation startup facts over earlier generic errors', () => {
-  const summary = extractLogSummary({
-    files: [
-      {
-        lines: [
-          '[2026-05-02 19:44:20.100][ERROR][unknow] errcode=41002 appid missing',
-          '[2026-05-02 19:44:23.107][ERROR][unknow] routeTo appLaunch timeout',
-          '[2026-05-02 19:44:24.200][ERROR][unknow] start cli server error: [object Object]',
-        ],
-      },
-    ],
-  })
-
-  assert.equal(summary, '[2026-05-02 19:44:24.200][ERROR][unknow] start cli server error: [object Object]')
-})
-
-test('extractLogSummary prefers simulator compile crashes over secondary cli server errors', () => {
-  const summary = extractLogSummary({
-    files: [
-      {
-        lines: [
-          '[2026-05-02 22:19:47.675][ERROR][unknow] fetchDevelopLibInfo Error: appid missing',
-          "[2026-05-02 22:19:47.722][ERROR][unknow] simulator launch catch error TypeError: Cannot read properties of undefined (reading 'MinTabbarCount')",
-          '[2026-05-02 22:19:47.887][ERROR][unknow] start cli server error: [object Object]',
-        ],
-      },
-    ],
-  })
-
-  assert.match(summary, /simulator launch catch error.*MinTabbarCount/)
-})
-
-test('extractLogSummary does not prefer stale high-priority facts over the latest log file', () => {
-  const summary = extractLogSummary({
-    files: [
-      {
-        path: 'latest.log',
-        lines: [
-          '[2026-05-02 22:15:08.601][ERROR][unknow] appid missing',
-          '[2026-05-02 22:15:19.257][ERROR][unknow] routeTo appLaunch timeout',
-        ],
-      },
-      {
-        path: 'older.log',
-        lines: [
-          '[2026-05-02 22:12:48.033][ERROR][unknow] start cli server error: [object Object]',
-        ],
-      },
-    ],
-  })
-
-  assert.equal(summary, '[2026-05-02 22:15:19.257][ERROR][unknow] routeTo appLaunch timeout')
 })
 
 test('sendAutomationProtocol exposes raw automation protocol results', async () => {

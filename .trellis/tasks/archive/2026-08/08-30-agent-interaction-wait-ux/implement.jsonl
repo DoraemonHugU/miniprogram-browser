@@ -1,6 +1,0 @@
-{"file":".trellis/spec/cli/product-contracts.md","reason":"约束 CLI 默认路径、真实错误、await 与 @e 生命周期"}
-{"file":".trellis/spec/cli/ascii-map-contracts.md","reason":"约束 snapshot 降噪时保留 ASCII map 和可操作引用"}
-{"file":".trellis/spec/cli/session-contracts.md","reason":"新增 action 复用 session/runtime 与锁语义"}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"协调 CLI、runtime、Demo、skill 与文档变更"}
-{"file":".trellis/tasks/08-30-agent-interaction-wait-ux/research/user-experience.md","reason":"保留真实 Mac DevTools 复现结论与产品取舍"}
-{"file":".trellis/tasks/08-30-agent-interaction-wait-ux/research/upstream-and-runtime.md","reason":"限定上游自动化能力与不新增依赖的边界"}

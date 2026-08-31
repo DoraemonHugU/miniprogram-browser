@@ -1,4 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/cli/product-contracts.md", "reason": "CLI 稳定面与 @e 生命周期"}
-{"file": ".trellis/spec/cli/session-contracts.md", "reason": "工程发现、runtime 复用与真实 gate"}
-{"file": ".trellis/tasks/08-29-framework-demo-matrix/research/dependencies.md", "reason": "官方工具链版本与 license 选择"}

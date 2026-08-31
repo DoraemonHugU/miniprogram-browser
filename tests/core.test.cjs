@@ -1325,7 +1325,6 @@ const {
   enrichOpenFailure,
   tryHealOpenAfterStartFailure,
   cleanupStartedOpenRuntime,
-  shouldRetryOpenWithAnotherAutoPort,
   resolveOpenAttemptBudget,
 } = require('../dist/miniprogram-browser.js')
 
@@ -1362,22 +1361,12 @@ test('selectUnprobedWslAutomationPort skips reserved and listening ports without
   assert.equal(await selectUnprobedWslAutomationPort(new Set([9530, 9531]), async () => true), '9532')
 })
 
-test('cold start retries another autoPort when plugin logs accompany an open timeout', () => {
-  assert.equal(shouldRetryOpenWithAnotherAutoPort({
-    portResolution: { autoPortAssigned: true },
-  }, {}, 'started', {
-    code: 'OPEN_TIMEOUT',
-    startupIssueCode: 'DEVTOOLS_PLUGIN_MISSING',
-  }, 1), true)
-})
-
-test('enrichOpenFailure does not overwrite OPEN_TIMEOUT with cli-server-start-error hints', async () => {
+test('enrichOpenFailure preserves OPEN_TIMEOUT', async () => {
   const error = {
     message: 'open timed out after 200ms',
     code: 'OPEN_TIMEOUT',
     hint: 'phase=open; timeoutMs=200',
   }
-  // state without real logs: buildOpenFailureDiagnostics may return empty
   const state = {
     name: 't',
     config: {

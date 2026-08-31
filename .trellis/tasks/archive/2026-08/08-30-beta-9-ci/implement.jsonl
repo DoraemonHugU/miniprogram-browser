@@ -1,4 +1,0 @@
-{"file":".trellis/spec/cli/product-contracts.md","reason":"核对 beta L0 公共命令与兼容边界"}
-{"file":".trellis/spec/cli/session-contracts.md","reason":"核对跨平台 session/runtime 锁契约"}
-{"file":".trellis/spec/cli/screenshot-contracts.md","reason":"核对临时目录和本机路径边界"}
-{"file":".trellis/tasks/archive/2026-08/08-30-beta-9-ci/research/cross-platform-ci.md","reason":"保留托管 CI 与真实 DevTools 验证的边界"}

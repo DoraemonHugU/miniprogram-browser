@@ -13,8 +13,6 @@ const {
   shouldRetryOpenWithAnotherAutoPort,
   summarizeOpenResolution,
   createMultipleLiveRuntimeError,
-  summarizeDevtoolsStartupHints,
-  classifyOpenFailureFromStartupHints,
   shouldAttemptVisualProbe,
   shouldEmitPreludeNotices,
   shouldClearFailedOpenSession,
@@ -253,6 +251,7 @@ test('buildCommandHelpText returns low-level diagnostic command details', () => 
   assert.match(buildCommandHelpText('doctor'), /--project <path> --devtools-port <port>|bootstrap automation/u)
   assert.match(buildCommandHelpText('protocol'), /Tool\.getInfo|底层协议/)
   assert.match(buildCommandHelpText('devtools'), /WeappLog|底层日志/)
+  assert.match(buildCommandHelpText('devtools'), /不按项目隔离/)
 })
 
 test('buildCommandHelpText returns await command details', () => {
@@ -538,26 +537,10 @@ test('shouldRetryOpenWithAnotherAutoPort only retries auto-assigned fresh startu
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
-      code: 'OPEN_TIMEOUT',
-      diagnostics: {
-        startupHints: [{ code: 'cli-server-start-error' }],
-      },
-    }, 1),
-    true,
-  )
-  assert.equal(
-    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
-      code: 'OPEN_TIMEOUT',
-      startupIssueCode: 'DEVTOOLS_LOGIN_REQUIRED',
+      code: 'DEVTOOLS_LOGIN_REQUIRED',
+      message: '请先登录微信开发者工具',
     }, 1),
     false,
-  )
-  assert.equal(
-    shouldRetryOpenWithAnotherAutoPort(state, {}, 'started', {
-      code: 'OPEN_TIMEOUT',
-      startupIssueCode: 'DEVTOOLS_PLUGIN_MISSING',
-    }, 1),
-    true,
   )
   assert.equal(
     shouldRetryOpenWithAnotherAutoPort(state, {}, 'connected', { code: 'OPEN_TIMEOUT' }, 1),
@@ -628,198 +611,6 @@ test('summarizeSnapshotPayload keeps text lines but removes JSON duplication unl
   })
   assert.deepEqual(summarizeSnapshotPayload(payload, {}).lines, ['@e1 [button] 保存'])
   assert.equal(summarizeSnapshotPayload(payload, { all: true }).state.route, 'pages/dashboard/index')
-})
-
-test('summarizeDevtoolsStartupHints extracts high-value startup diagnostics from DevTools logs', () => {
-  const hints = summarizeDevtoolsStartupHints({
-    files: [
-      {
-        lines: [
-          '[ERROR] Error: 系统错误，错误码：41002,appid missing',
-          '[ERROR] routeTo appLaunch timeout',
-          '[ERROR] start cli server error: [object Object]',
-          '[ERROR:tcp_socket_win.cc(879)] connect failed: 10055',
-        ],
-      },
-      {
-        lines: [
-          '[ERROR] older unrelated file',
-        ],
-      },
-    ],
-  })
-
-  assert.deepEqual(hints.map((item) => item.code), [
-    'appid-missing',
-    'app-launch-timeout',
-    'cli-server-start-error',
-    'windows-socket-10055',
-  ])
-  assert.match(hints[0].message, /appid|AppID/i)
-  assert.match(hints[1].sample, /appLaunch timeout/i)
-})
-
-test('summarizeDevtoolsStartupHints ignores older log files after the latest matching file', () => {
-  const hints = summarizeDevtoolsStartupHints({
-    files: [
-      {
-        path: '/tmp/logs/2026-05-03-latest.log',
-        lines: [
-          '[ERROR] start cli server error: [object Object]',
-        ],
-      },
-      {
-        path: '/tmp/logs/2026-05-03-older.log',
-        lines: [
-          '[ERROR] Error: 系统错误，错误码：41002,appid missing',
-        ],
-      },
-    ],
-  })
-
-  assert.deepEqual(hints.map((item) => item.code), ['cli-server-start-error'])
-})
-
-test('summarizeDevtoolsStartupHints prefers timestamped log files over stale stderr noise', () => {
-  const hints = summarizeDevtoolsStartupHints({
-    files: [
-      {
-        path: '/tmp/stderr.log',
-        lines: [
-          '[ERROR:tcp_socket_win.cc(879)] connect failed: 10055',
-        ],
-      },
-      {
-        path: '/tmp/logs/2026-05-03-11-26-41.log',
-        lines: [
-          '[ERROR] Error: 系统错误，错误码：41002,appid missing',
-          '[ERROR] start cli server error: [object Object]',
-        ],
-      },
-    ],
-  })
-
-  assert.deepEqual(hints.map((item) => item.code), [
-    'appid-missing',
-    'cli-server-start-error',
-  ])
-})
-
-test('summarizeDevtoolsStartupHints does not fall back to stderr when current timestamped logs have no startup hints', () => {
-  const hints = summarizeDevtoolsStartupHints({
-    files: [
-      {
-        path: '/tmp/stderr.log',
-        lines: [
-          '[ERROR:tcp_socket_win.cc(879)] connect failed: 10055',
-        ],
-      },
-      {
-        path: '/tmp/logs/2026-05-03-11-41-03.log',
-        lines: [
-          '[INFO] [ideplugin] extension heartbeat ok',
-        ],
-      },
-    ],
-  })
-
-  assert.deepEqual(hints, [])
-})
-
-test('classifyOpenFailureFromStartupHints treats cli-server-start-error as automation startup failure', () => {
-  const classification = classifyOpenFailureFromStartupHints([
-    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
-  ])
-
-  assert.deepEqual(classification, {
-    code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
-    hint: 'devtoolsLog=cli-server-start-error',
-  })
-})
-
-test('summarizeDevtoolsStartupHints recognizes current DevTools login failure signals', () => {
-  const hints = summarizeDevtoolsStartupHints({
-    files: [
-      {
-        path: '/tmp/logs/2026-08-01-latest.log',
-        lines: [
-          '[ERROR] getNewTicket empty ticket',
-          '[ERROR] errcode= 41001 Error: 需要重新登录,access_token missing',
-          '[ERROR] start cli server error: [object Object]',
-        ],
-      },
-    ],
-  })
-
-  assert.deepEqual(hints.map((item) => item.code), ['login-expired', 'cli-server-start-error'])
-  assert.match(hints[0].message, /重新登录/)
-})
-
-test('classifyOpenFailureFromStartupHints prioritizes login failure over automation server noise', () => {
-  const classification = classifyOpenFailureFromStartupHints([
-    { code: 'login-expired', sample: '[ERROR] errcode= 41001 需要重新登录,access_token missing' },
-    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
-  ])
-
-  assert.deepEqual(classification, {
-    code: 'DEVTOOLS_LOGIN_REQUIRED',
-    hint: 'devtoolsLog=login-expired',
-  })
-})
-
-test('summarizeDevtoolsStartupHints recognizes missing automation plugin signals', () => {
-  const hints = summarizeDevtoolsStartupHints({
-    files: [
-      {
-        path: '/tmp/logs/2026-08-01-plugin.log',
-        lines: [
-          '[ERROR] [ideplugin] get devtools manifest.json catch error Error: not installed',
-          '[ERROR] start cli server error: [object Object]',
-        ],
-      },
-    ],
-  })
-
-  assert.deepEqual(hints.map((item) => item.code), ['devtools-plugin-missing', 'cli-server-start-error'])
-  assert.match(hints[0].message, /插件|plugin/i)
-})
-
-test('classifyOpenFailureFromStartupHints prioritizes missing plugin over generic server noise', () => {
-  const classification = classifyOpenFailureFromStartupHints([
-    { code: 'devtools-plugin-missing', sample: '[ERROR] [ideplugin] manifest.json not installed' },
-    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
-  ])
-
-  assert.deepEqual(classification, {
-    code: 'DEVTOOLS_PLUGIN_MISSING',
-    hint: 'devtoolsLog=devtools-plugin-missing',
-  })
-})
-
-test('classifyOpenFailureFromStartupHints prefers app launch timeout over cli server noise', () => {
-  const classification = classifyOpenFailureFromStartupHints([
-    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
-    { code: 'app-launch-timeout', sample: '[ERROR] routeTo appLaunch timeout' },
-  ])
-
-  assert.deepEqual(classification, {
-    code: 'APP_LAUNCH_TIMEOUT',
-    hint: 'devtoolsLog=app-launch-timeout',
-  })
-})
-
-test('classifyOpenFailureFromStartupHints prefers the summarized latest log line over weaker hint codes', () => {
-  const classification = classifyOpenFailureFromStartupHints([
-    { code: 'appid-missing', sample: '[WARN] appid missing' },
-    { code: 'cli-server-start-error', sample: '[ERROR] start cli server error: [object Object]' },
-  ], {
-    summaryLine: '[2026-05-03 11:28:04.874][ERROR] start cli server error: [object Object]',
-  })
-
-  assert.deepEqual(classification, {
-    code: 'DEVTOOLS_AUTOMATION_SERVER_FAILED',
-    hint: 'devtoolsLog=cli-server-start-error',
-  })
 })
 
 test('shouldEmitPreludeNotices skips logs and exceptions', () => {

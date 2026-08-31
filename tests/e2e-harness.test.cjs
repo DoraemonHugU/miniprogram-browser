@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const childProcess = require('node:child_process')
 
 function withHarnessEnv(env, run) {
   const modulePath = require.resolve('../scripts/lib/e2e-harness.cjs')
@@ -58,6 +59,53 @@ test('real DevTools gates reject non-tourist AppIDs before opening DevTools', ()
   } finally {
     fs.rmSync(project, { recursive: true, force: true })
   }
+})
+
+test('real DevTools gates ignore ambient target and endpoint overrides', (t) => {
+  const overrides = ['WECHAT_DEVTOOLS_PROJECT', 'WECHAT_DEVTOOLS_PROJECT_MAP', 'WECHAT_DEVTOOLS_PORT', 'WECHAT_AUTO_PORT']
+  const previous = Object.fromEntries(overrides.map((key) => [key, process.env[key]]))
+  t.after(() => {
+    for (const key of overrides) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+    delete require.cache[require.resolve('../scripts/lib/e2e-harness.cjs')]
+  })
+  for (const key of overrides) process.env[key] = 'synthetic-unrelated-target'
+  let childEnv
+  t.mock.method(childProcess, 'spawnSync', (_command, _args, options) => {
+    childEnv = options.env
+    return { status: 0, stdout: '{}' }
+  })
+  withHarnessEnv({ cli: '/synthetic/cli' }, ({ createHarness }) => {
+    createHarness().runCli(['--help'])
+    for (const key of overrides) assert.equal(childEnv[key], '', key)
+    assert.equal(childEnv.WECHAT_DEVTOOLS_CLI, '/synthetic/cli')
+  })
+})
+
+test('gate success requires valid JSON and a successful process and payload', () => {
+  const { isSuccessfulResult } = require('../scripts/lib/e2e-harness.cjs')
+  assert.equal(isSuccessfulResult({ status: 0 }, { path: 'pages/index/index' }), true)
+  for (const payload of [null, { _parseError: 'no-json' }, { ok: false }, { error: 'failed' }]) {
+    assert.equal(isSuccessfulResult({ status: 0 }, payload), false)
+  }
+  assert.equal(isSuccessfulResult({ status: 1 }, { ok: true }), false)
+  assert.equal(isSuccessfulResult({ status: null }, { ok: true }), false)
+})
+
+test('gate cleanup requires verified runtime closure, but accepts an attached-session unbind', (t) => {
+  let payload = { runtimeShutdown: true, cleanup: { closeVerified: false } }
+  t.mock.method(childProcess, 'spawnSync', () => ({ status: 0, stdout: JSON.stringify(payload) }))
+  withHarnessEnv({}, ({ createHarness }) => {
+    const h = createHarness()
+    assert.equal(h.installSessionCleanup(['synthetic-owner']).run()[0].ok, false)
+    payload = { runtimeShutdown: true, cleanup: { closeVerified: true } }
+    assert.equal(h.installSessionCleanup(['synthetic-owner']).run()[0].ok, true)
+    payload = { runtimeShutdown: false, cleanup: { runtimeShutdown: false } }
+    assert.equal(h.installSessionCleanup(['synthetic-attached']).run()[0].ok, true)
+  })
+  t.after(() => { delete require.cache[require.resolve('../scripts/lib/e2e-harness.cjs')] })
 })
 
 test('L0 interaction gate requires a real actionable ref and hard click success', () => {

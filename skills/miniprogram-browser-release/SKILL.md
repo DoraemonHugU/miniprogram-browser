@@ -43,7 +43,7 @@ git tag --sort=-version:refname
 gh release list --limit 20
 ```
 
-同时阅读实际 diff、`AGENTS.md`、`.trellis/spec/cli/product-contracts.md`、`skills/miniprogram-browser/SKILL.md` 和 `README.md`。提交信息只是辅助信号；公共 CLI 行为、错误输出、skill 指引和包内容以当前 diff 为准。
+同时阅读实际 diff、`AGENTS.md`、`docs/spec/cli/product-contracts.md`、`skills/miniprogram-browser/SKILL.md` 和 `README.md`。提交信息只是辅助信号；公共 CLI 行为、错误输出、skill 指引和包内容以当前 diff 为准。
 
 如果工作树不干净，仍可做状态分析和版本建议；在 commit/tag/publish 前必须明确哪些改动属于本次发布，并确认没有未预期文件。
 

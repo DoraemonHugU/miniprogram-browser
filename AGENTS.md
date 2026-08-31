@@ -5,7 +5,7 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 ## Development Priorities
 
 - Treat `AGENTS.md` and `skills/miniprogram-browser/SKILL.md` as the primary operational documentation for future agents.
-- Product contracts (CLI stable surface, `@e` lifecycle): `.trellis/spec/cli/product-contracts.md` — keep skill in sync when those rules change.
+- Product contracts (CLI stable surface, `@e` lifecycle): `docs/spec/cli/product-contracts.md` — keep skill in sync when those rules change.
 - Keep `README.md` useful for package users, but do not let README maintenance block CLI behavior, tests, or skill guidance.
 - Prefer small, explicit abstractions over hidden background behavior.
 - Do not use Windows GUI automation, PowerShell window control, OCR, or keyboard driving to solve DevTools runtime issues.
@@ -19,6 +19,7 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 - Advanced flags are escape hatches, not the normal workflow.
 - On success, still surface necessary operational facts (including `autoPort`, mode, path, project). These are observability fields, not configuration burden.
 - When automation startup fails, explain the situation clearly and keep the real underlying DevTools CLI / runtime error visible. Do not replace root causes with generic project-wrapper exceptions.
+- Automatic diagnostics must not read shared DevTools logs or other projects' session files. `devtools logs` explicitly reads shared logs and is not project-isolated; never use it to collect production information for public examples or test artifacts.
 - Failures the tool cannot fix (login/token expiry, missing AppID, bad CLI path) need a clear human explanation plus the original error signal. Stable `code` / `next action` fields are optional helpers, not required product shape.
 - Same-project multi-session work is allowed, but each session must have explicit, visible session state and ports.
 - `session list` must surface usable autoPort/status for attached sessions (project live runtime), not only owner launch rows.
@@ -54,6 +55,8 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 
 ## Verification
 
+- CLI source lives in `src/` (TypeScript); `dist/` is generated and is the executable entry point. After source edits, run `npm run build` before invoking the CLI or tests; do not rely on stale build output.
+- `npm test` runs the build, Node tests, and image-processing Python tests; the latter require a working `python` command. Use `npm run lint` and `npm run typecheck:strict` for static checks.
 - Real DevTools open gate (optional, not in default `npm test`):
   ```bash
   export WECHAT_DEVTOOLS_CLI=/path/to/cli
@@ -66,24 +69,11 @@ This repository builds and ships the `miniprogram-browser` CLI and its Codex ski
 - Add or update tests before behavior changes when feasible.
 - At minimum run `npm run build` and the relevant `node --test ...` subset after edits.
 - Before claiming completion, run the full feasible verification set and report any skipped real-DevTools smoke separately.
-<!-- TRELLIS:START -->
-# Trellis Instructions
 
-These instructions are for AI assistants working in this project.
+## Repository Specs
 
-This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
-
-- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
-- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
-- `.trellis/workspace/` — per-developer journals and session traces
-- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
-
-If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
-
-If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
-- `.agents/skills/` — reusable Trellis skills
-- `.codex/agents/` — optional custom subagents
-
-Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
-
-<!-- TRELLIS:END -->
+- This repository maintains its own specifications under `docs/spec/`; start with `docs/spec/index.md` and read only the contracts relevant to the change.
+- `AGENTS.md` is the shared agent instruction source. `CLAUDE.md` imports it instead of maintaining a second set of rules.
+- Specs describe current behavior, boundaries, failure cases, and verification. Keep exploratory ideas in `ROADMAP.md`, not in established contracts.
+- When behavior changes, update the affected spec, tests, and user-facing skill together. Investigate disagreements with current code rather than silently following an outdated spec.
+- Work directly from the user's request with a brief plan when needed. There is no mandatory task-creation, activation, archival, journal, or hook-driven workflow.
