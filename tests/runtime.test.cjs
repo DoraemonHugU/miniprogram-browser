@@ -1230,6 +1230,23 @@ test('callNativeMethod dispatches to native bridge with parsed args', async () =
   assert.deepEqual(result, { ok: true })
 })
 
+test('callNativeMethod rejects native error payloads and preserves the original result', async () => {
+  for (const method of ['confirmModal', 'cancelModal']) {
+    const result = { error: { message: `${method} failed`, code: 'synthetic-native-error' } }
+    const miniProgram = { native: () => ({ [method]: async () => result }) }
+    await assert.rejects(callNativeMethod(miniProgram, method), (error) => {
+      assert.match(error.message, new RegExp(`${method} failed`, 'u'))
+      assert.deepEqual(JSON.parse(error.raw), result)
+      return true
+    })
+  }
+})
+
+test('callNativeMethod preserves empty native results without claiming completion', async () => {
+  const miniProgram = { native: () => ({ confirmModal: async () => ({}) }) }
+  assert.deepEqual(await callNativeMethod(miniProgram, 'confirmModal'), {})
+})
+
 test('element detail helpers expose attr prop and rect', async () => {
   const element = {
     async attribute(name) {

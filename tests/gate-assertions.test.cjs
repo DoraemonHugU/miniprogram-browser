@@ -50,6 +50,92 @@ function runGate(file, options = {}) {
   return { error, calls }
 }
 
+function runModalGate(options = {}) {
+  const calls = []
+  const statuses = [...(options.statuses || [
+    'Status: Ready',
+    'Status: Modal accepted',
+    'Status: Ready',
+    'Status: Modal dismissed',
+  ])]
+  const exitHandlers = []
+  let cleanupRuns = 0
+  let cleanupActive = true
+  const fakeProcess = {
+    env: {},
+    once(event, handler) {
+      if (event === 'exit') exitHandlers.push(handler)
+    },
+    exit(code, reason) {
+      for (const handler of exitHandlers) handler()
+      const error = new Error(reason || `exit ${code}`)
+      error.code = code
+      throw error
+    },
+  }
+  const h = {
+    project: '/synthetic/public-demo',
+    ensureEnv() {},
+    log() {},
+    fail(reason) { fakeProcess.exit(1, reason) },
+    assertOk(ok, reason, detail) { if (!ok) this.fail(reason, detail) },
+    openSession(name) {
+      calls.push(['open', name])
+      return { session: name, autoPort: '9515', mode: 'started', path: 'pages/index/index' }
+    },
+    installSessionCleanup(names) {
+      calls.push(['cleanup-register', ...names])
+      const cleanup = {
+        add() {},
+        run() {
+          if (!cleanupActive) return []
+          cleanupActive = false
+          cleanupRuns += 1
+          return options.cleanupResults || [{ status: 0, ok: true }]
+        },
+      }
+      fakeProcess.once('exit', cleanup.run)
+      return cleanup
+    },
+    runCli(args) {
+      calls.push(args)
+      if (args[0] === 'goto') {
+        return { status: 0, stdout: JSON.stringify({ path: args[1].replace(/^\//u, '') }) }
+      }
+      if (args[0] === 'get') {
+        return { status: 0, stdout: JSON.stringify({ text: statuses.shift() || 'Status: Ready' }) }
+      }
+      if (args[0] === 'native') {
+        if (options.nativeFailure) {
+          return { status: 1, stdout: JSON.stringify({ error: 'synthetic native failure' }) }
+        }
+        return { status: 0, stdout: JSON.stringify({ result: {} }) }
+      }
+      if (args[0] === 'screenshot') {
+        return { status: 0, stdout: JSON.stringify({ path: '/tmp/modal-failure.png' }) }
+      }
+      return { status: 0, stdout: JSON.stringify({ message: 'synthetic success' }) }
+    },
+    parseJsonStdout(result) { return JSON.parse(result.stdout) },
+  }
+  const fakeRequire = (id) => id === './lib/e2e-harness.cjs'
+    ? { createHarness: () => h, isSuccessfulResult }
+    : require(id)
+  const fakeModule = { exports: {} }
+  fakeRequire.main = fakeModule
+  let error
+  try {
+    vm.runInNewContext(fs.readFileSync(require.resolve('../scripts/modal-e2e.cjs'), 'utf8'), {
+      require: fakeRequire,
+      module: fakeModule,
+      process: fakeProcess,
+    })
+  } catch (caught) {
+    error = caught
+  }
+  return { error, calls, cleanupRuns }
+}
+
 test('real open gate rejects an empty snapshot even when the CLI exits successfully', () => {
   assert.match(runGate('real-open-gate.cjs', { emptySnapshot: true }).error.message, /snapshot failed or empty/u)
 })
@@ -88,4 +174,59 @@ test('L0 gate accepts empty logs and a nonempty page stack', () => {
   const result = runGate('l0-e2e.cjs', { allowNavigation: true })
   assert.ok(result.calls.some((args) => args[0] === 'page-stack'))
   assert.equal(result.error.message, 'interaction.goto')
+})
+
+test('modal gate rejects empty native output when the business status stays Ready and cleans up', () => {
+  const result = runModalGate({ statuses: ['Status: Ready', 'Status: Ready'] })
+  assert.match(result.error.message, /modal\.confirmModal callback was not verified/u)
+  assert.equal(result.cleanupRuns, 1)
+  assert.ok(result.calls.some((args) => args[0] === 'screenshot'))
+})
+
+test('modal gate rejects the wrong confirm/cancel direction', () => {
+  const confirmResult = runModalGate({ statuses: ['Status: Ready', 'Status: Modal dismissed'] })
+  assert.match(confirmResult.error.message, /modal\.confirmModal callback was not verified/u)
+
+  const cancelResult = runModalGate({ statuses: [
+    'Status: Ready',
+    'Status: Modal accepted',
+    'Status: Ready',
+    'Status: Modal accepted',
+  ] })
+  assert.match(cancelResult.error.message, /modal\.cancelModal callback was not verified/u)
+})
+
+test('modal gate runs both branches and accepts only their exact callback status', () => {
+  const result = runModalGate()
+  assert.equal(result.error.message, 'exit 0')
+  assert.equal(result.cleanupRuns, 1)
+  const commands = result.calls.filter((args) => args[0] !== 'cleanup-register')
+  assert.deepEqual(commands.map((args) => args[0]), [
+    'open', 'goto', 'get', 'click', 'native', 'get',
+    'goto', 'get', 'click', 'native', 'get',
+  ])
+  for (const args of commands.slice(1)) {
+    assert.equal(args[args.indexOf('--session') + 1], commands[0][1])
+    assert.equal(args[args.indexOf('--project') + 1], '/synthetic/public-demo')
+  }
+  const nativeCalls = result.calls.filter((args) => args[0] === 'native')
+  assert.deepEqual(nativeCalls.map((args) => args[1]), ['confirmModal', 'cancelModal'])
+  for (const args of nativeCalls) {
+    const awaitIndex = args.indexOf('--await')
+    assert.equal(args[awaitIndex + 1], 'change')
+    assert.equal(args[args.indexOf('--timeout') + 1], '3000')
+    assert.equal(args.includes('--wait'), false)
+  }
+})
+
+test('modal gate rejects a native command failure even when the status matches', () => {
+  const result = runModalGate({ nativeFailure: true })
+  assert.match(result.error.message, /modal\.confirmModal callback was not verified/u)
+  assert.equal(result.cleanupRuns, 1)
+})
+
+test('modal gate rejects unverified cleanup after both callback branches pass', () => {
+  const result = runModalGate({ cleanupResults: [{ status: 0, ok: false }] })
+  assert.match(result.error.message, /session cleanup failed/u)
+  assert.equal(result.cleanupRuns, 1)
 })

@@ -66,6 +66,7 @@ npm test
 # export MINIPROGRAM_BROWSER_GATE_PROJECT=...
 npm run test:real-open-gate
 npm run test:l0-e2e           # L0 旅程+交互（session/goto/swipe/scroll/back…）
+npm run test:modal-e2e        # 独立弹窗专项：真实确认/取消及业务回调，不计入已通过的 L0
 node dist/miniprogram-browser.js help
 ```
 
@@ -348,7 +349,11 @@ miniprogram-browser click @e1 --session demo --wait 500
 
 ### 系统弹窗的当前边界
 
-`wx.showModal` 不在 WXML 树中。2026-08-31 在 Mac DevTools `2.02.2608040` 的公开 Demo 上复核：真实点击能够打开弹窗、截图可见，但官方 automator 的 `native.confirmModal()` / `native.cancelModal()` 调用后弹窗仍未关闭。专用确认/取消操作不属于 CLI 的可靠主路径；智能体触发这类弹窗后应截图并请用户处理，再继续调试。
+`wx.showModal` 不在 WXML 树中，但官方 [Minium 的 `handle_modal`](https://minitest.weixin.qq.com/#/minium/Python/api/Native?id=handle_modal) 支持开发者工具中的确认/取消；不能把它概括为“官方不支持弹窗”。普通 WXML 自定义弹层仍按 `snapshot → click` 操作。
+
+2026-08-31 在 Mac DevTools `2.02.2608040` 的公开 Demo 上，`native confirmModal` / `native cancelModal` 仍返回空对象而不关闭系统弹窗。对照官方 Minium `1.6.0` 源码并复现其 `Tool.native` 请求（包括 `data: null`）后结果相同；这不是通过更换调用参数就已解决的问题。
+
+CLI 对原生接口明确返回的错误会报失败并保留原文；空结果只表示调用返回，不能证明点击生效。需要验证时，使用 `native confirmModal --await change` 或 `native cancelModal --await change`，随后检查业务结果或截图；`change` 本身也不能证明选中了正确按钮。专项 `test:modal-e2e` 在公开 Demo 上分别断言确认和取消后的业务状态，失败会清理自己的 session。当前该能力仍不属于已验收的 L0；通道失效时停止重试，由用户处理弹窗或调整开发者工具环境，不用 mock / `eval/setData` 冒充真实点击。
 
 `change` 能在采样时捕捉第一次 WXML 变化，但不会把动作期间的 Toast、loading 等连续状态自动留档；动作级变化证据仍是研究候选，边界与验收标准见 [Roadmap](ROADMAP.md#research-candidate动作级瞬时变化证据)。
 

@@ -54,7 +54,7 @@ open [ --project ] [ --session ]
 
 真机 L0 门禁覆盖左右滑动、原生 swiper、长按、页面/容器滚动、瞬时状态与返回，并在成功或失败退出时清理自己的 session。
 
-`miniprogram-automator` 的 `confirmModal` / `cancelModal` 返回空结果不能证明弹窗已关闭；CLI 必须提示结果未验证，不能根据路由是否变化推断弹窗状态。在该能力能用真实官方自动化路径验收前，不将弹窗确认/取消暴露为 L0 命令，也不用 `eval/setData`、OCR 或 GUI 驱动伪造通过。
+官方 [Minium `handle_modal`](https://minitest.weixin.qq.com/#/minium/Python/api/Native?id=handle_modal) 支持 IDE 原生弹窗；其 `1.6.0` 实现与 `miniprogram-automator` 使用相同的 `Tool.native` 确认/取消协议，不把特定 DevTools 版本的失效泛化为官方不支持。`confirmModal` / `cancelModal` 返回空结果不能证明弹窗已关闭；CLI 必须提示结果未验证，不能根据路由是否变化推断弹窗状态。原生结果明确返回 `error` 时必须抛出并保留原始结果，不能按成功退出或继续等待变化。公开 Demo 的独立 `test:modal-e2e` 通过真实点击打开弹窗，再调用原生确认/取消，等待并断言两种不同的业务回调状态；仅凭空返回不得通过，无业务回调变化或错误按钮结果必须失败。在该专项通过前，不将弹窗确认/取消暴露为 L0 命令，也不用 mock、`eval/setData`、OCR 或 GUI 驱动伪造通过。
 
 Windows/WSL 对 DevTools 可直接消费的盘符路径，冷启动默认使用 `open → auto`；`open` 解析出的 IDE service port 只用于观测和 cleanup，后续 `auto` 不强塞 `--port`。WSL 路径转换以系统 [`wslpath`](https://learn.microsoft.com/en-us/windows/dev-environment/wsl-interop#path-translation) 为权威，支持自定义 automount root；UNC 无法被当前 DevTools 消费时才使用显式项目路径或 prefix map。Windows/WSL 当前安装布局优先执行官方 `cli.bat`；旧 `cli.js` 仅在同目录有配套 `node.exe` 时兼容，不以 DevTools 版本号做分支。
 
@@ -190,6 +190,7 @@ autoPort 不落 session 文件；成功可回显
 - 若未来对输出字段做代码 enforcement，另开任务
 - 三框架公开 Demo：`tests/public-demo.test.cjs` 与 `tests/framework-demos.test.cjs` 固化共同路由、控件、重复列表、导航及合成数据边界；Taro/uni-app 另做显式构建和真实 DevTools gate
 - 真实交互与变化等待：`tests/runtime-actions.test.cjs` 覆盖优先 touch 的 swipe、原生 swiper 组件回退、页面/容器滚动、back 回退与 WXML change；真实 DevTools gate 在公开 Demo 上硬验证左右滑动、长按、页面/容器滚动、瞬时状态与返回后的实际状态变化
+- 原生弹窗：`tests/runtime.test.cjs` 覆盖原生错误抛出与 raw 保留；弹窗专项门禁的回归测试必须拒绝空成功、无回调与错误确认/取消结果；真实 `test:modal-e2e` 结果单独报告，不以 L0 通过代替
 
 ## 7. Wrong vs Correct
 

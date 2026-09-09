@@ -204,7 +204,7 @@ miniprogram-browser wait 1200 --session feat-a
 
 普通按钮、switch、checkbox 等点击后停留当前页是正常行为，CLI 不会猜测它应该跳转。只有任务明确要求导航时才加 `--await route-change` 或 `--await route:<path>`；未满足时由 await 给出准确失败。
 
-业务页 `wx.showModal` 不在 WXML 树中，官方 automator 的 `confirmModal` / `cancelModal` 返回空结果不能证明弹窗已关闭；CLI 的“弹窗结果未验证”也不表示弹窗不存在。专用确认/取消操作尚未通过当前版本的完整验收；触发后先截图请用户处理，不要用 `eval/setData`、OCR 或 GUI 驱动伪造点击结果。
+业务页 `wx.showModal` 不在 WXML 树中；普通 WXML 自定义弹层仍用 `snapshot → click`。官方 [Minium `handle_modal`](https://minitest.weixin.qq.com/#/minium/Python/api/Native?id=handle_modal) 支持 IDE 确认/取消，但当前 DevTools 版本可能返回空对象而不执行动作，不能概括成“官方不支持”。已获授权的系统弹窗操作可尝试 `native confirmModal` / `native cancelModal`；若预期业务页面变化，可加 `--await change`，随后必须核验业务结果或截图。空返回、路由变化或单独的 `change` 均不证明选中了正确按钮。原生接口明确报错时 CLI 会失败并保留原文；无效果时停止重复调用，请用户处理或调整 DevTools 环境，不用 mock、`eval/setData`、OCR 或 GUI 驱动伪造通过。此能力仍未纳入已验收 L0；维护者用公开 Demo 的 `npm run test:modal-e2e` 独立验证确认/取消及实际回调。
 
 建议：
 

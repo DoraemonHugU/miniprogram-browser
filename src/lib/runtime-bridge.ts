@@ -132,7 +132,16 @@ async function callNativeMethod(miniProgram: MiniProgram, method: string, rawArg
     throw new Error(`Unknown native method: ${method}`)
   }
 
-  return handler.apply(native, parseCallArguments(rawArgs))
+  const result = await handler.apply(native, parseCallArguments(rawArgs))
+  // Tool.native 会把操作失败放在 result.error 中，而不是拒绝协议请求。
+  const nativeError = result && typeof result === 'object' && 'error' in result ? result.error : undefined
+  if (nativeError) {
+    const message = typeof nativeError === 'object' && 'message' in nativeError
+      ? String(nativeError.message)
+      : String(nativeError)
+    throw Object.assign(new Error(`native ${method} failed: ${message}`), { raw: JSON.stringify(result) })
+  }
+  return result
 }
 
 /** 获取元素属性 */
